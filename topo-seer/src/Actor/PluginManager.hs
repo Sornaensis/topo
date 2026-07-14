@@ -117,6 +117,10 @@ import System.Environment (lookupEnv)
 import System.Exit (ExitCode)
 import System.FilePath (takeDirectory)
 
+import Actor.PluginManager.DataResourceRouter
+  ( executeMutatePluginDataResource
+  , executeQueryPluginDataResource
+  )
 import Actor.PluginManager.ProcessLauncher
   ( OwnedPluginCleanupResult(..)
   , OwnedPluginProcess
@@ -595,15 +599,25 @@ getPluginDataResources handle =
 queryPluginResource
   :: ActorHandle PluginManager (Protocol PluginManager)
   -> Text -> QueryResource -> IO (Either Text QueryResult)
-queryPluginResource handle pluginName qr =
-  call @"queryData" handle #queryData (pluginName, qr)
+queryPluginResource handle pluginName qr = do
+  prepared <- call @"prepareQueryData" handle #prepareQueryData (pluginName, qr)
+  case prepared of
+    Left err -> pure (Left err)
+    Right lease -> do
+      result <- executeQueryPluginDataResource lease qr
+      call @"finalizeQueryData" handle #finalizeQueryData (lease, result)
 
 -- | Forward a data mutation to the named plugin.
 mutatePluginResource
   :: ActorHandle PluginManager (Protocol PluginManager)
   -> Text -> MutateResource -> IO (Either Text MutateResult)
-mutatePluginResource handle pluginName mr =
-  call @"mutateData" handle #mutateData (pluginName, mr)
+mutatePluginResource handle pluginName mr = do
+  prepared <- call @"prepareMutateData" handle #prepareMutateData (pluginName, mr)
+  case prepared of
+    Left err -> pure (Left err)
+    Right lease -> do
+      result <- executeMutatePluginDataResource lease mr
+      call @"finalizeMutateData" handle #finalizeMutateData (lease, result)
 
 -- | Notify all connected plugins that the world path has changed.
 --

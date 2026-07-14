@@ -30,6 +30,7 @@ module Actor.PluginManager.Types
   , PluginManagerOperation(..)
   , PluginRestartPhase(..)
   , PluginRestartOperation(..)
+  , PluginRuntimeFailureIdentity(..)
   , PluginManagerState(..)
   , emptyPluginManagerState
   , pluginStatusText
@@ -85,6 +86,7 @@ import Topo.Plugin (Capability(..))
 import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Plugin.RPC
   ( RPCConnection(..)
+  , RPCError
   , RPCExternalDataSourceAccess(..)
   , RPCExternalDataSourceAccessMode(..)
   , RPCExternalDataSourceAvailability(..)
@@ -1175,6 +1177,15 @@ data PluginRestartOperation = PluginRestartOperation
   , proErrorMessage :: !Text
   }
 
+-- | Exact runtime identity retained after the monitor consumes a fatal RPC
+-- event. It lets a racing route finalize distinguish that failure from a
+-- replaced runtime without retaining cleaned-up runtime ownership.
+data PluginRuntimeFailureIdentity = PluginRuntimeFailureIdentity
+  { prfiGeneration :: !PluginRuntimeGeneration
+  , prfiConnection :: !RPCConnection
+  , prfiError :: !RPCError
+  }
+
 -- | Plugin manager actor state.
 data PluginManagerState = PluginManagerState
   { pmsPlugins    :: !(Map Text LoadedPlugin)
@@ -1191,6 +1202,8 @@ data PluginManagerState = PluginManagerState
     -- ^ Token and pre-shutdown snapshot used to arbitrate completion/rollback.
   , pmsPendingRestarts :: !(Map Text PluginRestartOperation)
     -- ^ Current actor-owned restart claim per plugin.
+  , pmsRuntimeFailures :: !(Map Text PluginRuntimeFailureIdentity)
+    -- ^ Most recent monitor-consumed fatal RPC identity for route-finalize races.
   , pmsNextOperationToken :: !Word64
     -- ^ Monotonic actor-local lifecycle operation identity.
   , pmsExternalDataSourceGrants :: !(Map ExternalDataSourceGrantKey ExternalDataSourceGrantBrokerState)
@@ -1206,6 +1219,7 @@ emptyPluginManagerState = PluginManagerState
   , pmsPendingRefresh = Nothing
   , pmsPendingShutdown = Nothing
   , pmsPendingRestarts = Map.empty
+  , pmsRuntimeFailures = Map.empty
   , pmsNextOperationToken = 1
   , pmsExternalDataSourceGrants = Map.empty
   }

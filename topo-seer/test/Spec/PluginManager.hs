@@ -120,6 +120,7 @@ import Actor.PluginManager
   , getDisabledPlugins
   , getLoadedPlugins
   , getPluginDataDirectories
+  , getPluginDataResources
   , getPluginExternalDataSources
   , getPluginOverlaySchemas
   , getPluginStages
@@ -201,10 +202,13 @@ import Topo.Plugin.RPC
   , defaultRPCExternalDataSourceStatus
   , defaultRPCStartPolicy
   , defaultRPCUIHints
+  , dataResourceFailureText
   , invokeGenerator
   , invokeSimulation
   , newRPCConnection
+  , queryResource
   , requestExternalDataSourceStatus
+  , rpcErrorDataResourceFailure
   , sendExternalDataSourceGrant
   , sendExternalDataSourceGrantRevocation
   )
@@ -1929,6 +1933,143 @@ spec = describe "PluginManager" $ do
         count <- readFixtureCount restartLimitMultiplePluginName "counted-early-exit"
         count `shouldBe` 3
 
+  it "lease-mailbox-query keeps the pinned mailbox responsive while RPC waits" $ do
+    withExecutablePluginDir gatedDataPluginName gatedDataManifestJSON "gated-data" $
+      withPluginManager $ \pluginManagerHandle -> do
+        queryReceived <- fixtureDataFile gatedDataPluginName gatedQueryReceivedFileName
+        queryRelease <- fixtureDataFile gatedDataPluginName gatedQueryReleaseFileName
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        runtime <- expectPluginRuntime gatedDataPluginName loaded
+        done <- newEmptyMVar
+        _ <- forkIO (queryPluginResource pluginManagerHandle (Text.pack gatedDataPluginName) testQuery >>= putMVar done)
+        waitForFixtureSignal queryReceived
+        resources <- expectPromptly "data resources during leased query" (getPluginDataResources pluginManagerHandle)
+        Map.member (Text.pack gatedDataPluginName) resources `shouldBe` True
+        promptLoaded <- expectPromptly "loaded plugins during leased query" (getLoadedPlugins pluginManagerHandle)
+        pluginStatuses gatedDataPluginName promptLoaded `shouldSatisfy` elem PluginConnected
+        (_, directive) <- expectPromptly "generation notice during leased query" $
+          call @"runtimeFailure" pluginManagerHandle #runtimeFailure
+            (runtimeProcessExitNotice (Text.pack gatedDataPluginName) (ownedPluginRuntimeGeneration runtime) ExitSuccess)
+        case directive of
+          Nothing -> pure ()
+          Just _ -> expectationFailure "live generation notice unexpectedly scheduled a restart"
+        writeFile queryRelease "release\n"
+        result <- expectWithin "gated query completion" (takeMVar done)
+        result `shouldSatisfy` either (const False) (const True)
+
+  it "lease-mailbox-mutation keeps the pinned mailbox responsive while RPC waits" $ do
+    withExecutablePluginDir gatedDataPluginName gatedDataManifestJSON "gated-data" $
+      withPluginManager $ \pluginManagerHandle -> do
+        mutationReceived <- fixtureDataFile gatedDataPluginName gatedMutationReceivedFileName
+        mutationRelease <- fixtureDataFile gatedDataPluginName gatedMutationReleaseFileName
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        done <- newEmptyMVar
+        _ <- forkIO (mutatePluginResource pluginManagerHandle (Text.pack gatedDataPluginName)
+          (MutateResource "records" (MutCreate (record [("id", String "alpha"), ("name", String "Alpha")]))) >>= putMVar done)
+        waitForFixtureSignal mutationReceived
+        _ <- expectPromptly "loaded plugins during leased mutation" (getLoadedPlugins pluginManagerHandle)
+        writeFile mutationRelease "release\n"
+        result <- expectWithin "gated mutation completion" (takeMVar done)
+        result `shouldSatisfy` either (const False) (const True)
+
+  it "lease-cancellation cleans the pending slot without stranding the actor" $ do
+    withExecutablePluginDir gatedDataPluginName gatedDataManifestJSON "gated-data" $
+      withPluginManager $ \pluginManagerHandle -> do
+        queryReceived <- fixtureDataFile gatedDataPluginName gatedQueryReceivedFileName
+        queryRelease <- fixtureDataFile gatedDataPluginName gatedQueryReleaseFileName
+        queryReplied <- fixtureDataFile gatedDataPluginName gatedQueryRepliedFileName
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        worker <- forkIO $ do
+          _ <- queryPluginResource pluginManagerHandle (Text.pack gatedDataPluginName) testQuery
+          pure ()
+        waitForFixtureSignal queryReceived
+        killThread worker
+        -- The fixture deliberately omits correlation on this second reply.
+        -- It can complete only if cancellation already removed the first slot.
+        second <- expectPromptly "query after caller cancellation" $
+          queryPluginResource pluginManagerHandle (Text.pack gatedDataPluginName) testQuery
+        second `shouldSatisfy` either (const False) (const True)
+        writeFile queryRelease "release\n"
+        waitForFixtureSignal queryReplied
+        loaded <- expectPromptly "actor after caller cancellation" (getLoadedPlugins pluginManagerHandle)
+        pluginStatuses gatedDataPluginName loaded `shouldSatisfy` elem PluginConnected
+
+  it "lease-stale rejects old replies and timeouts without changing the replacement lifecycle" $ do
+    withExecutablePluginDir gatedDataPluginName gatedDataManifestJSON "gated-data" $
+      withPluginManager $ \pluginManagerHandle -> do
+        queryReceived <- fixtureDataFile gatedDataPluginName gatedQueryReceivedFileName
+        queryRelease <- fixtureDataFile gatedDataPluginName gatedQueryReleaseFileName
+        discoverPlugins pluginManagerHandle
+        refreshManifests pluginManagerHandle
+        loaded <- getLoadedPlugins pluginManagerHandle
+        oldPlugin <- case filter ((== Text.pack gatedDataPluginName) . lpName) loaded of
+          [plugin] -> pure plugin
+          plugins -> expectationFailure ("expected one gated plugin, got " <> show (length plugins)) >> fail "missing gated plugin"
+        oldRuntime <- case lpRuntime oldPlugin of
+          Just runtime -> pure runtime
+          Nothing -> expectationFailure "gated plugin had no owned runtime" >> fail "missing gated runtime"
+        preparedFailure <- call @"prepareQueryData" pluginManagerHandle #prepareQueryData
+          (Text.pack gatedDataPluginName, testQuery)
+        failureLease <- case preparedFailure of
+          Right lease -> pure lease
+          Left err -> expectationFailure ("failed to prepare stale-failure lease: " <> Text.unpack err) >> fail "missing route lease"
+        done <- newEmptyMVar
+        _ <- forkIO (queryPluginResource pluginManagerHandle (Text.pack gatedDataPluginName) testQuery >>= putMVar done)
+        waitForFixtureSignal queryReceived
+
+        Just (token, _, _) <- call @"refresh" pluginManagerHandle #refresh ()
+        duringTransition <- call @"prepareQueryData" pluginManagerHandle #prepareQueryData
+          (Text.pack gatedDataPluginName, testQuery)
+        case duringTransition of
+          Left err -> err `shouldSatisfy` Text.isInfixOf "plugin_unavailable"
+          Right _ -> expectationFailure "prepared a data lease while refresh was starting"
+        transitionResult <- call @"finalizeQueryData" pluginManagerHandle #finalizeQueryData
+          ( failureLease
+          , Right (QueryResult "records" [record [("id", String "transition"), ("name", String "Transition")]] (Just 1))
+          )
+        case transitionResult of
+          Left err -> err `shouldSatisfy` Text.isInfixOf "plugin_unavailable"
+          Right _ -> expectationFailure "accepted old data while refresh was starting"
+        let replacementConnection = newRPCConnection
+              (lpManifest oldPlugin)
+              (Transport stdin stdout "stale-data-route-replacement")
+              (lpParams oldPlugin)
+            replacement = oldPlugin
+              { lpRuntime = Just (newConnectionOnlyPluginRuntime replacementConnection) }
+        call @"finishRefresh" pluginManagerHandle #finishRefresh (token, [replacement]) `shouldReturn` True
+        writeFile queryRelease "release\n"
+        stale <- expectWithin "stale leased query completion" (takeMVar done)
+        case stale of
+          Left err -> err `shouldSatisfy` Text.isInfixOf "plugin_unavailable"
+          Right _ -> expectationFailure "old runtime result escaped the generation guard"
+        staleFailure <- call @"finalizeQueryData" pluginManagerHandle #finalizeQueryData
+          (failureLease, Left "external_data_source_unavailable: obsolete runtime" :: Either Text QueryResult)
+        case staleFailure of
+          Left err -> err `shouldSatisfy` Text.isInfixOf "plugin_unavailable"
+          Right _ -> expectationFailure "old runtime failure escaped the generation guard"
+        staleTimeout <- call @"finalizeQueryData" pluginManagerHandle #finalizeQueryData
+          (failureLease, Left "timeout: obsolete runtime timed out" :: Either Text QueryResult)
+        case staleTimeout of
+          Left err -> do
+            err `shouldSatisfy` Text.isInfixOf "plugin_unavailable"
+            err `shouldNotSatisfy` Text.isInfixOf "timeout"
+          Right _ -> expectationFailure "old runtime timeout escaped the generation guard"
+        observed <- getLoadedPlugins pluginManagerHandle
+        pluginStatuses gatedDataPluginName observed `shouldBe` [lpStatus replacement]
+        pluginLifecycleStates gatedDataPluginName observed `shouldBe` [plsState (lpLifecycle replacement)]
+        pluginLifecycleErrorCodes gatedDataPluginName observed `shouldBe` [plsErrorCode (lpLifecycle replacement)]
+
+        Just (stopToken, _, replacementPlugins) <- call @"refresh" pluginManagerHandle #refresh ()
+        let detached = map (\plugin -> plugin { lpStatus = PluginIdle, lpRuntime = Nothing }) replacementPlugins
+        call @"finishRefresh" pluginManagerHandle #finishRefresh (stopToken, detached) `shouldReturn` True
+        cleanupOwnedPluginRuntime oldRuntime >>= \case
+          OwnedPluginRuntimeCleanupComplete -> pure ()
+          OwnedPluginRuntimeCleanupFailed _ -> expectationFailure "old gated runtime cleanup failed"
+
   it "times out data-resource requests instead of hanging" $ do
     withExecutablePluginDir hangQueryPluginName hangQueryManifestJSON "hang-query" $ do
       withPluginManager $ \pluginManagerHandle -> do
@@ -1937,11 +2078,23 @@ spec = describe "PluginManager" $ do
         loaded <- getLoadedPlugins pluginManagerHandle
         pluginStatuses hangQueryPluginName loaded `shouldSatisfy` elem PluginConnected
         handles <- expectPluginProcessHandles hangQueryPluginName loaded
-        timed <- timeout 5000000 $ queryPluginResource pluginManagerHandle (Text.pack hangQueryPluginName) testQuery
-        case timed of
-          Nothing -> expectationFailure "data query hung"
-          Just (Left err) -> err `shouldSatisfy` Text.isInfixOf "timed out"
-          Just (Right _) -> expectationFailure "hung data query unexpectedly succeeded"
+        conn <- case mapMaybe lpConnection (filter ((== Text.pack hangQueryPluginName) . lpName) loaded) of
+          [connection] -> pure connection
+          connections -> expectationFailure ("expected one hang-query connection, got " <> show (length connections))
+            >> fail "missing hang-query connection"
+        prepared <- call @"prepareQueryData" pluginManagerHandle #prepareQueryData
+          (Text.pack hangQueryPluginName, testQuery)
+        lease <- case prepared of
+          Right routeLease -> pure routeLease
+          Left err -> expectationFailure ("failed to prepare timeout lease: " <> Text.unpack err)
+            >> fail "missing timeout lease"
+        rawTimed <- timeout 5000000 (queryResource conn testQuery)
+        routedResult <- case rawTimed of
+          Nothing -> expectationFailure "data query hung" >> fail "data query hung"
+          Just (Left err) -> pure (Left (dataResourceFailureText (rpcErrorDataResourceFailure err)))
+          Just (Right _) -> expectationFailure "hung data query unexpectedly succeeded" >> fail "unexpected data query result"
+        -- Force the monitor-before-finalize ordering that used to make timeout
+        -- service mapping scheduler-dependent.
         observed <- waitForLoadedPlugins
           (hangQueryPluginName <> " timeout cleanup")
           pluginManagerHandle
@@ -1949,6 +2102,11 @@ spec = describe "PluginManager" $ do
             anyPluginErrorContaining "restart limit exceeded" (pluginStatuses hangQueryPluginName loaded)
               && Just "restart_limit_exceeded" `elem` pluginLifecycleErrorCodes hangQueryPluginName loaded
               && null (pluginProcessHandles hangQueryPluginName loaded))
+        timed <- call @"finalizeQueryData" pluginManagerHandle #finalizeQueryData
+          (lease, routedResult)
+        case timed of
+          Left err -> err `shouldSatisfy` Text.isInfixOf "timed out"
+          Right _ -> expectationFailure "monitor-first timeout finalize unexpectedly succeeded"
         pluginStatuses hangQueryPluginName observed `shouldSatisfy` anyPluginErrorContaining "restart limit exceeded"
         pluginLifecycleErrorCodes hangQueryPluginName observed `shouldSatisfy` elem (Just "restart_limit_exceeded")
         length (pluginProcessHandles hangQueryPluginName observed) `shouldBe` 0
@@ -2894,6 +3052,13 @@ expectWithin label action = do
     Nothing -> expectationFailure (label <> " timed out") >> fail label
     Just value -> pure value
 
+expectPromptly :: String -> IO a -> IO a
+expectPromptly label action = do
+  result <- timeout 500000 action
+  case result of
+    Nothing -> expectationFailure (label <> " did not complete while RPC was gated") >> fail label
+    Just value -> pure value
+
 assertStartedBefore :: String -> String -> [String] -> Expectation
 assertStartedBefore first second order =
   case (elemIndex first order, elemIndex second order) of
@@ -3724,6 +3889,7 @@ runFixtureMode = \case
   "controlled-runtime-tree-restart" -> runControlledRuntimeTreeRestartFixture
   "counted-early-exit" -> incrementFixtureCount "counted-early-exit" >> exitFailure
   "hang-query" -> runHangQueryFixture
+  "gated-data" -> runGatedDataFixture
   "provider-failed" -> runProviderFailedFixture
   "validation-ok" -> runValidationOkFixture
   "invalid-mutate" -> runInvalidMutateFixture
@@ -3905,6 +4071,53 @@ runHangQueryFixture = do
               MsgQueryResource -> threadDelay 2000000 >> closeTransport transport
               MsgShutdown -> closeTransport transport
               _ -> loop transport
+
+runGatedDataFixture :: IO ()
+runGatedDataFixture = do
+  dataRoot <- requireEnv pluginDataRootEnv
+  connectPluginFromEnvironment "plugin-manager-gated-data-fixture" stdin stdout >>= \case
+    Left _ -> exitFailure
+    Right transport -> loop dataRoot transport
+  where
+    loop dataRoot transport = do
+      recvMessage transport >>= \case
+        Left _ -> closeTransport transport
+        Right bytes ->
+          case decodeMessage bytes of
+            Left _ -> loop dataRoot transport
+            Right envelope -> case envType envelope of
+              MsgHandshake -> do
+                ack <- handshakeAckEnvelopeFor envelope currentProtocolVersion
+                _ <- sendMessage transport (encodeMessage ack)
+                loop dataRoot transport
+              MsgQueryResource -> do
+                _ <- forkIO $ gateDataReply
+                  dataRoot gatedQueryReceivedFileName gatedQueryReleaseFileName gatedQueryRepliedFileName
+                  transport
+                  (queryResultEnvelope (envRequestId envelope)
+                    (QueryResult "records" [record [("id", String "alpha"), ("name", String "Alpha")]] (Just 1)))
+                loop dataRoot transport
+              MsgMutateResource -> do
+                _ <- forkIO $ gateDataReply
+                  dataRoot gatedMutationReceivedFileName gatedMutationReleaseFileName gatedMutationRepliedFileName
+                  transport
+                  (mutateResultEnvelope (envRequestId envelope)
+                    (MutateResult True Nothing (Just (record [("id", String "accepted"), ("name", String "Accepted")])) Nothing))
+                loop dataRoot transport
+              MsgShutdown -> closeTransport transport
+              _ -> loop dataRoot transport
+
+    gateDataReply dataRoot receivedName releaseName repliedName transport envelope = do
+      let received = dataRoot </> receivedName
+      alreadyReceived <- doesFileExist received
+      unless alreadyReceived $ do
+        writeFile received "received\n"
+        waitForFixtureSignal (dataRoot </> releaseName)
+      -- An uncorrelated follow-up reply is accepted only when the cancelled
+      -- first request has already been removed from the pending map.
+      let reply = if alreadyReceived then envelope { envRequestId = Nothing } else envelope
+      _ <- sendMessage transport (encodeMessage reply)
+      writeFile (dataRoot </> repliedName) "replied\n"
 
 runHostDeathHostFixture :: IO ()
 runHostDeathHostFixture = do
@@ -5413,6 +5626,27 @@ restartLimitMultipleManifestJSON = manifestWithStartPolicyFor restartLimitMultip
   , "    \"shutdown_timeout_ms\": 100,"
   , "    \"backoff_ms\": 1"
   ]
+
+gatedDataPluginName :: String
+gatedDataPluginName = "copilot-test-plugin-gated-data"
+
+gatedDataManifestJSON :: BS.ByteString
+gatedDataManifestJSON = writableDataResourceManifestFor gatedDataPluginName
+  [ "    \"restart_mode\": \"never\","
+  , "    \"startup_timeout_ms\": 1000,"
+  , "    \"request_timeout_ms\": 5000,"
+  , "    \"shutdown_timeout_ms\": 300"
+  ]
+
+gatedQueryReceivedFileName, gatedQueryReleaseFileName, gatedQueryRepliedFileName :: String
+gatedQueryReceivedFileName = "gated-query.received"
+gatedQueryReleaseFileName = "gated-query.release"
+gatedQueryRepliedFileName = "gated-query.replied"
+
+gatedMutationReceivedFileName, gatedMutationReleaseFileName, gatedMutationRepliedFileName :: String
+gatedMutationReceivedFileName = "gated-mutation.received"
+gatedMutationReleaseFileName = "gated-mutation.release"
+gatedMutationRepliedFileName = "gated-mutation.replied"
 
 hangQueryPluginName :: String
 hangQueryPluginName = "copilot-test-plugin-hang-query"

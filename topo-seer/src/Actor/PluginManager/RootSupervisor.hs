@@ -40,8 +40,12 @@ import Actor.PluginManager.Config
   , savePluginOrder
   )
 import Actor.PluginManager.DataResourceRouter
-  ( mutatePluginDataResource
-  , queryPluginDataResource
+  ( DataResourceRouteLease(..)
+  , DataResourceRouteOperation(..)
+  , dataResourceRouteLeaseCurrent
+  , prepareMutatePluginDataResource
+  , prepareQueryPluginDataResource
+  , staleDataResourceRouteFailure
   )
 import Actor.PluginManager.ExternalDataSourceBroker
   ( reconcileExternalDataSourceBrokering
@@ -62,8 +66,6 @@ import Actor.PluginManager.PluginSupervisor
   ( disconnectPlugin
   , failPluginProcessExit
   , failPluginRuntime
-  , handlePluginRuntimeFailure
-  , markExternalDataSourceBlocked
   , markExternalDataSourceDegraded
   , markPluginStarting
   , markPluginStopping
@@ -97,6 +99,7 @@ import Actor.PluginManager.Types
   , PluginRefreshFailure(..)
   , PluginRestartOperation(..)
   , PluginRestartPhase(..)
+  , PluginRuntimeFailureIdentity(..)
   , PluginStatus(..)
   , emptyPluginManagerState
   , lpConnection
@@ -128,8 +131,10 @@ import Topo.Plugin.RPC
   , RPCExternalDataSourceStatusState(..)
   , claimRPCFailureEvent
   , dataResourceFailureFromText
+  , dataResourceFailureText
   , drfCode
   , externalDataSourceStatusBlocksStartup
+  , rpcErrorDataResourceFailure
   , sameRPCConnection
   )
 import Topo.Plugin.RPC.Manifest
@@ -191,8 +196,10 @@ actor PluginManager
   call cancelRuntimeRestart :: RuntimeRestartDirective -> Bool
   call finishRuntimeRestart :: (RuntimeRestartDirective, LoadedPlugin) -> (Bool, Maybe RuntimeRestartDirective)
   call getDataResources :: () -> Map Text [DataResourceSchema]
-  call queryData :: (Text, QueryResource) -> Either Text QueryResult
-  call mutateData :: (Text, MutateResource) -> Either Text MutateResult
+  call prepareQueryData :: (Text, QueryResource) -> Either Text DataResourceRouteLease
+  call finalizeQueryData :: (DataResourceRouteLease, Either Text QueryResult) -> Either Text QueryResult
+  call prepareMutateData :: (Text, MutateResource) -> Either Text DataResourceRouteLease
+  call finalizeMutateData :: (DataResourceRouteLease, Either Text MutateResult) -> Either Text MutateResult
   cast notifyWorld :: Maybe Text
   call getDataDirs :: () -> [WorldPluginDataDirectory]
   call getExternalDataSources :: () -> [WorldExternalDataSourceSnapshot]
@@ -218,6 +225,7 @@ actor PluginManager
           , pmsPendingRefresh = Nothing
           , pmsPendingShutdown = Nothing
           , pmsPendingRestarts = Map.empty
+          , pmsRuntimeFailures = Map.empty
           , pmsNextOperationToken = 1
           , pmsExternalDataSourceGrants = Map.empty
           }
@@ -263,6 +271,7 @@ actor PluginManager
               { pmsPlugins = Map.map (markPluginStarting startingAt) (pmsPlugins st)
               , pmsPendingRefresh = Just operation
               , pmsPendingRestarts = Map.empty
+              , pmsRuntimeFailures = Map.empty
               , pmsNextOperationToken = nextOperationToken token
               }
           , Just (token, pmsBaseDir st, plugins)
@@ -311,6 +320,7 @@ actor PluginManager
               { pmsPlugins = Map.map (markPluginStopping stoppingAt) (pmsPlugins stRevoked)
               , pmsPendingShutdown = Just operation
               , pmsPendingRestarts = Map.empty
+              , pmsRuntimeFailures = Map.empty
               , pmsNextOperationToken = nextOperationToken token
               }
           , Just (token, plugins)
@@ -344,16 +354,14 @@ actor PluginManager
     finishRuntimeRestartAttempt directive restarted st
   onPure getDataResources = \() st ->
     (st, buildPluginDataResources st)
-  on queryData = \(pluginName, qr) st -> do
-    result <- queryPluginDataResource pluginName qr st
-    st' <- markRuntimeFailureOnConnectedDataError pluginName "data_query_failed" result st
-    st'' <- reconcileExternalDataSourceBrokering st st'
-    pure (st'', result)
-  on mutateData = \(pluginName, mr) st -> do
-    result <- mutatePluginDataResource pluginName mr st
-    st' <- markRuntimeFailureOnConnectedDataError pluginName "data_mutation_failed" result st
-    st'' <- reconcileExternalDataSourceBrokering st st'
-    pure (st'', result)
+  onPure prepareQueryData = \(pluginName, qr) st ->
+    (st, prepareQueryPluginDataResource pluginName qr st)
+  on finalizeQueryData = \(lease, result) st ->
+    finalizeDataResourceRoute DataResourceRouteQuery "data_query_failed" lease result st
+  onPure prepareMutateData = \(pluginName, mr) st ->
+    (st, prepareMutatePluginDataResource pluginName mr st)
+  on finalizeMutateData = \(lease, result) st ->
+    finalizeDataResourceRoute DataResourceRouteMutation "data_mutation_failed" lease result st
   on_ notifyWorld = \mWorldPath st -> do
     notifyPluginsWorldChanged mWorldPath (Map.elems (pmsPlugins st))
     pure st
@@ -409,10 +417,11 @@ handleRuntimeFailureNotice notice st =
             else do
               restartAllowed <- noticeAllowsRestart notice lp
               failed <- failRuntimeNotice notice lp
+              let failedState = rememberRuntimeFailureIdentity notice st
               if isJust (pmsPendingRefresh st)
                 then pure
-                  ( st
-                      { pmsPlugins = Map.insert pluginName failed (pmsPlugins st)
+                  ( failedState
+                      { pmsPlugins = Map.insert pluginName failed (pmsPlugins failedState)
                       , pmsPendingRefresh = fmap
                           (\operation -> operation
                             { pmoInvalidated = True
@@ -422,24 +431,24 @@ handleRuntimeFailureNotice notice st =
                                 (PluginRefreshFailure generation restartAllowed)
                                 (pmoFailures operation)
                             })
-                          (pmsPendingRefresh st)
+                          (pmsPendingRefresh failedState)
                       }
                   , (True, Nothing)
                   )
                 else if isJust (pmsPendingShutdown st)
                   then pure
-                    ( st { pmsPlugins = Map.insert pluginName failed (pmsPlugins st) }
+                    ( failedState { pmsPlugins = Map.insert pluginName failed (pmsPlugins failedState) }
                     , (True, Nothing)
                     )
                   else do
                     if restartAllowed
                       then do
-                        (scheduled, directive) <- scheduleRuntimeRestart generation failed st
+                        (scheduled, directive) <- scheduleRuntimeRestart generation failed failedState
                         pure (scheduled, (True, directive))
                       else pure
-                        ( st
-                            { pmsPlugins = Map.insert pluginName failed (pmsPlugins st)
-                            , pmsPendingRestarts = Map.delete pluginName (pmsPendingRestarts st)
+                        ( failedState
+                            { pmsPlugins = Map.insert pluginName failed (pmsPlugins failedState)
+                            , pmsPendingRestarts = Map.delete pluginName (pmsPendingRestarts failedState)
                             }
                         , (True, Nothing)
                         )
@@ -450,6 +459,15 @@ handleRuntimeFailureNotice notice st =
     rejectStale = do
       consumeStaleNotice notice
       pure (st, (False, Nothing))
+
+rememberRuntimeFailureIdentity :: RuntimeFailureNotice -> PluginManagerState -> PluginManagerState
+rememberRuntimeFailureIdentity notice st = case notice of
+  RuntimeRPCFailure pluginName generation connection event -> st
+    { pmsRuntimeFailures = Map.insert pluginName
+        (PluginRuntimeFailureIdentity generation connection (rpfeError event))
+        (pmsRuntimeFailures st)
+    }
+  RuntimeProcessExit{} -> st
 
 failRuntimeNotice :: RuntimeFailureNotice -> LoadedPlugin -> IO LoadedPlugin
 failRuntimeNotice notice lp = case notice of
@@ -550,11 +568,17 @@ beginRuntimeRestartBackoffState directive st
             let (starting, mBackoff) = preparePluginRuntimeRestart now lp
             case mBackoff of
               Just _ -> pure
-                (st { pmsPlugins = Map.insert pluginName starting (pmsPlugins st) }, True)
+                ( st
+                    { pmsPlugins = Map.insert pluginName starting (pmsPlugins st)
+                    , pmsRuntimeFailures = Map.delete pluginName (pmsRuntimeFailures st)
+                    }
+                , True
+                )
               Nothing -> pure
                 ( st
                     { pmsPlugins = Map.insert pluginName starting (pmsPlugins st)
                     , pmsPendingRestarts = Map.delete pluginName (pmsPendingRestarts st)
+                    , pmsRuntimeFailures = Map.delete pluginName (pmsRuntimeFailures st)
                     }
                 , False
                 )
@@ -745,6 +769,48 @@ cancelStoppingPlugins token stoppedAt _plugins stoppedPlugins st =
 loadedPluginsByName :: [LoadedPlugin] -> Map Text LoadedPlugin
 loadedPluginsByName plugins = Map.fromList [(lpName p, p) | p <- plugins]
 
+finalizeDataResourceRoute
+  :: DataResourceRouteOperation
+  -> Text
+  -> DataResourceRouteLease
+  -> Either Text a
+  -> PluginManagerState
+  -> IO (PluginManagerState, Either Text a)
+finalizeDataResourceRoute operation errorCode lease result st
+  | drrlOperation lease /= operation = pure (st, staleDataResourceRouteFailure)
+  | not (dataResourceRouteLeaseCurrent lease st) =
+      if dataResourceRouteLeaseOwnsTerminalFailure lease result st
+        then pure (st, result)
+        else pure (st, staleDataResourceRouteFailure)
+  | otherwise = do
+      st' <- markRuntimeFailureOnConnectedDataError (drrlPluginName lease) errorCode result st
+      pure (st', result)
+
+dataResourceRouteLeaseOwnsTerminalFailure
+  :: DataResourceRouteLease
+  -> Either Text a
+  -> PluginManagerState
+  -> Bool
+dataResourceRouteLeaseOwnsTerminalFailure lease result st =
+  case (result, Map.lookup pluginName (pmsRuntimeFailures st), Map.lookup pluginName (pmsPlugins st)) of
+    (Left err, Just failure, Just lp) ->
+      isNothing (pmsPendingRefresh st)
+        && isNothing (pmsPendingShutdown st)
+        && plsState (lpLifecycle lp) == LifecycleFailed
+        && prfiGeneration failure == drrlRuntimeGeneration lease
+        && sameRPCConnection (prfiConnection failure) (drrlConnection lease)
+        && currentRuntimeStillFailed lp
+        && dataResourceFailureText (rpcErrorDataResourceFailure (prfiError failure)) == err
+    _ -> False
+  where
+    pluginName = drrlPluginName lease
+    currentRuntimeStillFailed lp = case (lpRuntime lp, lpConnection lp) of
+      (Nothing, Nothing) -> True
+      (Just runtime, Just connection) ->
+        ownedPluginRuntimeGeneration runtime == drrlRuntimeGeneration lease
+          && sameRPCConnection connection (drrlConnection lease)
+      _ -> False
+
 markRuntimeFailureOnConnectedDataError
   :: Text
   -> Text
@@ -772,10 +838,12 @@ markExternalDataSourceUnavailableOnConnectedDataError pluginName errorCode err s
       | lpStatus lp == PluginConnected && isJust (lpConnection lp) ->
       case externalDataSourceFailureRef lp of
         Just (ref, True) -> do
+          now <- getCurrentTime
           let reason = externalDataSourceDataErrorReason err
               lpWithUnavailableRef = markLoadedPluginExternalRefUnavailable ref reason lp
-          lp' <- markExternalDataSourceBlocked (externalDataSourceRefDependency ref) reason lpWithUnavailableRef
-          let stWithUnavailableGrant = markExternalDataSourceGrantUnavailableForRef
+              lp' = markExternalDataSourceBlockedDiagnostic now
+                (externalDataSourceRefDependency ref) reason lpWithUnavailableRef
+              stWithUnavailableGrant = markExternalDataSourceGrantUnavailableForRef
                 (lpName lp')
                 ref
                 reason
@@ -793,8 +861,41 @@ markExternalDataSourceUnavailableOnConnectedDataError pluginName errorCode err s
                 (plsUpdatedAt (lpLifecycle lp'))
                 st
           pure stWithUnavailableGrant { pmsPlugins = Map.insert pluginName lp' (pmsPlugins stWithUnavailableGrant) }
-        Nothing -> markRuntimeFailureOnConnectedError pluginName errorCode (Left err) st
+        Nothing -> do
+          now <- getCurrentTime
+          let lp' = markConnectedDataFailureDiagnostic now errorCode err lp
+          pure st { pmsPlugins = Map.insert pluginName lp' (pmsPlugins st) }
     _ -> pure st
+
+markExternalDataSourceBlockedDiagnostic :: UTCTime -> Text -> Text -> LoadedPlugin -> LoadedPlugin
+markExternalDataSourceBlockedDiagnostic now dependency reason lp =
+  lp
+    { lpStatus = PluginError message
+    , lpLifecycle = pluginLifecycleSnapshot now LifecycleFailed
+        (Just "required external data source unavailable")
+        (Just "external_data_source_blocked")
+        (Just message)
+        (Just dependency)
+        (plsProcessId (lpLifecycle lp))
+        (plsProtocolVersion (lpLifecycle lp))
+        (plsResources (lpLifecycle lp))
+    }
+  where
+    message = "external data-source startup blocked: " <> reason
+
+markConnectedDataFailureDiagnostic :: UTCTime -> Text -> Text -> LoadedPlugin -> LoadedPlugin
+markConnectedDataFailureDiagnostic now errorCode err lp =
+  lp
+    { lpStatus = PluginError err
+    , lpLifecycle = pluginLifecycleSnapshot now LifecycleFailed
+        (Just "plugin data operation failed")
+        (Just errorCode)
+        (Just err)
+        Nothing
+        (plsProcessId (lpLifecycle lp))
+        (plsProtocolVersion (lpLifecycle lp))
+        (plsResources (lpLifecycle lp))
+    }
 
 externalDataSourceFailureRef :: LoadedPlugin -> Maybe (RPCExternalDataSourceRef, Bool)
 externalDataSourceFailureRef lp =
@@ -880,17 +981,4 @@ externalDataSourceDataErrorReason :: Text -> Text
 externalDataSourceDataErrorReason err =
   "external data-source data operation failed: " <> err
 
-markRuntimeFailureOnConnectedError
-  :: Text
-  -> Text
-  -> Either Text a
-  -> PluginManagerState
-  -> IO PluginManagerState
-markRuntimeFailureOnConnectedError pluginName errorCode result st =
-  case (result, Map.lookup pluginName (pmsPlugins st)) of
-    (Left err, Just lp)
-      | lpStatus lp == PluginConnected && isJust (lpConnection lp) -> do
-      lp' <- handlePluginRuntimeFailure errorCode err lp
-      pure st { pmsPlugins = Map.insert pluginName lp' (pmsPlugins st) }
-    _ -> pure st
 
