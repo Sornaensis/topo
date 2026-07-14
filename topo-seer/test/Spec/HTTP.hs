@@ -106,6 +106,7 @@ import System.Directory
   , getTemporaryDirectory
   , listDirectory
   , removeDirectoryRecursive
+  , removeFile
   )
 import System.Environment (lookupEnv, setEnv, unsetEnv, withArgs)
 import System.FilePath ((</>), takeDirectory)
@@ -214,6 +215,7 @@ spec = describe "Seer.HTTP.Server" $ do
           headlessConfig = defaultHeadlessConfig
             { hcRuntimeConfig = runtimeConfig }
       withHeadlessApp headlessConfig $ \app -> do
+        requireScreenshotPersistence app root
         captureOnly <- request app (mkRequest "POST" ["screenshots"])
         hresStatusCode captureOnly `shouldBe` 200
         lookupNestedValue ["saved_path"] (hresBody captureOnly) `shouldBe` Just Null
@@ -225,8 +227,9 @@ spec = describe "Seer.HTTP.Server" $ do
         compatibility <- request app (mkRequest "POST" ["commands", "take_screenshot"])
           { hreqBody = Just body }
         hresStatusCode friendly `shouldBe` 200
-        hresStatusCode compatibility `shouldBe` 200
-        hresBody compatibility `shouldBe` hresBody friendly
+        hresStatusCode compatibility `shouldBe` 409
+        lookupNestedText ["error", "code"] (hresBody compatibility)
+          `shouldBe` Just "rejected"
         map (`objectHasKey` hresBody friendly)
           ["image_base64", "format", "source", "saved_path"]
           `shouldBe` replicate 4 True
@@ -1396,6 +1399,20 @@ spec = describe "Seer.HTTP.Server" $ do
 
 request :: HeadlessApp -> HttpRequest -> IO HttpResponse
 request app req = handleHttpRequest defaultHttpServerConfig headlessAppService (headlessServiceContext app) req
+
+requireScreenshotPersistence :: HeadlessApp -> FilePath -> IO ()
+requireScreenshotPersistence app root = do
+  let probeName = ".topo-capability-probe.png"
+  response <- request app (mkRequest "POST" ["screenshots"])
+    { hreqBody = Just (object ["path" .= Text.pack probeName]) }
+  case hresStatusCode response of
+    200 -> removeFile (root </> probeName)
+    503
+      | lookupNestedText ["error", "message"] (hresBody response)
+          == Just "screenshot storage is unavailable" ->
+          pendingWith "platform/filesystem lacks safe screenshot publication support"
+    status -> expectationFailure
+      ("screenshot capability probe returned HTTP " <> show status)
 
 withScreenshotHttpRoot :: (FilePath -> IO a) -> IO a
 withScreenshotHttpRoot action = do

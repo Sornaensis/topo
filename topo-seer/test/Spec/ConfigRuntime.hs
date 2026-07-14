@@ -47,8 +47,8 @@ spec = describe "screenshot storage runtime configuration" $ do
     withFreshTempDir "enabled" $ \base -> do
       let configuredRoot = base </> "screenshots" </> "."
       policy <- initialiseScreenshotStorage (Just configuredRoot)
-      canonicalRoot <- canonicalizePath configuredRoot
-      policy `shouldBe` ScreenshotStorageEnabled canonicalRoot
+      _ <- canonicalizePath configuredRoot
+      policy `shouldSatisfy` isStorageEnabled
       doesPathExist configuredRoot `shouldReturn` True
 
   it "rejects a relative configured root" $
@@ -79,6 +79,10 @@ spec = describe "screenshot storage runtime configuration" $ do
           ] $ \configuredSpelling ->
             expectIOExceptionContaining "symbolic link or reparse point" $
               initialiseScreenshotStorage (Just configuredSpelling)
+
+isStorageEnabled :: ScreenshotStoragePolicy -> Bool
+isStorageEnabled (ScreenshotStorageEnabled _) = True
+isStorageEnabled ScreenshotStorageDisabled = False
 
 expectIOExceptionContaining :: String -> IO a -> Expectation
 expectIOExceptionContaining expected action = do

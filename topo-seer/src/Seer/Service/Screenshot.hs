@@ -40,6 +40,7 @@ import Seer.Screenshot.Request
 import Seer.Screenshot.Storage
   ( ScreenshotSaveError(..)
   , ScreenshotStoragePolicy(..)
+  , ScreenshotStorageRoot
   , saveScreenshotPng
   , validateScreenshotPngPath
   )
@@ -120,7 +121,10 @@ prepareScreenshotTake policy value = do
 
 -- | Injectable persistence boundary for normalized screenshot PNG paths.
 type ScreenshotPngWriter =
-  FilePath -> Text -> ByteString.ByteString -> IO (Either ScreenshotSaveError Text)
+  ScreenshotStorageRoot
+  -> Text
+  -> ByteString.ByteString
+  -> IO (Either ScreenshotSaveError Text)
 
 -- | Persist the captured PNG when requested and construct the shared response.
 -- The saved path is populated only after the writer commits successfully.

@@ -65,12 +65,12 @@ spec = describe "Seer.Headless" $ do
             { cfgScreenshotSaveDirectory = Just configuredRoot }
           headlessCfg = defaultHeadlessConfig { hcRuntimeConfig = runtimeCfg }
       withHeadlessApp headlessCfg $ \app -> do
-        canonicalRoot <- canonicalizePath configuredRoot
+        _ <- canonicalizePath configuredRoot
         doesDirectoryExist configuredRoot `shouldReturn` True
         ccScreenshotStoragePolicy (headlessCommandContext app)
-          `shouldBe` ScreenshotStorageEnabled canonicalRoot
+          `shouldSatisfy` isStorageEnabled
         svcScreenshotStoragePolicy (headlessServiceContext app)
-          `shouldBe` ScreenshotStorageEnabled canonicalRoot
+          `shouldSatisfy` isStorageEnabled
 
   it "uses the configured deterministic seed for repeatable tests" $
     withHeadlessApp defaultHeadlessConfig { hcSeed = 123 } $ \app -> do
@@ -101,6 +101,10 @@ spec = describe "Seer.Headless" $ do
                   ]
                 SDL.present renderer
       drawSmoke `finally` SDL.quit
+
+isStorageEnabled :: ScreenshotStoragePolicy -> Bool
+isStorageEnabled (ScreenshotStorageEnabled _) = True
+isStorageEnabled ScreenshotStorageDisabled = False
 
 withFreshTempDir :: (FilePath -> IO a) -> IO a
 withFreshTempDir action = do

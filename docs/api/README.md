@@ -19,6 +19,17 @@ Loopback binds are intended for local automation. Non-loopback binds require `--
 - **Errors:** Error responses use `ErrorEnvelope` and may include `invalid_request`, `validation_failed`, auth/not-found/rejected/unavailable/internal codes, and standardized data-resource codes such as `schema_validation_failed`, `permission_denied`, `operation_not_supported`, and `timeout`. Malformed or invalid request bodies are reported as `validation_failed` with request-body detail codes. Responses echo `X-Request-Id` when supplied.
 - **Versioning:** `info.version` is the public HTTP API version (`1.0.0`), while `GET /version` exposes `api_version=1` plus the application package version. API major version 1 permits additive routes, fields, enum values, and schemas; breaking route, payload, auth, or error-envelope changes require a new major API version or documented migration window.
 
+## Screenshot persistence
+
+`POST /screenshots` can optionally save a PNG when its body includes a safe,
+relative `path`. Persistence is create-only: an existing destination returns
+HTTP 409 (`rejected`) and is never overwritten. The configured storage root is
+retained as a filesystem capability so later namespace replacement cannot
+redirect writes. Linux requires `O_TMPFILE` and `linkat(AT_EMPTY_PATH)`;
+Windows uses handle-relative create-new publication. Configured persistence
+fails closed when those primitives are unavailable and on other POSIX systems.
+Capture-only requests remain available regardless of persistence support.
+
 ## Layered view migration
 
 View selection is now layered: `view.base_mode` selects the terrain/base atlas,

@@ -206,6 +206,7 @@ library
       src
   c-sources:
       cbits/plugin_data_copy.c
+      cbits/screenshot_storage.c
   build-depends:
       JuicyPixels
     , aeson

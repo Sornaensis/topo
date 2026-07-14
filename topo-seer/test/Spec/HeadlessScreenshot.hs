@@ -23,6 +23,7 @@ import System.Directory
   , createFileLink
   , getTemporaryDirectory
   , listDirectory
+  , removeFile
   , removePathForcibly
   )
 import System.FilePath ((</>))
@@ -86,6 +87,7 @@ spec = describe "headless screenshot service parity" $ do
       withHeadlessApp cfg $ \runtime -> do
         let ctx = headlessServiceContext runtime
             commandCtx = headlessCommandContext runtime
+        requirePersistenceCapability headlessAppService ctx root
 
         forM_ captureOnlyCases $ \(label, directPayload, httpBody) -> do
           result <- guarded label $
@@ -93,15 +95,14 @@ spec = describe "headless screenshot service parity" $ do
           assertHeadlessSuccess Nothing result
         listDirectory root `shouldReturn` []
 
-        saved <- assertCrossSurfaceParity headlessAppService ctx commandCtx validPath (Just validPath)
+        saved <- runServiceOperation headlessAppService ctx "take_screenshot" validPath
         assertHeadlessSuccess (Just "nested/capture.png") saved
         ByteString.readFile (root </> "nested" </> "capture.png")
           `shouldReturn` deterministicHeadlessPng
 
-        -- Existing regular files remain overwrite-compatible on every surface.
-        ByteString.writeFile (root </> "nested" </> "capture.png") "old"
-        overwritten <- assertCrossSurfaceParity headlessAppService ctx commandCtx validPath (Just validPath)
-        assertHeadlessSuccess (Just "nested/capture.png") overwritten
+        -- Persistence is create-only on every surface.
+        existing <- assertCrossSurfaceParity headlessAppService ctx commandCtx validPath (Just validPath)
+        existing `shouldBe` Left screenshotDestinationConflict
         ByteString.readFile (root </> "nested" </> "capture.png")
           `shouldReturn` deterministicHeadlessPng
 
@@ -141,6 +142,7 @@ spec = describe "headless screenshot service parity" $ do
       withHeadlessApp (enabledHeadlessConfig root) $ \runtime -> do
         let ctx = headlessServiceContext runtime
             commandCtx = headlessCommandContext runtime
+        requirePersistenceCapability headlessAppService ctx root
         createDirectory outsideDirectory
         linkResult <- try (createDirectoryLink outsideDirectory (root </> "linked")) :: IO (Either IOException ())
         case linkResult of
@@ -159,7 +161,7 @@ spec = describe "headless screenshot service parity" $ do
           Right () -> do
             let linkedPayload = object ["path" .= ("linked-destination.png" :: Text)]
             linked <- assertCrossSurfaceParity headlessAppService ctx commandCtx linkedPayload (Just linkedPayload)
-            linked `shouldBe` Left screenshotPathValidationError
+            linked `shouldBe` Left screenshotDestinationConflict
             ByteString.readFile outsideFile `shouldReturn` "outside"
 
   it "maps invalidated roots and unexpected writer failures without leakage" $
@@ -243,26 +245,29 @@ spec = describe "headless screenshot service parity" $ do
   it "matches successful GUI field semantics while preserving source and content differences" $
     withFreshTempDir "gui-parity" $ \root ->
       withHeadlessApp (enabledHeadlessConfig root) $ \runtime -> do
+        requirePersistenceCapability headlessAppService (headlessServiceContext runtime) root
         deadlineCount <- newIORef (0 :: Int)
         deadlineStarted <- newEmptyMVar
         never <- newEmptyMVar
         let ctx = headlessServiceContext runtime
-            payload = object ["path" .= ("capture.png" :: Text)]
+            guiPayload = object ["path" .= ("renderer.png" :: Text)]
+            headlessPayload = object ["path" .= ("headless.png" :: Text)]
             deadline = do
               atomicModifyIORef' deadlineCount (\count -> (count + 1, ()))
               putMVar deadlineStarted ()
               takeMVar never
         _ <- forkIO (serveRendererCapture ctx deadlineStarted "renderer-png-bytes")
         gui <- runServiceHandler (rendererScreenshotHandlerWithDeadline deadline)
-          ctx (ServiceRequest (Just payload))
-        headless <- runServiceOperation headlessAppService ctx "take_screenshot" payload
+          ctx (ServiceRequest (Just guiPayload))
+        headless <- runServiceOperation headlessAppService ctx "take_screenshot" headlessPayload
         assertBrokerIdle ctx
         readIORef deadlineCount `shouldReturn` 1
         case (gui, headless) of
           (Right (ServiceResponse guiBody), Right (ServiceResponse headlessBody)) -> do
             objectKeys guiBody `shouldBe` objectKeys headlessBody
             lookupField "format" guiBody `shouldBe` lookupField "format" headlessBody
-            lookupField "saved_path" guiBody `shouldBe` lookupField "saved_path" headlessBody
+            lookupField "saved_path" guiBody `shouldBe` Just (String "renderer.png")
+            lookupField "saved_path" headlessBody `shouldBe` Just (String "headless.png")
             lookupField "source" guiBody `shouldBe` Just (String "renderer")
             lookupField "source" headlessBody `shouldBe` Just (String "headless")
             lookupField "image_base64" guiBody `shouldNotBe` lookupField "image_base64" headlessBody
@@ -306,6 +311,17 @@ screenshotPathDetail = ServiceErrorDetail
 screenshotDestinationConflict :: ServiceError
 screenshotDestinationConflict = ServiceRejected
   "screenshot destination conflicts with an existing filesystem entry"
+
+requirePersistenceCapability :: AppService -> ServiceContext -> FilePath -> IO ()
+requirePersistenceCapability app ctx root = do
+  let probePath = ".topo-capability-probe.png"
+  result <- runServiceOperation app ctx "take_screenshot"
+    (object ["path" .= (probePath :: Text)])
+  case result of
+    Right _ -> removeFile (root </> Text.unpack probePath)
+    Left (ServiceUnavailable "screenshot storage is unavailable") ->
+      pendingWith "platform/filesystem lacks safe screenshot publication support"
+    Left err -> expectationFailure ("screenshot capability probe failed: " <> show err)
 
 enabledHeadlessConfig :: FilePath -> HeadlessConfig
 enabledHeadlessConfig root = defaultHeadlessConfig
