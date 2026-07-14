@@ -80,6 +80,7 @@ POST /ui/view ui.view.set
 POST /ui/config-tab ui.configTab.set
 POST /ui/select-hex ui.hex.select
 POST /ui/overlay ui.overlay.set
+PUT /ui/overlay ui.overlay.replace
 GET /ui/overlay-fields ui.overlayFields.list
 POST /ui/overlay/cycle ui.overlay.cycle
 POST /ui/overlay-field/cycle ui.overlayField.cycle

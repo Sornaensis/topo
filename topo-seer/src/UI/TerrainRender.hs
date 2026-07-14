@@ -16,8 +16,8 @@ import Actor.UI
   ( BaseViewMode
   , LayeredViewState(..)
   , ViewMode(..)
+  , layeredViewStateIsLegacyEquivalent
   , layeredViewStateToViewMode
-  , legacyViewModeToLayeredViewState
   )
 import Control.Monad.ST (ST)
 import Data.IntMap.Strict (IntMap)
@@ -90,7 +90,7 @@ buildChunkSkyOverlayGeometryForSelection hexRadiusPx config selection =
   buildChunkGeometryWithColor overlayColor hexRadiusPx config
   where
     legacyMode = layeredViewStateToViewMode selection
-    legacyOpaque = maybe False (\mode -> selection == legacyViewModeToLayeredViewState mode) legacyMode
+    legacyOpaque = layeredViewStateIsLegacyEquivalent selection
     overlayColor waterLevel chunk climate weather normals vegChunk overlayVal idx =
       case lvsSkyOverlay selection of
         Nothing -> V4 0 0 0 0

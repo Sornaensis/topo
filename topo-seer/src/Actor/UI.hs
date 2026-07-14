@@ -42,6 +42,7 @@ module Actor.UI
   , viewModeToLayeredViewState
   , legacyViewModeToLayeredViewState
   , layeredViewStateToViewMode
+  , layeredViewStateIsLegacyEquivalent
   , PipelineStageRunState(..)
   , UiState(..)
   , emptyUiState
@@ -92,6 +93,7 @@ import Actor.UI.State
   , emptyUiState
   , effectiveViewSelection
   , getUiSnapshot
+  , layeredViewStateIsLegacyEquivalent
   , layeredViewStateToJSON
   , layeredViewStateToViewMode
   , legacyViewModeToLayeredViewState

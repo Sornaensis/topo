@@ -19,8 +19,28 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
-import Actor.Data (getTerrainSnapshot, setOverlayStoreData, setTerrainChunkData)
-import Actor.SnapshotReceiver (writeTerrainSnapshot)
+import Actor.AtlasManager (AtlasJob(..), atlasJobsForSelection, atlasJobsForSelectionTransition, drainAtlasJobs)
+import Actor.Data (getDataSnapshot, getTerrainSnapshot, setOverlayStoreData, setTerrainChunkData)
+import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), getLogSnapshot)
+import Actor.SnapshotReceiver
+  ( RenderSnapshot(..)
+  , SnapshotVersion(..)
+  , dataAndTerrainSnapshotUpdate
+  , publishSnapshot
+  , readCommittedRenderSnapshot
+  , readDataSnapshot
+  , readTerrainSnapshot
+  )
+import Actor.UI
+  ( BaseViewMode(..)
+  , ConfigTab(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , UiState(..)
+  , defaultLayeredViewState
+  , effectiveViewSelection
+  , getUiSnapshot
+  )
 import Actor.UiActions (ActorHandles(..))
 import Network.HTTP.Client
   ( Manager
@@ -73,6 +93,10 @@ import Seer.HTTP.Server
   )
 import Seer.Command.Dispatch (CommandContext(..))
 import Seer.Config.Runtime (TopoSeerConfig(..))
+import Seer.Editor.Types (EditorState(..), EditorTool(..))
+import Seer.Render.ZoomStage (orderedZoomStagesForZoom, stageForZoom)
+import Seer.System.Cache (RenderCacheState, initialRenderCacheState)
+import Seer.System.Snapshot (SnapshotPollEnv(..), pollRenderSnapshot)
 import Seer.Service.AppService
   ( AppService(..)
   , ConfigService(..)
@@ -331,6 +355,26 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupText "image_base64" (hresBody screenshot) `shouldSatisfy` maybe False (not . Text.null)
       lookupValue "view" (hresBody after) `shouldBe` lookupValue "view" (hresBody before)
 
+  describe "ordered HTTP mutation publication matrix" $ do
+    forM_ httpUiPublicationCases $ \(label, setup, routeRequest, atlasExpectation, assertUi) ->
+      it label $ withHeadlessApp defaultHeadlessConfig $ \app -> do
+        setup app
+        expectExactHttpUiPublication app routeRequest atlasExpectation assertUi
+
+    it "publishes log collapse as one coherent log-only epoch" $
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        baseline <- beginHttpPublicationAssertion app
+        rsp <- request app (mkRequest "PUT" ["ui", "log", "collapsed"])
+          { hreqBody = Just (object ["collapsed" .= True]) }
+        hresStatusCode rsp `shouldBe` 200
+        (_, committed) <- expectExactHttpPublication app baseline
+        lsCollapsed (rsLog committed) `shouldBe` True
+        rsUi committed `shouldBe` rsUi (hpbSnapshot baseline)
+        rsData committed `shouldBe` rsData (hpbSnapshot baseline)
+        rsTerrain committed `shouldBe` rsTerrain (hpbSnapshot baseline)
+        jobs <- drainAtlasJobs (ahAtlasManagerHandle (httpHandles app))
+        length jobs `shouldBe` 0
+
   it "buffers HTTP service events and serves them as SSE" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       seedSet <- request app (mkRequest "POST" ["ui", "seed"])
@@ -376,7 +420,7 @@ spec = describe "Seer.HTTP.Server" $ do
         let smokeName = "smoke-1-0" :: Text
             smokeSeed = 424242 :: Int
 
-        generatedChunkCount <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        (generatedChunkCount, savedConfig, savedOverlayNames) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
           setSeed <- request app (mkRequest "POST" ["ui", "seed"])
             { hreqBody = Just (object ["seed" .= smokeSeed]) }
           hresStatusCode setSeed `shouldBe` 200
@@ -421,6 +465,7 @@ spec = describe "Seer.HTTP.Server" $ do
           eventsContainTopic "world.generation.requested" (hresBody events) `shouldBe` True
           eventsContainTopic "world.generation.status" (hresBody events) `shouldBe` True
 
+          saveBaseline <- beginHttpPublicationAssertion app
           save <- request app (mkRequest "POST" ["worlds", "save"])
             { hreqBody = Just (object ["name" .= smokeName]) }
           hresStatusCode save `shouldBe` 200
@@ -428,13 +473,26 @@ spec = describe "Seer.HTTP.Server" $ do
           lookupValue "saved" (hresBody save) `shouldBe` Just (Bool True)
           arrayFieldContainsText "formats" "world.topo" (hresBody save) `shouldBe` True
           arrayFieldContainsText "formats" "world.topolay" (hresBody save) `shouldBe` True
+          (_, committedSave) <- expectExactHttpPublication app saveBaseline
+          uiWorldName (rsUi committedSave) `shouldBe` smokeName
+          uiWorldConfig (rsUi committedSave) `shouldSatisfy` maybe False (const True)
+          rsLog committedSave `shouldBe` rsLog (hpbSnapshot saveBaseline)
+          rsData committedSave `shouldBe` rsData (hpbSnapshot saveBaseline)
+          rsTerrain committedSave `shouldBe` rsTerrain (hpbSnapshot saveBaseline)
+          saveJobs <- drainAtlasJobs (ahAtlasManagerHandle (httpHandles app))
+          length saveJobs `shouldBe` 0
 
           worlds <- request app (mkRequest "GET" ["worlds"])
           hresStatusCode worlds `shouldBe` 200
           worldListContains smokeName (hresBody worlds) `shouldBe` True
-          pure generatedChunkCount
+          pure
+            ( generatedChunkCount
+            , uiWorldConfig (rsUi committedSave)
+            , uiOverlayNames (rsUi committedSave)
+            )
 
         withHeadlessApp defaultHeadlessConfig $ \loadApp -> do
+          loadBaseline <- beginHttpPublicationAssertion loadApp
           load <- request loadApp (mkRequest "POST" ["worlds", "load"])
             { hreqBody = Just (object ["name" .= smokeName]) }
           hresStatusCode load `shouldBe` 200
@@ -444,7 +502,39 @@ spec = describe "Seer.HTTP.Server" $ do
           arrayFieldContainsText "formats" "world.topolay" (hresBody load) `shouldBe` True
           arrayFieldContainsText "overlay_names" "weather" (hresBody load) `shouldBe` True
 
-          loadedMeta <- waitForWorldName loadApp smokeName
+          (loadVersion, committedLoad) <- expectExactHttpPublication loadApp loadBaseline
+          uiWorldName (rsUi committedLoad) `shouldBe` smokeName
+          uiWorldConfig (rsUi committedLoad) `shouldBe` savedConfig
+          effectiveViewSelection (rsUi committedLoad) `shouldBe` defaultLayeredViewState
+          uiSimTickCount (rsUi committedLoad) `shouldBe` 0
+          uiOverlayNames (rsUi committedLoad) `shouldBe` savedOverlayNames
+          let baselineLog = rsLog (hpbSnapshot loadBaseline)
+              loadedLog = rsLog committedLoad
+              baselineEntries = lsEntries baselineLog
+              appendedEntries = drop (length baselineEntries) (lsEntries loadedLog)
+          take (length baselineEntries) (lsEntries loadedLog) `shouldBe` baselineEntries
+          loadedLog { lsEntries = baselineEntries } `shouldBe` baselineLog
+          case appendedEntries of
+            [entry] -> do
+              leLevel entry `shouldBe` LogInfo
+              leMessage entry `shouldSatisfy` Text.isPrefixOf "simulation: setWorld accepted"
+            _ -> expectationFailure "expected one simulation load log entry"
+          authoritativeData <- getDataSnapshot (ahDataHandle (httpHandles loadApp))
+          authoritativeTerrain <- getTerrainSnapshot (ahDataHandle (httpHandles loadApp))
+          rsData committedLoad `shouldBe` authoritativeData
+          rsTerrain committedLoad `shouldBe` authoritativeTerrain
+          loadJobs <- drainAtlasJobs (ahAtlasManagerHandle (httpHandles loadApp))
+          let loadedUi = rsUi committedLoad
+              expectedLoadJobs = atlasJobsForSelection
+                loadVersion
+                (effectiveViewSelection loadedUi)
+                (uiRenderWaterLevel loadedUi)
+                (rsTerrain committedLoad)
+                (orderedZoomStagesForZoom (uiZoom loadedUi))
+                Nothing
+          assertHttpAtlasJobsMatch loadJobs expectedLoadJobs
+
+          loadedMeta <- request loadApp (mkRequest "GET" ["world"])
           hresStatusCode loadedMeta `shouldBe` 200
           lookupText "world_name" (hresBody loadedMeta) `shouldBe` Just smokeName
           lookupValue "chunk_count" (hresBody loadedMeta) `shouldBe` generatedChunkCount
@@ -1000,6 +1090,7 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/screenshots", "post", "ScreenshotTakeResponse")
           , ("/ui/view-mode", "post", "UiViewModeSetResponse")
           , ("/ui/view", "post", "UiViewSetResponse")
+          , ("/ui/overlay", "put", "UiOverlaySetResponse")
           , ("/terrain/hex", "get", "TerrainHexResponse")
           ] :: [(Text, Text, Text)]
         requestRefs =
@@ -1017,6 +1108,7 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/screenshots", "post", "ScreenshotTakeRequest")
           , ("/ui/view-mode", "post", "UiViewModeSetRequest")
           , ("/ui/view", "post", "UiViewSetRequest")
+          , ("/ui/overlay", "put", "UiOverlaySetRequest")
           ] :: [(Text, Text, Text)]
     forM_ responseRefs $ \(path, routeMethod, schemaName) -> do
       operationResponseSchemaRef doc path routeMethod "200" `shouldBe` Just schemaName
@@ -1397,6 +1489,176 @@ spec = describe "Seer.HTTP.Server" $ do
         killThread tid
         threadDelay 100000)
 
+data HttpPublicationBaseline = HttpPublicationBaseline
+  { hpbVersion :: !SnapshotVersion
+  , hpbSnapshot :: !RenderSnapshot
+  , hpbCache :: !RenderCacheState
+  }
+
+data HttpAtlasExpectation
+  = ExpectNoHttpAtlas
+  | ExpectHttpSelectionTransition
+  | ExpectHttpCurrentStage
+
+httpUiPublicationCases
+  :: [(String, HeadlessApp -> IO (), HttpRequest, HttpAtlasExpectation, UiState -> Expectation)]
+httpUiPublicationCases =
+  [ ("POST /ui/seed", noHttpSetup, withBody "POST" ["ui", "seed"]
+        (object ["seed" .= (12345 :: Int)]), ExpectNoHttpAtlas, \ui -> do
+        uiSeed ui `shouldBe` 12345
+        uiSeedInput ui `shouldBe` "12345")
+  , ("PUT /ui/left-panel", noHttpSetup, withBody "PUT" ["ui", "left-panel"]
+        (object ["visible" .= False]), ExpectNoHttpAtlas,
+        \ui -> uiShowLeftPanel ui `shouldBe` False)
+  , ("POST /ui/config-tab", noHttpSetup, withBody "POST" ["ui", "config-tab"]
+        (object ["tab" .= ("climate" :: Text)]), ExpectNoHttpAtlas, \ui -> do
+        uiConfigTab ui `shouldBe` ConfigClimate
+        uiConfigScroll ui `shouldBe` 0)
+  , ("POST /config/sliders", noHttpSetup, withBody "POST" ["config", "sliders"]
+        (object ["name" .= ("SliderGenScale" :: Text), "value" .= (0.42 :: Double)]), ExpectNoHttpAtlas,
+        \ui -> uiGenScale ui `shouldSatisfy` (\value -> abs (value - 0.42) < 0.0001))
+  , ("POST /ui/view", installTerrainFixture, withBody "POST" ["ui", "view"]
+        (object ["base" .= ("biome" :: Text), "overlay" .= ("cloud" :: Text), "basis" .= ("current" :: Text)]), ExpectHttpSelectionTransition,
+        \ui -> do
+          lvsBaseView (uiViewSelection ui) `shouldBe` BaseViewBiome
+          lvsSkyOverlay (uiViewSelection ui) `shouldBe` Just SkyOverlayCloud)
+  , ("PUT /ui/overlay", installHttpOverlayTerrain, withBody "PUT" ["ui", "overlay"]
+        (object ["overlay" .= ("weather" :: Text), "field_index" .= (0 :: Int)]), ExpectHttpSelectionTransition,
+        \ui -> lvsSkyOverlay (effectiveViewSelection ui) `shouldBe` Just (SkyOverlayPlugin "weather" 0))
+  , ("PUT /camera", installTerrainFixture, withBody "PUT" ["camera"]
+        (object ["x" .= (12.0 :: Double), "y" .= ((-4.0) :: Double), "zoom" .= (1.5 :: Double)]), ExpectHttpCurrentStage,
+        \ui -> do
+          uiPanOffset ui `shouldBe` (12, -4)
+          uiZoom ui `shouldBe` 1.5)
+  , ("POST /ui/viewport/drag", installTerrainFixture, withBody "POST" ["ui", "viewport", "drag"]
+        (object ["x1" .= (0 :: Int), "y1" .= (0 :: Int), "x2" .= (30 :: Int), "y2" .= ((-10) :: Int)]), ExpectHttpCurrentStage,
+        \ui -> uiPanOffset ui `shouldNotBe` (0, 0))
+  , ("POST /ui/widgets/click", noHttpSetup, withBody "POST" ["ui", "widgets", "click"]
+        (object ["widget_id" .= ("WidgetChunkMinus" :: Text)]), ExpectNoHttpAtlas,
+        \ui -> uiChunkSize ui `shouldBe` 56)
+  , ("POST /ui/select-hex", noHttpSetup, withBody "POST" ["ui", "select-hex"]
+        (object ["q" .= (2 :: Int), "r" .= ((-3) :: Int)]), ExpectNoHttpAtlas, \ui -> do
+        uiContextHex ui `shouldBe` Just (2, -3)
+        uiHexTooltipPinned ui `shouldBe` True)
+  , ("POST /editor/tool", noHttpSetup, withBody "POST" ["editor", "tool"]
+        (object ["tool" .= ("erode" :: Text)]), ExpectNoHttpAtlas,
+        \ui -> editorTool (uiEditor ui) `shouldBe` ToolErode)
+  , ("POST /simulation/auto-tick", noHttpSetup, withBody "POST" ["simulation", "auto-tick"]
+        (object ["enabled" .= False, "rate" .= (0.75 :: Double)]), ExpectNoHttpAtlas, \ui -> do
+        uiSimAutoTick ui `shouldBe` False
+        uiSimTickRate ui `shouldBe` 0.75)
+  , ("PATCH /world/name", noHttpSetup, withBody "PATCH" ["world", "name"]
+        (object ["name" .= ("HTTP Publication Matrix" :: Text)]), ExpectNoHttpAtlas,
+        \ui -> uiWorldName ui `shouldBe` "HTTP Publication Matrix")
+  , ("POST /commands/set_seed compatibility", noHttpSetup, withBody "POST" ["commands", "set_seed"]
+        (object ["seed" .= (2468 :: Int)]), ExpectNoHttpAtlas,
+        \ui -> uiSeed ui `shouldBe` 2468)
+  ]
+
+withBody :: Text -> [Text] -> Value -> HttpRequest
+withBody routeMethod path body = (mkRequest routeMethod path) { hreqBody = Just body }
+
+noHttpSetup :: HeadlessApp -> IO ()
+noHttpSetup _ = pure ()
+
+installHttpOverlayTerrain :: HeadlessApp -> IO ()
+installHttpOverlayTerrain app = installTerrainFixture app >> installOverlayFixture app
+
+httpHandles :: HeadlessApp -> ActorHandles
+httpHandles = ccActorHandles . headlessCommandContext
+
+httpSnapshotPollEnv :: HeadlessApp -> SnapshotPollEnv
+httpSnapshotPollEnv app = SnapshotPollEnv
+  { speTimingLogThresholdMs = maxBound
+  , speSnapshotPollMs = 1000
+  , speSnapshotVersionRef = ahSnapshotVersionRef (httpHandles app)
+  , speLogSlowSnapshotPoll = const (pure ())
+  }
+
+beginHttpPublicationAssertion :: HeadlessApp -> IO HttpPublicationBaseline
+beginHttpPublicationAssertion app = do
+  _ <- drainAtlasJobs (ahAtlasManagerHandle (httpHandles app))
+  (version, snapshot, cache, _) <- pollRenderSnapshot
+    (httpSnapshotPollEnv app) 100 False (initialRenderCacheState 4)
+  pure HttpPublicationBaseline
+    { hpbVersion = version
+    , hpbSnapshot = snapshot
+    , hpbCache = cache
+    }
+
+expectExactHttpPublication
+  :: HeadlessApp
+  -> HttpPublicationBaseline
+  -> IO (SnapshotVersion, RenderSnapshot)
+expectExactHttpPublication app baseline = do
+  let handles = httpHandles app
+      expectedVersion = SnapshotVersion (unSnapshotVersion (hpbVersion baseline) + 1)
+  committed@(version, snapshot) <- readCommittedRenderSnapshot (ahSnapshotVersionRef handles)
+  version `shouldBe` expectedVersion
+  liveUi <- getUiSnapshot (ahUiHandle handles)
+  liveLog <- getLogSnapshot (ahLogHandle handles)
+  liveData <- readDataSnapshot (ahDataSnapshotRef handles)
+  liveTerrain <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+  liveUi `shouldBe` rsUi snapshot
+  liveLog `shouldBe` rsLog snapshot
+  liveData `shouldBe` rsData snapshot
+  liveTerrain `shouldBe` rsTerrain snapshot
+  (polledVersion, polledSnapshot, _, _) <- pollRenderSnapshot
+    (httpSnapshotPollEnv app) 101 False (hpbCache baseline)
+  (polledVersion, polledSnapshot) `shouldBe` committed
+  pure committed
+
+expectExactHttpUiPublication
+  :: HeadlessApp
+  -> HttpRequest
+  -> HttpAtlasExpectation
+  -> (UiState -> Expectation)
+  -> Expectation
+expectExactHttpUiPublication app routeRequest atlasExpectation assertUi = do
+  baseline <- beginHttpPublicationAssertion app
+  rsp <- request app routeRequest
+  hresStatusCode rsp `shouldBe` 200
+  (version, committed) <- expectExactHttpPublication app baseline
+  let handles = httpHandles app
+      ui0 = rsUi (hpbSnapshot baseline)
+      ui1 = rsUi committed
+      selectionJobs = atlasJobsForSelectionTransition
+        version
+        (effectiveViewSelection ui0)
+        (uiRenderWaterLevel ui0)
+        (effectiveViewSelection ui1)
+        (uiRenderWaterLevel ui1)
+        (rsTerrain committed)
+        (orderedZoomStagesForZoom (uiZoom ui1))
+        Nothing
+      currentStageJobs = atlasJobsForSelection
+        version
+        (effectiveViewSelection ui1)
+        (uiRenderWaterLevel ui1)
+        (rsTerrain committed)
+        [stageForZoom (uiZoom ui1)]
+        Nothing
+  assertUi ui1
+  rsLog committed `shouldBe` rsLog (hpbSnapshot baseline)
+  rsData committed `shouldBe` rsData (hpbSnapshot baseline)
+  rsTerrain committed `shouldBe` rsTerrain (hpbSnapshot baseline)
+  jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+  case atlasExpectation of
+    ExpectNoHttpAtlas -> length jobs `shouldBe` 0
+    ExpectHttpSelectionTransition -> assertHttpAtlasJobsMatch jobs selectionJobs
+    ExpectHttpCurrentStage -> assertHttpAtlasJobsMatch jobs currentStageJobs
+
+assertHttpAtlasJobsMatch :: [AtlasJob] -> [AtlasJob] -> Expectation
+assertHttpAtlasJobsMatch actual expected = do
+  length expected `shouldSatisfy` (> 0)
+  map ajKey actual `shouldBe` map ajKey expected
+  map ajSnapshotVersion actual `shouldBe` map ajSnapshotVersion expected
+  map ajTerrain actual `shouldBe` map ajTerrain expected
+  map ajViewSelection actual `shouldBe` map ajViewSelection expected
+  map ajWaterLevel actual `shouldBe` map ajWaterLevel expected
+  map (\job -> (ajHexRadius job, ajAtlasScale job)) actual
+    `shouldBe` map (\job -> (ajHexRadius job, ajAtlasScale job)) expected
+
 request :: HeadlessApp -> HttpRequest -> IO HttpResponse
 request app req = handleHttpRequest defaultHttpServerConfig headlessAppService (headlessServiceContext app) req
 
@@ -1715,8 +1977,7 @@ installTerrainFixture app = do
       cfg = WorldConfig { wcChunkSize = 64 }
       chunkId = chunkIdFromCoord (ChunkCoord 0 0)
   setTerrainChunkData (ahDataHandle handles) (wcChunkSize cfg) [(chunkId, emptyTerrainChunk cfg)]
-  terrainSnapshot <- getTerrainSnapshot (ahDataHandle handles)
-  writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnapshot
+  publishHttpTerrainFixture handles
 
 badDenseOverlayImport :: Value
 badDenseOverlayImport = object
@@ -1748,8 +2009,18 @@ installOverlayFixture app = do
       overlay = mkSparseFloatOverlay "weather" "Weather overlay" 0.5 provenance
       store = insertOverlay overlay emptyOverlayStore
   setOverlayStoreData (ahDataHandle handles) store
+  publishHttpTerrainFixture handles
+
+publishHttpTerrainFixture :: ActorHandles -> IO ()
+publishHttpTerrainFixture handles = do
+  dataSnapshot <- getDataSnapshot (ahDataHandle handles)
   terrainSnapshot <- getTerrainSnapshot (ahDataHandle handles)
-  writeTerrainSnapshot (ahTerrainSnapshotRef handles) terrainSnapshot
+  _ <- publishSnapshot
+    (ahSnapshotVersionRef handles)
+    (dataAndTerrainSnapshotUpdate
+      (ahDataSnapshotRef handles) dataSnapshot
+      (ahTerrainSnapshotRef handles) terrainSnapshot)
+  pure ()
 
 slidersHaveTab :: Text -> Value -> Bool
 slidersHaveTab expectedTab (Object obj) = case KM.lookup "sliders" obj of

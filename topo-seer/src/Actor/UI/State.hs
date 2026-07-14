@@ -53,6 +53,7 @@ module Actor.UI.State
   , viewModeToLayeredViewState
   , legacyViewModeToLayeredViewState
   , layeredViewStateToViewMode
+  , layeredViewStateIsLegacyEquivalent
   , ViewModeKind(..)
   , TemporalBasis(..)
   , SourceKind(..)
@@ -435,6 +436,18 @@ layeredViewStateToViewMode selection =
   case lvsSkyOverlay selection of
     Nothing -> Just (baseViewModeToViewMode (lvsBaseView selection))
     Just overlay -> skyOverlayModeToViewMode (lvsWeatherBasis selection) overlay
+
+-- | Whether the atlas-producing parts of a layered selection match a legacy
+-- view mode. Opacity is draw-time state and therefore does not affect this.
+layeredViewStateIsLegacyEquivalent :: LayeredViewState -> Bool
+layeredViewStateIsLegacyEquivalent selection =
+  case layeredViewStateToViewMode selection of
+    Just legacyMode ->
+      let legacy = legacyViewModeToLayeredViewState legacyMode
+      in lvsBaseView selection == lvsBaseView legacy
+        && lvsSkyOverlay selection == lvsSkyOverlay legacy
+        && lvsWeatherBasis selection == lvsWeatherBasis legacy
+    Nothing -> False
 
 layeredViewStateToJSON :: LayeredViewState -> Value
 layeredViewStateToJSON selection = object

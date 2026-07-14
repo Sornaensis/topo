@@ -986,6 +986,7 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   , service "POST" ["ui", "config-tab"] "ui.configTab.set" "ui" "set_config_tab" "Set config tab." RequiredJsonRequestBody
   , service "POST" ["ui", "select-hex"] "ui.hex.select" "ui" "select_hex" "Select a hex." OptionalJsonRequestBody
   , service "POST" ["ui", "overlay"] "ui.overlay.set" "ui" "set_overlay" "Set overlay." RequiredJsonRequestBody
+  , service "PUT" ["ui", "overlay"] "ui.overlay.replace" "ui" "set_overlay" "Replace the selected overlay." RequiredJsonRequestBody
   , serviceWithQuery "GET" ["ui", "overlay-fields"] "ui.overlayFields.list" "ui" "list_overlay_fields" "List overlay fields." NoRequestBody
       [optionalQuery "overlay" "Overlay name."]
   , service "POST" ["ui", "overlay", "cycle"] "ui.overlay.cycle" "ui" "cycle_overlay" "Cycle overlay." RequiredJsonRequestBody

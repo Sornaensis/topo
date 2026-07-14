@@ -27,7 +27,7 @@ import Actor.UI
   , SkyOverlayMode(..)
   , ViewMode(..)
   , WeatherBasis(..)
-  , layeredViewStateToViewMode
+  , layeredViewStateIsLegacyEquivalent
   , legacyViewModeToLayeredViewState
   )
 
@@ -72,21 +72,10 @@ terrainColorForSelection :: LayeredViewState -> Float -> TerrainChunk -> Maybe C
 terrainColorForSelection selection =
   terrainColorWithPolicy policy selection
   where
-    policy
-      | isLegacyLayeredSelection selection = OverlayRenderPolicy
-          { orpOpacity = 1
-          , orpLegacyOpaque = True
-          }
-      | otherwise = OverlayRenderPolicy
-          { orpOpacity = lvsOverlayOpacity selection
-          , orpLegacyOpaque = False
-          }
-
-isLegacyLayeredSelection :: LayeredViewState -> Bool
-isLegacyLayeredSelection selection =
-  case layeredViewStateToViewMode selection of
-    Just legacyMode -> selection == legacyViewModeToLayeredViewState legacyMode
-    Nothing -> False
+    policy = OverlayRenderPolicy
+      { orpOpacity = lvsOverlayOpacity selection
+      , orpLegacyOpaque = layeredViewStateIsLegacyEquivalent selection
+      }
 
 terrainColorWithPolicy :: OverlayRenderPolicy -> LayeredViewState -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
 terrainColorWithPolicy policy selection waterLevel chunk climateChunk weatherChunk weatherNormalsChunk vegChunk mOverlayVal idx =
@@ -239,7 +228,7 @@ alphaBlend (V4 br bg bb ba) (V4 or' og ob oa) =
 
 applyOverlayPolicy :: OverlayRenderPolicy -> V4 Word8 -> V4 Word8
 applyOverlayPolicy policy color@(V4 _ _ _ a)
-  | orpLegacyOpaque policy = setAlphaByte 255 color
+  | orpLegacyOpaque policy = setAlphaByte (toByteRaw (clamp01 (orpOpacity policy))) color
   | otherwise =
       let scaledAlpha = fromIntegral a / 255 * clamp01 (orpOpacity policy)
       in setAlphaByte (toByteRaw scaledAlpha) color

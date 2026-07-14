@@ -37,9 +37,9 @@ import System.FilePath ((</>))
 import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, replyTo, shutdownActorSystem)
 import Test.Hspec
 
-import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
-import Actor.Data (Data, DataSnapshot(..), TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext, getTerrainSnapshot, setOverlayStoreData, setTerrainChunkCount, setTerrainChunkData, setTerrainGeoContextData)
-import Actor.Log (Log, LogEntry(..), LogSnapshot(..), getLogSnapshot, newLogSnapshotRef, setLogSnapshotRef)
+import Actor.AtlasManager (AtlasJob(..), AtlasManager, atlasJobsForSelection, atlasJobsForSelectionTransition, drainAtlasJobs)
+import Actor.Data (Data, DataSnapshot(..), TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext, getDataSnapshot, getTerrainSnapshot, setOverlayStoreData, setTerrainChunkCount, setTerrainChunkData, setTerrainGeoContextData)
+import Actor.Log (Log, LogEntry(..), LogLevel(..), LogSnapshot(..), getLogSnapshot, newLogSnapshotRef, setLogSnapshotRef)
 import Actor.PluginManager (LoadedPlugin(..), PluginManager, discoverPlugins, getLoadedPlugins)
 import Actor.Simulation (Simulation)
 import Actor.SnapshotReceiver
@@ -48,7 +48,10 @@ import Actor.SnapshotReceiver
   , newDataSnapshotRef
   , newTerrainSnapshotRef
   , newRenderSnapshotVersionRef
+  , dataAndTerrainSnapshotUpdate
+  , publishSnapshot
   , readCommittedRenderSnapshot
+  , readDataSnapshot
   , readSnapshotVersion
   , readTerrainSnapshot
   , writeTerrainSnapshot
@@ -56,12 +59,16 @@ import Actor.SnapshotReceiver
 import Actor.Terrain (Terrain, TerrainReplyOps)
 import Actor.UI
   ( BaseViewMode(..)
+  , ConfigTab(..)
   , LayeredViewState(..)
+  , LeftTab(..)
   , SkyOverlayMode(..)
   , Ui
   , UiState(..)
   , ViewMode(..)
   , WeatherBasis(..)
+  , defaultLayeredViewState
+  , effectiveViewSelection
   , getUiSnapshot
   , newUiSnapshotRef
   , setUiDayNightEnabled
@@ -76,6 +83,9 @@ import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Editor.History (emptyHistory)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
+import Seer.System.Cache (RenderCacheState, initialRenderCacheState)
+import Seer.System.Snapshot (SnapshotPollEnv(..), pollRenderSnapshot)
+import Seer.Editor.Types (EditorState(..), EditorTool(..))
 import Seer.Screenshot.Request
   ( ScreenshotDelivery(..)
   , ScreenshotResultError(..)
@@ -755,11 +765,16 @@ spec = describe "CommandDispatch" $ do
       lookupKey "hardness_target" (srResult rsp) `shouldBe` Just (Number 1)
 
   describe "editor_brush_stroke" $ do
-    it "queues a single brush stroke" $ withCtx $ \ctx -> do
+    it "queues a single brush stroke and publishes the unavailable-terrain no-delta path" $ withCtx $ \ctx -> do
+      baseline <- beginPublicationAssertion ctx
       rsp <- dispatch ctx "editor_brush_stroke" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
       srSuccess rsp `shouldBe` True
       lookupKey "status" (srResult rsp) `shouldBe` Just (String "queued")
       lookupKey "strokes_queued" (srResult rsp) `shouldBe` Just (Number 1)
+      (_, committed) <- expectExactPublication ctx baseline
+      committed `shouldBe` pbSnapshot baseline
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+      length jobs `shouldBe` 0
 
     it "preserves untouched terrain chunks across brush, undo, and redo" $ withCtx $ \ctx -> do
       let dataHandle = ahDataHandle (ccActorHandles ctx)
@@ -1340,33 +1355,33 @@ spec = describe "CommandDispatch" $ do
 
   describe "click_widget layered view controls" $ do
     it "selects base view, weather overlay, and basis independently" $ withCtx $ \ctx -> do
-      let uiH = ahUiHandle (ccActorHandles ctx)
+      baseBaseline <- beginPublicationAssertion ctx
       baseRsp <- dispatch ctx "click_widget" (object
         [ "widget_id" .= ("WidgetViewBaseBiome" :: Text) ])
       srSuccess baseRsp `shouldBe` True
-      (awaitTrue 50 $ do
-        ui <- getUiSnapshot uiH
-        pure (lvsBaseView (uiViewSelection ui) == BaseViewBiome))
-        `shouldReturn` True
+      (_, baseCommitted) <- expectExactPublication ctx baseBaseline
+      lvsBaseView (uiViewSelection (rsUi baseCommitted)) `shouldBe` BaseViewBiome
+      _ <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
 
+      overlayBaseline <- beginPublicationAssertion ctx
       overlayRsp <- dispatch ctx "click_widget" (object
         [ "widget_id" .= ("WidgetViewOverlayTemperature" :: Text) ])
       srSuccess overlayRsp `shouldBe` True
-      (awaitTrue 50 $ do
-        ui <- getUiSnapshot uiH
-        pure (lvsBaseView (uiViewSelection ui) == BaseViewBiome
-          && lvsSkyOverlay (uiViewSelection ui) == Just SkyOverlayWeatherTemperature))
-        `shouldReturn` True
+      (_, overlayCommitted) <- expectExactPublication ctx overlayBaseline
+      lvsBaseView (uiViewSelection (rsUi overlayCommitted)) `shouldBe` BaseViewBiome
+      lvsSkyOverlay (uiViewSelection (rsUi overlayCommitted))
+        `shouldBe` Just SkyOverlayWeatherTemperature
+      _ <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
 
+      basisBaseline <- beginPublicationAssertion ctx
       basisRsp <- dispatch ctx "click_widget" (object
         [ "widget_id" .= ("WidgetViewBasisAverage" :: Text) ])
       srSuccess basisRsp `shouldBe` True
-      (awaitTrue 50 $ do
-        ui <- getUiSnapshot uiH
-        pure (lvsBaseView (uiViewSelection ui) == BaseViewBiome
-          && lvsSkyOverlay (uiViewSelection ui) == Just SkyOverlayWeatherTemperature
-          && lvsWeatherBasis (uiViewSelection ui) == WeatherBasisAverage))
-        `shouldReturn` True
+      (_, basisCommitted) <- expectExactPublication ctx basisBaseline
+      lvsBaseView (uiViewSelection (rsUi basisCommitted)) `shouldBe` BaseViewBiome
+      lvsSkyOverlay (uiViewSelection (rsUi basisCommitted))
+        `shouldBe` Just SkyOverlayWeatherTemperature
+      lvsWeatherBasis (uiViewSelection (rsUi basisCommitted)) `shouldBe` WeatherBasisAverage
 
     it "keeps legacy weather widget ids accepted as full-mode compatibility" $ withCtx $ \ctx -> do
       let uiH = ahUiHandle (ccActorHandles ctx)
@@ -1401,27 +1416,32 @@ spec = describe "CommandDispatch" $ do
   describe "click_widget day/night" $ do
     it "routes the toggle through UiActions, bumps the snapshot version, and enqueues current atlas jobs" $ withCtx $ \ctx -> do
       let handles = ccActorHandles ctx
-          uiH = ahUiHandle handles
           logH = ahLogHandle handles
           atlasH = ahAtlasManagerHandle handles
       startLogs <- toggleLogCount logH
-      version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+      baseline <- beginPublicationAssertion ctx
 
       rsp <- dispatch ctx "click_widget" (object
         [ "widget_id" .= ("WidgetDayNightToggle" :: Text) ])
       srSuccess rsp `shouldBe` True
-      awaitToggleLogCount logH (startLogs + 1) `shouldReturn` True
 
-      ui <- getUiSnapshot uiH
+      (version1, committed) <- expectExactPublication ctx baseline
+      let ui = rsUi committed
+          expected = atlasJobsForSelection
+            version1
+            (effectiveViewSelection ui)
+            (uiRenderWaterLevel ui)
+            (rsTerrain committed)
+            (orderedZoomStagesForZoom (uiZoom ui))
+            Nothing
       uiDayNightEnabled ui `shouldBe` True
-      version1 <- readSnapshotVersion (ahSnapshotVersionRef handles)
-      version1 `shouldSatisfy` (> version0)
+      length
+        [ ()
+        | entry <- lsEntries (rsLog committed)
+        , "Toggle Day/Night" `Text.isInfixOf` leMessage entry
+        ] `shouldBe` startLogs + 1
       jobs <- drainAtlasJobs atlasH
-      let expectedStages = map zoomStagePair (orderedZoomStagesForZoom (uiZoom ui))
-      length jobs `shouldBe` length expectedStages
-      map ajViewMode jobs `shouldBe` replicate (length expectedStages) (uiViewMode ui)
-      map atlasJobStage jobs `shouldBe` expectedStages
-      map ajSnapshotVersion jobs `shouldSatisfy` all (== version1)
+      assertAtlasJobsMatch jobs expected
 
     it "publishes the latest authoritative terrain context before toggling day/night" $ withCtx $ \ctx -> do
       _ <- writeReadyTerrainData ctx
@@ -1476,18 +1496,22 @@ spec = describe "CommandDispatch" $ do
         [ "x" .= (12.0 :: Double)
         , "y" .= ((-4.0) :: Double)
         , "zoom" .= (1.5 :: Double)
-        ])
+        ]) $ \_ ui -> do
+          uiPanOffset ui `shouldBe` (12, -4)
+          uiZoom ui `shouldBe` 1.5
 
     it "zoom_to_chunk bumps the snapshot and queues a current-stage viewport refresh" $ withCtx $ \ctx -> do
       let ChunkId chunkKey = chunkIdFromCoord (ChunkCoord 0 0)
-      expectViewportRefreshForCommand ctx "zoom_to_chunk" (object ["chunk" .= chunkKey])
+      expectViewportRefreshForCommand ctx "zoom_to_chunk" (object ["chunk" .= chunkKey]) $ \ui0 ui1 -> do
+        uiPanOffset ui1 `shouldNotBe` uiPanOffset ui0
+        uiZoom ui1 `shouldBe` 1
 
     it "viewport_scroll bumps the snapshot and queues a current-stage viewport refresh" $ withCtx $ \ctx -> do
       expectViewportRefreshForCommand ctx "viewport_scroll" (object
         [ "delta" .= (1 :: Int)
         , "x" .= (320 :: Int)
         , "y" .= (240 :: Int)
-        ])
+        ]) $ \ui0 ui1 -> uiZoom ui1 `shouldNotBe` uiZoom ui0
 
     it "viewport_drag bumps the snapshot and queues a current-stage viewport refresh" $ withCtx $ \ctx -> do
       expectViewportRefreshForCommand ctx "viewport_drag" (object
@@ -1495,19 +1519,23 @@ spec = describe "CommandDispatch" $ do
         , "y1" .= (0 :: Int)
         , "x2" .= (30 :: Int)
         , "y2" .= ((-10) :: Int)
-        ])
+        ]) $ \ui0 ui1 -> uiPanOffset ui1 `shouldNotBe` uiPanOffset ui0
 
     it "viewport_hover does not enqueue a viewport atlas refresh" $ withCtx $ \ctx -> do
       _ <- writeReadyTerrainData ctx
       let handles = ccActorHandles ctx
           atlasH = ahAtlasManagerHandle handles
-      _ <- drainAtlasJobs atlasH
-      version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+      baseline <- beginPublicationAssertion ctx
 
       rsp <- dispatch ctx "viewport_hover" (object ["x" .= (0 :: Int), "y" .= (0 :: Int)])
       srSuccess rsp `shouldBe` True
 
-      readSnapshotVersion (ahSnapshotVersionRef handles) `shouldReturnSatisfying` (> version0)
+      (_, committed) <- expectExactPublication ctx baseline
+      lookupKey "valid" (srResult rsp) `shouldBe` Just (Bool False)
+      uiHoverHex (rsUi committed) `shouldBe` Nothing
+      rsLog committed `shouldBe` rsLog (pbSnapshot baseline)
+      rsData committed `shouldBe` rsData (pbSnapshot baseline)
+      rsTerrain committed `shouldBe` rsTerrain (pbSnapshot baseline)
       jobs <- drainAtlasJobs atlasH
       length jobs `shouldBe` 0
 
@@ -1628,14 +1656,47 @@ spec = describe "CommandDispatch" $ do
       _ <- deleteNamedWorld worldName
       (do
         _ <- writeReadyTerrainData ctx
+        saveBaseline <- beginPublicationAssertion ctx
         saveRsp <- dispatch ctx "save_world" (object ["name" .= worldName])
         srSuccess saveRsp `shouldBe` True
+        (_, saved) <- expectExactPublication ctx saveBaseline
+        uiWorldName (rsUi saved) `shouldBe` worldName
+        uiWorldConfig (rsUi saved) `shouldSatisfy` maybe False (const True)
+        rsLog saved `shouldBe` rsLog (pbSnapshot saveBaseline)
+        rsData saved `shouldBe` rsData (pbSnapshot saveBaseline)
+        rsTerrain saved `shouldBe` rsTerrain (pbSnapshot saveBaseline)
+        saveJobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+        length saveJobs `shouldBe` 0
 
         viewRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("cloud" :: Text), "basis" .= ("typical" :: Text)])
         srSuccess viewRsp `shouldBe` True
+        _ <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+        loadBaseline <- beginPublicationAssertion ctx
 
         loadRsp <- dispatch ctx "load_world" (object ["name" .= worldName])
         srSuccess loadRsp `shouldBe` True
+        (loadVersion, loaded) <- expectExactPublication ctx loadBaseline
+        uiWorldName (rsUi loaded) `shouldBe` worldName
+        uiWorldConfig (rsUi loaded) `shouldBe` uiWorldConfig (rsUi saved)
+        effectiveViewSelection (rsUi loaded) `shouldBe` defaultLayeredViewState
+        effectiveViewSelection (rsUi loaded) `shouldBe` effectiveViewSelection (rsUi saved)
+        uiSimTickCount (rsUi loaded) `shouldBe` uiSimTickCount (rsUi saved)
+        uiOverlayNames (rsUi loaded) `shouldBe` uiOverlayNames (rsUi saved)
+        rsLog loaded `shouldBe` rsLog (pbSnapshot loadBaseline)
+        authoritativeData <- getDataSnapshot (ahDataHandle (ccActorHandles ctx))
+        authoritativeTerrain <- getTerrainSnapshot (ahDataHandle (ccActorHandles ctx))
+        rsData loaded `shouldBe` authoritativeData
+        rsTerrain loaded `shouldBe` authoritativeTerrain
+        loadJobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+        let loadedUi = rsUi loaded
+            expectedLoadJobs = atlasJobsForSelection
+              loadVersion
+              (effectiveViewSelection loadedUi)
+              (uiRenderWaterLevel loadedUi)
+              (rsTerrain loaded)
+              (orderedZoomStagesForZoom (uiZoom loadedUi))
+              Nothing
+        assertAtlasJobsMatch loadJobs expectedLoadJobs
 
         uiRsp <- dispatch ctx "get_ui_state" Null
         srSuccess uiRsp `shouldBe` True
@@ -1729,6 +1790,159 @@ spec = describe "CommandDispatch" $ do
             serviceErrorText err `shouldBe` "screenshot capture is unavailable"
           Right _ -> expectationFailure "expected closed screenshot broker error"
 
+  describe "ordered mutation publication matrix" $ do
+    forM_ directUiPublicationCases $ \(label, method, params, assertUi) ->
+      it label $ withCtx $ \ctx ->
+        expectExactUiPublication ctx method params assertUi
+
+    forM_ directLogPublicationCases $ \(label, method, params, assertLog) ->
+      it label $ withCtx $ \ctx ->
+        expectExactLogPublication ctx method params assertLog
+
+    it "publishes plugin parameter state in one UI-only epoch" $ withPluginCtx $ \ctx -> do
+      baseline <- beginPublicationAssertion ctx
+      rsp <- dispatch ctx "set_plugin_param" (object
+        [ "plugin" .= ("example" :: Text)
+        , "param" .= ("enabled" :: Text)
+        , "value" .= Bool True
+        ])
+      srSuccess rsp `shouldBe` True
+      (_, committed) <- expectExactPublication ctx baseline
+      (Map.lookup "example" (uiPluginParams (rsUi committed)) >>= Map.lookup "enabled")
+        `shouldBe` Just (Bool True)
+      rsLog committed `shouldBe` rsLog (pbSnapshot baseline)
+      rsData committed `shouldBe` rsData (pbSnapshot baseline)
+      rsTerrain committed `shouldBe` rsTerrain (pbSnapshot baseline)
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+      length jobs `shouldBe` 0
+
+    it "publishes a rejected sim_tick warning as one log-only epoch" $ withCtx $ \ctx -> do
+      baseline <- beginPublicationAssertion ctx
+      rsp <- dispatch ctx "sim_tick" Null
+      srSuccess rsp `shouldBe` False
+      (_, committed) <- expectExactPublication ctx baseline
+      rsUi committed `shouldBe` rsUi (pbSnapshot baseline)
+      rsData committed `shouldBe` rsData (pbSnapshot baseline)
+      rsTerrain committed `shouldBe` rsTerrain (pbSnapshot baseline)
+      rsLog committed `shouldNotBe` rsLog (pbSnapshot baseline)
+      map leLevel (lsEntries (rsLog committed)) `shouldSatisfy` elem LogWarn
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+      length jobs `shouldBe` 0
+
+    it "stamps legacy view-mode transition jobs from the exact committed epoch" $ withCtx $ \ctx -> do
+      _ <- writeReadyTerrainData ctx
+      committed <- expectExactSelectionPublication ctx "set_view_mode"
+        (object ["mode" .= ("biome" :: Text)])
+      lvsBaseView (effectiveViewSelection (rsUi committed)) `shouldBe` BaseViewBiome
+
+    it "stamps layered view transition jobs from the exact committed epoch" $ withCtx $ \ctx -> do
+      _ <- writeReadyTerrainData ctx
+      committed <- expectExactSelectionPublication ctx "set_view" (object
+        [ "base" .= ("biome" :: Text)
+        , "overlay" .= ("cloud" :: Text)
+        , "basis" .= ("current" :: Text)
+        ])
+      let selection = effectiveViewSelection (rsUi committed)
+      lvsBaseView selection `shouldBe` BaseViewBiome
+      lvsSkyOverlay selection `shouldBe` Just SkyOverlayCloud
+
+    it "publishes plugin overlay field selection with matching transition jobs" $ withCtx $ \ctx -> do
+      _ <- writeSingleChunkTerrainWithNormals ctx
+      committed <- expectExactSelectionPublication ctx "set_view" (object
+        [ "base" .= ("biome" :: Text)
+        , "plugin_overlay" .= ("weather_normals" :: Text)
+        , "field_index" .= (1 :: Int)
+        ])
+      lvsSkyOverlay (effectiveViewSelection (rsUi committed))
+        `shouldBe` Just (SkyOverlayPlugin "weather_normals" 1)
+
+    it "publishes set_overlay field selection with matching transition jobs" $ withCtx $ \ctx -> do
+      _ <- writeSingleChunkTerrainWithNormals ctx
+      committed <- expectExactSelectionPublication ctx "set_overlay" (object
+        [ "overlay" .= ("weather_normals" :: Text)
+        , "field_index" .= (1 :: Int)
+        ])
+      lvsSkyOverlay (effectiveViewSelection (rsUi committed))
+        `shouldBe` Just (SkyOverlayPlugin "weather_normals" 1)
+
+    it "publishes cycled overlay fields with matching transition jobs" $ withCtx $ \ctx -> do
+      _ <- writeSingleChunkTerrainWithNormals ctx
+      initial <- dispatch ctx "set_overlay" (object
+        [ "overlay" .= ("weather_normals" :: Text)
+        , "field_index" .= (0 :: Int)
+        ])
+      srSuccess initial `shouldBe` True
+      _ <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+      committed <- expectExactSelectionPublication ctx "cycle_overlay_field"
+        (object ["direction" .= (1 :: Int)])
+      lvsSkyOverlay (effectiveViewSelection (rsUi committed))
+        `shouldBe` Just (SkyOverlayPlugin "weather_normals" 1)
+
+    it "publishes opacity without atlas work because opacity is draw-time only" $ withCtx $ \ctx -> do
+      _ <- writeReadyTerrainData ctx
+      initial <- dispatch ctx "set_view" (object ["overlay" .= ("cloud" :: Text)])
+      srSuccess initial `shouldBe` True
+      _ <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+      baseline <- beginPublicationAssertion ctx
+      rsp <- dispatch ctx "set_view" (object ["overlay_opacity" .= (0.37 :: Double)])
+      srSuccess rsp `shouldBe` True
+      (_, committed) <- expectExactPublication ctx baseline
+      lvsOverlayOpacity (uiViewSelection (rsUi committed))
+        `shouldSatisfy` (\value -> abs (value - 0.37) < 0.0001)
+      rsLog committed `shouldBe` rsLog (pbSnapshot baseline)
+      rsData committed `shouldBe` rsData (pbSnapshot baseline)
+      rsTerrain committed `shouldBe` rsTerrain (pbSnapshot baseline)
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+      length jobs `shouldBe` 0
+
+    it "keeps only the final epoch for overlapping back-to-back camera slots" $ withCtx $ \ctx -> do
+      _ <- writeReadyTerrainData ctx
+      baseline <- beginPublicationAssertion ctx
+      first <- dispatch ctx "set_camera" (object
+        ["x" .= (5.0 :: Double), "y" .= (2.0 :: Double), "zoom" .= (1.5 :: Double)])
+      second <- dispatch ctx "viewport_drag" (object
+        ["x1" .= (0 :: Int), "y1" .= (0 :: Int), "x2" .= (20 :: Int), "y2" .= (10 :: Int)])
+      srSuccess first `shouldBe` True
+      srSuccess second `shouldBe` True
+      let handles = ccActorHandles ctx
+      committed@(version2, snapshot2) <- readCommittedRenderSnapshot (ahSnapshotVersionRef handles)
+      version2 `shouldBe` SnapshotVersion (unSnapshotVersion (pbVersion baseline) + 2)
+      rsLog snapshot2 `shouldBe` rsLog (pbSnapshot baseline)
+      rsData snapshot2 `shouldBe` rsData (pbSnapshot baseline)
+      rsTerrain snapshot2 `shouldBe` rsTerrain (pbSnapshot baseline)
+      liveUi <- getUiSnapshot (ahUiHandle handles)
+      liveUi `shouldBe` rsUi snapshot2
+      (polledVersion, polledSnapshot, _, _) <- pollRenderSnapshot
+        (snapshotPollEnvFor ctx) 101 False (pbCache baseline)
+      (polledVersion, polledSnapshot) `shouldBe` committed
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+      let ui2 = rsUi snapshot2
+          expected = atlasJobsForSelection
+            version2
+            (effectiveViewSelection ui2)
+            (uiRenderWaterLevel ui2)
+            (rsTerrain snapshot2)
+            [stageForZoom (uiZoom ui2)]
+            Nothing
+      assertAtlasJobsMatch jobs expected
+
+    it "leaves publication and atlas state unchanged for pure validation failures" $ withCtx $ \ctx -> do
+      baseline <- beginPublicationAssertion ctx
+      forM_
+        [ ("set_seed", Null)
+        , ("set_seed", object ["seed" .= ((-1) :: Int)])
+        , ("set_slider", object ["name" .= ("NoSuchSlider" :: Text), "value" .= (0.5 :: Double)])
+        , ("set_view_mode", object ["mode" .= ("missing" :: Text)])
+        , ("set_overlay", object ["overlay" .= ("missing" :: Text)])
+        , ("load_world", object ["name" .= ("__missing_publication_world__" :: Text)])
+        ] $ \(method, params) -> do
+          rsp <- dispatch ctx method params
+          srSuccess rsp `shouldBe` False
+      readCommittedRenderSnapshot (ahSnapshotVersionRef (ccActorHandles ctx))
+        `shouldReturn` (pbVersion baseline, pbSnapshot baseline)
+      jobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+      length jobs `shouldBe` 0
+
   -- -------------------------------------------------------------------
   -- Unknown command
   -- -------------------------------------------------------------------
@@ -1743,6 +1957,165 @@ spec = describe "CommandDispatch" $ do
 -- =====================================================================
 -- Test helpers
 -- =====================================================================
+
+data PublicationBaseline = PublicationBaseline
+  { pbVersion :: !SnapshotVersion
+  , pbSnapshot :: !RenderSnapshot
+  , pbCache :: !RenderCacheState
+  }
+
+directUiPublicationCases :: [(String, Text, Value, UiState -> Expectation)]
+directUiPublicationCases =
+  [ ("publishes seed and seed input", "set_seed", object ["seed" .= (12345 :: Int)], \ui -> do
+      uiSeed ui `shouldBe` 12345
+      uiSeedInput ui `shouldBe` "12345")
+  , ("publishes left panel visibility", "set_left_panel", object ["visible" .= False],
+      \ui -> uiShowLeftPanel ui `shouldBe` False)
+  , ("publishes the visible left panel tab", "set_left_tab", object ["tab" .= ("view" :: Text)],
+      \ui -> uiLeftTab ui `shouldBe` LeftView)
+  , ("publishes explicit config panel visibility", "toggle_config_panel", object ["visible" .= True],
+      \ui -> uiShowConfig ui `shouldBe` True)
+  , ("publishes config tab and reset scroll", "set_config_tab", object ["tab" .= ("climate" :: Text)], \ui -> do
+      uiConfigTab ui `shouldBe` ConfigClimate
+      uiConfigScroll ui `shouldBe` 0)
+  , ("publishes a slider value", "set_slider", object
+      ["name" .= ("SliderGenScale" :: Text), "value" .= (0.42 :: Double)],
+      \ui -> uiGenScale ui `shouldSatisfy` (\value -> abs (value - 0.42) < 0.0001))
+  , ("publishes selected and pinned hex context", "select_hex", object
+      ["q" .= (2 :: Int), "r" .= ((-3) :: Int)], \ui -> do
+      uiContextHex ui `shouldBe` Just (2, -3)
+      uiHexTooltipPinned ui `shouldBe` True)
+  , ("publishes editor tool state", "editor_set_tool", object ["tool" .= ("erode" :: Text)],
+      \ui -> editorTool (uiEditor ui) `shouldBe` ToolErode)
+  , ("publishes simulation controls", "set_sim_auto_tick", object
+      ["enabled" .= True, "rate" .= (0.75 :: Double)], \ui -> do
+      uiSimAutoTick ui `shouldBe` True
+      uiSimTickRate ui `shouldBe` 0.75)
+  , ("publishes world metadata", "set_world_name", object ["name" .= ("Publication Matrix" :: Text)],
+      \ui -> uiWorldName ui `shouldBe` "Publication Matrix")
+  , ("publishes direct widget mutation before response completion", "click_widget", object
+      ["widget_id" .= ("WidgetChunkMinus" :: Text)],
+      \ui -> uiChunkSize ui `shouldBe` 56)
+  , ("publishes stage configuration", "set_stage_enabled", object
+      ["stage" .= ("climate" :: Text), "enabled" .= False],
+      \ui -> Set.member StageClimate (uiDisabledStages ui) `shouldBe` True)
+  ]
+
+directLogPublicationCases :: [(String, Text, Value, LogSnapshot -> Expectation)]
+directLogPublicationCases =
+  [ ("publishes log collapsed state", "set_log_collapsed", object ["collapsed" .= True],
+      \logSnapshot -> lsCollapsed logSnapshot `shouldBe` True)
+  , ("publishes log level", "set_log_level", object ["level" .= ("debug" :: Text)],
+      \logSnapshot -> lsMinLevel logSnapshot `shouldBe` LogDebug)
+  ]
+
+snapshotPollEnvFor :: CommandContext -> SnapshotPollEnv
+snapshotPollEnvFor ctx = SnapshotPollEnv
+  { speTimingLogThresholdMs = maxBound
+  , speSnapshotPollMs = 1000
+  , speSnapshotVersionRef = ahSnapshotVersionRef (ccActorHandles ctx)
+  , speLogSlowSnapshotPoll = const (pure ())
+  }
+
+beginPublicationAssertion :: CommandContext -> IO PublicationBaseline
+beginPublicationAssertion ctx = do
+  _ <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+  (version, snapshot, cache, _) <- pollRenderSnapshot
+    (snapshotPollEnvFor ctx) 100 False (initialRenderCacheState 4)
+  pure PublicationBaseline
+    { pbVersion = version
+    , pbSnapshot = snapshot
+    , pbCache = cache
+    }
+
+expectExactPublication :: CommandContext -> PublicationBaseline -> IO (SnapshotVersion, RenderSnapshot)
+expectExactPublication ctx baseline = do
+  let handles = ccActorHandles ctx
+      expectedVersion = SnapshotVersion (unSnapshotVersion (pbVersion baseline) + 1)
+  committed@(version, snapshot) <- readCommittedRenderSnapshot (ahSnapshotVersionRef handles)
+  version `shouldBe` expectedVersion
+  liveUi <- getUiSnapshot (ahUiHandle handles)
+  liveLog <- getLogSnapshot (ahLogHandle handles)
+  liveData <- readDataSnapshot (ahDataSnapshotRef handles)
+  liveTerrain <- readTerrainSnapshot (ahTerrainSnapshotRef handles)
+  liveUi `shouldBe` rsUi snapshot
+  liveLog `shouldBe` rsLog snapshot
+  liveData `shouldBe` rsData snapshot
+  liveTerrain `shouldBe` rsTerrain snapshot
+  (polledVersion, polledSnapshot, _, _) <- pollRenderSnapshot
+    (snapshotPollEnvFor ctx) 101 False (pbCache baseline)
+  (polledVersion, polledSnapshot) `shouldBe` committed
+  pure committed
+
+expectExactUiPublication
+  :: CommandContext
+  -> Text
+  -> Value
+  -> (UiState -> Expectation)
+  -> Expectation
+expectExactUiPublication ctx method params assertUi = do
+  baseline <- beginPublicationAssertion ctx
+  rsp <- dispatch ctx method params
+  srSuccess rsp `shouldBe` True
+  (_, committed) <- expectExactPublication ctx baseline
+  assertUi (rsUi committed)
+  rsLog committed `shouldBe` rsLog (pbSnapshot baseline)
+  rsData committed `shouldBe` rsData (pbSnapshot baseline)
+  rsTerrain committed `shouldBe` rsTerrain (pbSnapshot baseline)
+  jobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+  length jobs `shouldBe` 0
+
+expectExactLogPublication
+  :: CommandContext
+  -> Text
+  -> Value
+  -> (LogSnapshot -> Expectation)
+  -> Expectation
+expectExactLogPublication ctx method params assertLog = do
+  baseline <- beginPublicationAssertion ctx
+  rsp <- dispatch ctx method params
+  srSuccess rsp `shouldBe` True
+  (_, committed) <- expectExactPublication ctx baseline
+  assertLog (rsLog committed)
+  rsUi committed `shouldBe` rsUi (pbSnapshot baseline)
+  rsData committed `shouldBe` rsData (pbSnapshot baseline)
+  rsTerrain committed `shouldBe` rsTerrain (pbSnapshot baseline)
+  jobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+  length jobs `shouldBe` 0
+
+expectExactSelectionPublication :: CommandContext -> Text -> Value -> IO RenderSnapshot
+expectExactSelectionPublication ctx method params = do
+  baseline <- beginPublicationAssertion ctx
+  rsp <- dispatch ctx method params
+  srSuccess rsp `shouldBe` True
+  (version, committed) <- expectExactPublication ctx baseline
+  let ui0 = rsUi (pbSnapshot baseline)
+      ui1 = rsUi committed
+      expected = atlasJobsForSelectionTransition
+        version
+        (effectiveViewSelection ui0)
+        (uiRenderWaterLevel ui0)
+        (effectiveViewSelection ui1)
+        (uiRenderWaterLevel ui1)
+        (rsTerrain committed)
+        (orderedZoomStagesForZoom (uiZoom ui1))
+        Nothing
+  rsLog committed `shouldBe` rsLog (pbSnapshot baseline)
+  rsData committed `shouldBe` rsData (pbSnapshot baseline)
+  rsTerrain committed `shouldBe` rsTerrain (pbSnapshot baseline)
+  jobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
+  assertAtlasJobsMatch jobs expected
+  pure committed
+
+assertAtlasJobsMatch :: [AtlasJob] -> [AtlasJob] -> Expectation
+assertAtlasJobsMatch actual expected = do
+  length expected `shouldSatisfy` (> 0)
+  map ajKey actual `shouldBe` map ajKey expected
+  map ajSnapshotVersion actual `shouldBe` map ajSnapshotVersion expected
+  map ajTerrain actual `shouldBe` map ajTerrain expected
+  map ajViewSelection actual `shouldBe` map ajViewSelection expected
+  map ajWaterLevel actual `shouldBe` map ajWaterLevel expected
+  map atlasJobStage actual `shouldBe` map atlasJobStage expected
 
 serveScreenshotRequest :: CommandContext -> BS.ByteString -> IO ()
 serveScreenshotRequest ctx pngBytes =
@@ -1804,28 +2177,38 @@ prepareReadyDayNight ctx = do
   _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
   pure ()
 
-expectViewportRefreshForCommand :: CommandContext -> Text -> Value -> IO ()
-expectViewportRefreshForCommand ctx method params = do
+expectViewportRefreshForCommand
+  :: CommandContext
+  -> Text
+  -> Value
+  -> (UiState -> UiState -> Expectation)
+  -> IO ()
+expectViewportRefreshForCommand ctx method params assertUi = do
   _ <- writeReadyTerrainData ctx
   let handles = ccActorHandles ctx
       atlasH = ahAtlasManagerHandle handles
   _ <- drainAtlasJobs atlasH
-  version0 <- readSnapshotVersion (ahSnapshotVersionRef handles)
+  baseline <- beginPublicationAssertion ctx
 
   rsp <- dispatch ctx method params
   srSuccess rsp `shouldBe` True
 
-  version1 <- readSnapshotVersion (ahSnapshotVersionRef handles)
-  version1 `shouldSatisfy` (> version0)
-  ui <- getUiSnapshot (ahUiHandle handles)
+  (version1, committed) <- expectExactPublication ctx baseline
+  let ui0 = rsUi (pbSnapshot baseline)
+      ui1 = rsUi committed
+      expected = atlasJobsForSelection
+        version1
+        (effectiveViewSelection ui1)
+        (uiRenderWaterLevel ui1)
+        (rsTerrain committed)
+        [stageForZoom (uiZoom ui1)]
+        Nothing
+  assertUi ui0 ui1
+  rsLog committed `shouldBe` rsLog (pbSnapshot baseline)
+  rsData committed `shouldBe` rsData (pbSnapshot baseline)
+  rsTerrain committed `shouldBe` rsTerrain (pbSnapshot baseline)
   jobs <- drainAtlasJobs atlasH
-  let currentStage = zoomStagePair (stageForZoom (uiZoom ui))
-  length jobs `shouldBe` 1
-  map ajViewMode jobs `shouldBe` [uiViewMode ui]
-  map atlasJobStage jobs `shouldBe` [currentStage]
-  map ajSnapshotVersion jobs `shouldBe` [version1]
-  map ajWaterLevel jobs `shouldBe` [uiRenderWaterLevel ui]
-  map (tsChunkSize . ajTerrain) jobs `shouldBe` [64]
+  assertAtlasJobsMatch jobs expected
 
 -- | Bracket that creates a full actor system with all handles needed
 -- for a 'CommandContext'.
@@ -2047,8 +2430,13 @@ writeSingleChunkTerrainWithNormals ctx = do
       dataH = ahDataHandle handles
   setTerrainChunkData dataH (wcChunkSize cfg) [(chunkId, emptyTerrainChunk cfg)]
   setOverlayStoreData dataH (insertOverlay normalsOverlay emptyOverlayStore)
-  authoritative <- getTerrainSnapshot dataH
-  writeTerrainSnapshot (ahTerrainSnapshotRef handles) authoritative
+  dataSnapshot <- getDataSnapshot dataH
+  terrainSnapshot <- getTerrainSnapshot dataH
+  _ <- publishSnapshot
+    (ahSnapshotVersionRef handles)
+    (dataAndTerrainSnapshotUpdate
+      (ahDataSnapshotRef handles) dataSnapshot
+      (ahTerrainSnapshotRef handles) terrainSnapshot)
   pure chunkKey
 
 writeSingleChunkTerrainWithClimateWeatherAndNormals :: CommandContext -> IO Int
@@ -2120,9 +2508,14 @@ writeReadyTerrainData ctx = do
       cfg = WorldConfig { wcChunkSize = 64 }
       chunkId = chunkIdFromCoord (ChunkCoord 0 0)
   setTerrainChunkData (ahDataHandle handles) (wcChunkSize cfg) [(chunkId, emptyTerrainChunk cfg)]
-  snap <- getTerrainSnapshot (ahDataHandle handles)
-  writeTerrainSnapshot (ahTerrainSnapshotRef handles) snap
-  pure snap
+  dataSnap <- getDataSnapshot (ahDataHandle handles)
+  terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
+  _ <- publishSnapshot
+    (ahSnapshotVersionRef handles)
+    (dataAndTerrainSnapshotUpdate
+      (ahDataSnapshotRef handles) dataSnap
+      (ahTerrainSnapshotRef handles) terrainSnap)
+  pure terrainSnap
 
 -- | Convenience: dispatch a command with a given method and params,
 -- using request id 1.

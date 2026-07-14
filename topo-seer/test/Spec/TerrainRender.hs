@@ -15,7 +15,7 @@ import Topo.Weather (WeatherNormalsChunk(..))
 import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), ViewMode(..), WeatherBasis(..), baseViewModeToViewMode, defaultLayeredViewState)
 import UI.DayNight (dayNightMinBrightness)
 import UI.HexGeometry (hexCenterF, renderHexRadiusPx)
-import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry, buildChunkGeometryForSelection, buildDayNightGeometry)
+import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry, buildChunkGeometryForSelection, buildChunkSkyOverlayGeometryForSelection, buildDayNightGeometry)
 import UI.Widgets (Rect(..))
 
 spec :: Spec
@@ -49,6 +49,20 @@ spec = describe "Terrain render geometry" $ do
     realToFrac bx + realToFrac localX `shouldSatisfy` closeTo centerX
     realToFrac by + realToFrac localY `shouldSatisfy` closeTo centerY
 
+  it "keeps overlay atlas geometry stable across draw-time opacity changes" $ do
+    let size = 1
+        config = WorldConfig { wcChunkSize = size }
+        chunk = emptyTerrainChunk size
+        weather = IntMap.singleton 0 (testWeatherChunk size 0.9 0.8 0.7 0.6)
+        selection = defaultLayeredViewState
+          { lvsSkyOverlay = Just SkyOverlayCloud
+          , lvsWeatherBasis = WeatherBasisCurrent
+          }
+        geometry opacity = buildChunkSkyOverlayGeometryForSelection
+          renderHexRadiusPx config (selection { lvsOverlayOpacity = opacity }) 0
+          IntMap.empty weather IntMap.empty IntMap.empty Nothing 0 chunk
+    geometry 0.2 `shouldBe` geometry 0.9
+
   it "matches legacy base colors for base-only layered selections" $ do
     let veg = Just (testVegetationChunk 1 0.7)
         check baseMode = do
@@ -75,12 +89,18 @@ spec = describe "Terrain render geometry" $ do
       , BaseViewTerrainForm
       ]
 
-  it "keeps production layered legacy weather selections opaque" $ do
+  it "applies draw-time opacity to structurally legacy weather selections" $ do
     let weather = testWeatherChunk 1 0.85 0.00 0.00 0.65
         climate = testClimateChunk 1 0.2 0.75 0.4 0.3
-        check mode selection =
-          selectionColor selection (Just climate) (Just weather) Nothing Nothing
+        baseOnly = selectionColor defaultLayeredViewState
+          (Just climate) (Just weather) Nothing Nothing
+        check mode selection = do
+          selectionColor (selection { lvsOverlayOpacity = 1 })
+            (Just climate) (Just weather) Nothing Nothing
             `shouldBe` viewColorWithData mode (Just climate) (Just weather) Nothing Nothing
+          selectionColor (selection { lvsOverlayOpacity = 0 })
+            (Just climate) (Just weather) Nothing Nothing
+            `shouldBe` baseOnly
     check ViewWeather defaultLayeredViewState
       { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
       , lvsWeatherBasis = WeatherBasisCurrent

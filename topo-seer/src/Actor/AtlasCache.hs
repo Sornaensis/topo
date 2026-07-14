@@ -34,8 +34,7 @@ import Actor.UI
   , WeatherBasis(..)
   , baseViewModeFromViewMode
   , baseViewModeToViewMode
-  , layeredViewStateToViewMode
-  , legacyViewModeToLayeredViewState
+  , layeredViewStateIsLegacyEquivalent
   , skyOverlayModeFromViewMode
   , skyOverlayModeToViewMode
   )
@@ -159,12 +158,6 @@ terrainSnapshotSelectionVersion :: LayeredViewState -> TerrainSnapshot -> Word64
 terrainSnapshotSelectionVersion selection terrainSnap =
   selectionVersionSalt selection (layeredDataVersion selection terrainSnap)
 
-selectionIsLegacyEquivalent :: LayeredViewState -> Bool
-selectionIsLegacyEquivalent selection =
-  case layeredViewStateToViewMode selection of
-    Just legacyMode -> selection == legacyViewModeToLayeredViewState legacyMode
-    Nothing -> False
-
 layeredDataVersion :: LayeredViewState -> TerrainSnapshot -> Word64
 layeredDataVersion selection terrainSnap =
   let baseVersion = terrainSnapshotBaseVersion (lvsBaseView selection) terrainSnap
@@ -237,7 +230,7 @@ atlasOverlayKeyForSelection :: LayeredViewState -> TerrainSnapshot -> Maybe Atla
 atlasOverlayKeyForSelection selection terrainSnap = do
   overlay <- lvsSkyOverlay selection
   let basis = lvsWeatherBasis selection
-      legacyOpaque = selectionIsLegacyEquivalent selection
+      legacyOpaque = layeredViewStateIsLegacyEquivalent selection
       version = terrainSnapshotOverlayVersion overlay basis terrainSnap
   pure (OverlayAtlasKey overlay basis legacyOpaque version)
 
