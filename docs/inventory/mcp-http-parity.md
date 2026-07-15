@@ -20,9 +20,10 @@ Sources used for this inventory:
 Checklist conventions:
 
 - **Primary HTTP target** is the preferred public HTTP/OpenAPI route.
-- **Internal command route** means `POST /commands/<method>`, generated for
-  current AppService command methods. It exists for in-repo compatibility and
-  tests only; it is not a public 1.0 automation path or migration target.
+- **Historical removed HTTP command route** records the former
+  `POST /commands/<method>` spelling for migration archaeology only. Every such
+  path is now permanently absent, returns the generic route-miss `404`, and has
+  no enable flag; the entries are not callable targets.
 - **Mapped** means MCP-era behavior has a direct HTTP/OpenAPI route. Payload
   validation and response parity belong to the M4 test-porting task.
 - **Waived** means the behavior was MCP session, stdio transport, or
@@ -38,9 +39,10 @@ curl http://127.0.0.1:7373/openapi.json
 curl http://127.0.0.1:7373/health
 ```
 
-Translate old MCP calls to resource-oriented HTTP/OpenAPI routes. Rows may list
-internal command-compatible HTTP routes for parity tracking, but those routes are
-for in-repo compatibility/tests only and are not a public 1.0 automation surface.
+Translate old MCP calls to resource-oriented HTTP/OpenAPI routes. Rows retain
+former HTTP command spellings only as explicitly historical/removed inventory;
+they are not callable. The separate named-pipe/Unix-socket command IPC adapter
+remains internal/test-only.
 
 | Old MCP usage | Preferred HTTP/OpenAPI usage |
 |---|---|
@@ -71,7 +73,7 @@ curl -X POST http://127.0.0.1:7373/screenshots
 | `initialized` notification | Accepted without response. | No HTTP equivalent. | Waived: MCP session notification only. |
 | `ping` | Returned an empty JSON-RPC result. | `GET /health` (`meta.health`) returns health JSON. | Mapped. |
 | `tools/list` | Returned all MCP `ToolDef` records and input schemas. | `GET /openapi.json` plus this matrix; OpenAPI is the public operation catalog. | Mapped. |
-| `tools/call` | Parsed `{name, arguments}` and routed to one command method. | Use each tool row's primary HTTP/OpenAPI route. Command-compatible dispatch is internal/test parity only. | Mapped. |
+| `tools/call` | Parsed `{name, arguments}` and routed to one command method. | Use each tool row's primary HTTP/OpenAPI route; the former HTTP command dispatch is removed. | Mapped. |
 | `resources/list` | Returned 11 static resources and 5 templates. | `GET /openapi.json` plus the resource matrix below. | Mapped. |
 | `resources/read` | Parsed `topo://...` URI, called a command method, and returned JSON text content. | Use each resource row's HTTP route; HTTP returns JSON directly. | Mapped. |
 | Unknown JSON-RPC method / tool / resource | JSON-RPC error or MCP tool error content. | HTTP route miss returns `404`; service validation failures use HTTP error envelopes. | Mapped as HTTP error semantics. |
@@ -80,9 +82,10 @@ curl -X POST http://127.0.0.1:7373/screenshots
 ## MCP resources/read parity
 
 All retired MCP resources had `application/json` MIME type. HTTP returns JSON
-with normal `application/json` response headers.
+with normal `application/json` response headers. The historical column is not a
+route catalog: every listed `/commands/*` spelling has been removed.
 
-| MCP resource URI or template | Old command method | Primary HTTP/OpenAPI target | Internal command route | Status / notes |
+| MCP resource URI or template | Old command method | Primary HTTP/OpenAPI target | Historical removed HTTP command route | Status / notes |
 |---|---:|---|---|---|
 | `topo://state` | `get_state` | `GET /state` (`state.get`) | `POST /commands/get_state` | Mapped. |
 | `topo://sliders` | `get_sliders` | `GET /config/sliders` (`config.sliders.list`) | `POST /commands/get_sliders` | Mapped. |
@@ -103,7 +106,9 @@ with normal `application/json` response headers.
 
 ## MCP tools/call parity
 
-| MCP tool name | Old command method | Primary HTTP/OpenAPI target | Internal command route | Status / notes |
+The historical column records removed spellings only; use the primary target.
+
+| MCP tool name | Old command method | Primary HTTP/OpenAPI target | Historical removed HTTP command route | Status / notes |
 |---|---:|---|---|---|
 | `get_state` | `get_state` | `GET /state` (`state.get`) | `POST /commands/get_state` | Mapped. |
 | `list_sliders` | `get_sliders` | `GET /config/sliders` (`config.sliders.list`) | `POST /commands/get_sliders` | Mapped; optional `tab` remains query/body input. |

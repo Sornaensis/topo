@@ -18,8 +18,9 @@ packaging and tag instructions live in [docs/release.md](docs/release.md).
 
 - Standardized direct HTTP/OpenAPI served by `topo-seer` as the only public 1.0
   automation surface.
-- Kept legacy command IPC and command-compatible HTTP routes internal/test-only;
-  new automation clients should use resource-oriented HTTP routes.
+- Kept legacy named-pipe/Unix-socket command IPC internal/test-only and removed
+  HTTP-shaped `/commands/*` dispatch permanently; those paths now return generic
+  `404` responses and have no enable flag.
 - Added published OpenAPI drift checks so `docs/api/openapi.json` stays in sync
   with route metadata, schemas, examples, auth, errors, and versioning.
 

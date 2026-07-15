@@ -78,11 +78,13 @@ contract is served at `GET /openapi.json`; basic smoke checks use
 `GET /health`, `GET /state`, and resource routes such as
 `GET /terrain/hex?q=0&r=0`.
 
-The legacy command IPC remains an internal/test compatibility adapter for
-existing runtime handlers while service extraction continues, but it is no
-longer exposed through a separate MCP package in the Stack workspace. The
-retired MCP bridge is only documented in migration notes, and there is no public
-1.0 exception for command IPC; use HTTP/OpenAPI for automation.
+The legacy named-pipe/Unix-socket command IPC remains an internal/test
+compatibility adapter for existing runtime handlers while service extraction
+continues, but it is no longer exposed through a separate MCP package in the
+Stack workspace. HTTP command-shaped dispatch has been removed entirely:
+known and unknown `/commands/*` paths are generic `404` route misses and no flag
+can enable them. The retired MCP bridge is only documented in migration notes;
+use resource-oriented HTTP/OpenAPI for automation.
 
 ## Current plugin foundation
 

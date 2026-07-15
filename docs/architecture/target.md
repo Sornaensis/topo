@@ -45,8 +45,8 @@ readiness work.
 
 ## Core principles
 
-1. **One behavior layer.** UI, HTTP, command compatibility, and tests should
-   call the same typed service operations.
+1. **One behavior layer.** UI, HTTP, retained command IPC compatibility, and
+   tests should call the same typed service operations.
 2. **Generated public contracts.** HTTP/OpenAPI, manifest, protocol, and other
    public contracts should be generated or contract-tested wherever practical.
 3. **Explicit plugin isolation.** Production plugin communication uses named
@@ -133,21 +133,16 @@ golden artifacts should fail tests as the contract hardens.
 
 ## HTTP automation path and command compatibility
 
-The target public automation path is direct HTTP/OpenAPI. The former MCP bridge
-has been removed from the workspace; remaining command IPC is internal/test
-compatibility while service extraction continues.
+The target public automation path is direct, resource-oriented HTTP/OpenAPI.
+The former MCP bridge has been removed from the workspace. Named-pipe/Unix-
+socket command IPC remains internal/test compatibility while service extraction
+continues, but it is not an HTTP surface. `POST /commands/<method>` dispatch has
+been removed permanently: known and unknown methods are generic `404` route
+misses, and no CLI or configuration flag enables them.
 
-Ongoing cleanup steps:
-
-1. Keep service/HTTP/OpenAPI tests equivalent to the command compatibility
-   surface where that surface still exists.
-2. Keep docs and examples focused on HTTP/OpenAPI as the public automation path.
-3. Avoid command IPC log terminology that implies MCP is the public client
-   path.
-
-Command IPC may remain temporarily as internal/test compatibility if needed,
-but it is not the documented 1.0 automation surface and has no public 1.0
-exception.
+Ongoing cleanup keeps service, HTTP/OpenAPI, and retained IPC adapter behavior
+aligned at the AppService boundary without presenting command IPC as a public
+client path. Docs and examples remain focused on HTTP/OpenAPI.
 
 ## Plugin supervisor architecture
 

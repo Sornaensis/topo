@@ -415,7 +415,7 @@ def parse_public_http_routes() -> set[tuple[str, str, str]]:
     server_path = ROOT / "topo-seer" / "src" / "Seer" / "HTTP" / "Server.hs"
     source = server_path.read_text(encoding="utf-8")
     start = source.find("friendlyHttpRouteSpecs = map annotateHttpRouteSpec")
-    end = source.find("\ncommandHttpRouteSpecs", start)
+    end = source.find("\nspecial ::", start)
     if start == -1 or end == -1:
         fail("could not find friendlyHttpRouteSpecs block in topo-seer/src/Seer/HTTP/Server.hs")
 

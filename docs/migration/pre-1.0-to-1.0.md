@@ -13,8 +13,8 @@ backend-neutral external data-source declarations, and compatibility policy.
 - Replace old MCP `tools/list`, `tools/call`, `resources/list`, and
   `resources/read` usage with resource-oriented HTTP routes.
 - Use the [MCP-to-HTTP parity matrix](../inventory/mcp-http-parity.md) only to
-  translate retired tool/resource names; do not target command-compatible routes
-  for new automation.
+  translate retired tool/resource names; the historical HTTP command routes have
+  been removed and are not migration targets.
 - Remove dependencies on the retired `topo-mcp` package, stdio JSON-RPC
   transport, `topo://` resource URIs, and external command IPC usage.
 - Regenerate or update plugin manifests to `manifestVersion: 3` with protocol
@@ -55,10 +55,11 @@ failures use the HTTP error envelope, and token-protected non-loopback bindings
 use `Authorization: Bearer TOKEN` as described in the
 [HTTP/OpenAPI contract guide](../api/README.md).
 
-The compatibility command routes under `POST /commands/<method>` exist only for
-in-repo compatibility and tests while service extraction continues. They are
-not a public 1.0 automation path and are not a migration target for client
-integrations.
+The former HTTP command routes under `POST /commands/<method>` have been removed
+permanently. Known and unknown method names both receive the ordinary route-miss
+`404` before authentication or request-body handling, and there is no CLI or
+configuration flag to restore them. The separate named-pipe/Unix-socket command
+IPC adapter remains internal/test compatibility only.
 
 ## View-mode automation to layered views
 

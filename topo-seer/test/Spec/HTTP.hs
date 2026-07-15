@@ -82,7 +82,6 @@ import Seer.HTTP.Server
   ( HttpRequest(..)
   , HttpResponse(..)
   , HttpServerConfig(..)
-  , commandHttpRouteSpecs
   , defaultHttpServerConfig
   , forkHttpServer
   , friendlyHttpRouteSpecs
@@ -209,14 +208,14 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupNestedValue ["saved_path"] (hresBody screenshot) `shouldBe` Just Null
       lookupText "image_base64" (hresBody screenshot) `shouldSatisfy` maybe False (not . Text.null)
 
-  it "shares screenshot path validation and disabled-write errors across HTTP surfaces" $
+  it "validates screenshot paths and reports disabled writes on the screenshot route" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       let requests =
             [ (mkRequest "POST" ["screenshots"])
                 { hreqBody = Just (object ["path" .= Null]) }
             , (mkRequest "POST" ["screenshots"])
                 { hreqBody = Just (object ["path" .= ("" :: Text)]) }
-            , (mkRequest "POST" ["commands", "take_screenshot"])
+            , (mkRequest "POST" ["screenshots"])
                 { hreqBody = Just (object ["path" .= ("../escape.png" :: Text)]) }
             ]
       forM_ requests $ \screenshotRequest -> do
@@ -226,14 +225,13 @@ spec = describe "Seer.HTTP.Server" $ do
           `shouldBe` Just "validation_failed"
         firstErrorDetailPath (hresBody response) `shouldBe` Just ["path"]
 
-      forM_ [["screenshots"], ["commands", "take_screenshot"]] $ \path -> do
-        response <- request app (mkRequest "POST" path)
-          { hreqBody = Just (object ["path" .= ("capture.png" :: Text)]) }
-        hresStatusCode response `shouldBe` 503
-        lookupNestedText ["error", "code"] (hresBody response)
-          `shouldBe` Just "unavailable"
+      response <- request app (mkRequest "POST" ["screenshots"])
+        { hreqBody = Just (object ["path" .= ("capture.png" :: Text)]) }
+      hresStatusCode response `shouldBe` 503
+      lookupNestedText ["error", "code"] (hresBody response)
+        `shouldBe` Just "unavailable"
 
-  it "persists normalized screenshot paths with one response contract across HTTP surfaces" $
+  it "persists normalized screenshot paths through POST /screenshots" $
     withScreenshotHttpRoot $ \root -> do
       let runtimeConfig = (hcRuntimeConfig defaultHeadlessConfig)
             { cfgScreenshotSaveDirectory = Just root }
@@ -249,12 +247,7 @@ spec = describe "Seer.HTTP.Server" $ do
         let body = object ["path" .= ("nested/capture.png" :: Text)]
         friendly <- request app (mkRequest "POST" ["screenshots"])
           { hreqBody = Just body }
-        compatibility <- request app (mkRequest "POST" ["commands", "take_screenshot"])
-          { hreqBody = Just body }
         hresStatusCode friendly `shouldBe` 200
-        hresStatusCode compatibility `shouldBe` 409
-        lookupNestedText ["error", "code"] (hresBody compatibility)
-          `shouldBe` Just "rejected"
         map (`objectHasKey` hresBody friendly)
           ["image_base64", "format", "source", "saved_path"]
           `shouldBe` replicate 4 True
@@ -266,14 +259,13 @@ spec = describe "Seer.HTTP.Server" $ do
         saved `shouldSatisfy` not . BS.null
 
         createDirectory (root </> "conflict.png")
-        forM_ [["screenshots"], ["commands", "take_screenshot"]] $ \path -> do
-          conflict <- request app (mkRequest "POST" path)
-            { hreqBody = Just (object ["path" .= ("conflict.png" :: Text)]) }
-          hresStatusCode conflict `shouldBe` 409
-          lookupNestedText ["error", "code"] (hresBody conflict)
-            `shouldBe` Just "rejected"
+        conflict <- request app (mkRequest "POST" ["screenshots"])
+          { hreqBody = Just (object ["path" .= ("conflict.png" :: Text)]) }
+        hresStatusCode conflict `shouldBe` 409
+        lookupNestedText ["error", "code"] (hresBody conflict)
+          `shouldBe` Just "rejected"
 
-  it "serves layered view state and legacy compatibility routes in headless mode" $
+  it "serves layered view state and legacy view aliases in headless mode" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       state0 <- request app (mkRequest "GET" ["state"])
       hresStatusCode state0 `shouldBe` 200
@@ -1001,6 +993,52 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupHeaderText "x-request-id" (hresHeaders denied) `shouldBe` Just "req-123"
       lookupNestedText ["error", "request_id"] (hresBody denied) `shouldBe` Just "req-123"
 
+  it "keeps known and unknown /commands routes permanently absent before auth, body, service, or event handling" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      let ctx = headlessServiceContext app
+          tokenCfg = defaultHttpServerConfig { hscBearerToken = Just "secret" }
+          remoteCfg = tokenCfg { hscBindHost = "0.0.0.0" }
+          throwingApp = headlessAppService
+            { appConfig = (appConfig headlessAppService)
+                { configGetSliders = rawServiceHandler configGetSlidersOperation $ \_ _ ->
+                    throwIO (userError "removed /commands route dispatched")
+                }
+            }
+          requestId = "commands-permanently-absent"
+          commandRequest path headers = (mkRequest "POST" path)
+            { hreqHeaders = ("x-request-id", requestId) : headers
+            , hreqQuery = [("invalid", Just "query")]
+            , hreqBody = Just (String "malformed-for-any-command")
+            }
+          cases =
+            [ (defaultHttpServerConfig, commandRequest ["commands", "get_sliders"] [])
+            , (defaultHttpServerConfig, commandRequest ["commands", "unknown"] [])
+            , (tokenCfg, commandRequest ["commands", "get_sliders"] [])
+            , (tokenCfg, commandRequest ["commands", "get_sliders"] [("authorization", "Bearer wrong")])
+            , (tokenCfg, commandRequest ["commands", "get_sliders"] [("authorization", "Bearer secret")])
+            , (remoteCfg, commandRequest ["commands", "get_sliders"] [("authorization", "Bearer secret")])
+            ]
+      eventsBefore <- request app (mkRequest "GET" ["events"])
+      forM_ cases $ \(cfg, commandReq) -> do
+        response <- handleHttpRequest cfg throwingApp ctx commandReq
+        assertCommandRouteAbsent requestId response
+      eventsAfter <- request app (mkRequest "GET" ["events"])
+      lookupValue "events" (hresBody eventsAfter) `shouldBe` lookupValue "events" (hresBody eventsBefore)
+
+  it "returns /commands 404 before WAI auth, content-type, JSON, and body-size handling" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      let cfg = defaultHttpServerConfig
+            { hscBindPort = 7380
+            , hscBearerToken = Just "secret"
+            , hscMaxRequestBodyBytes = 1
+            }
+      tid <- forkHttpServer cfg headlessAppService (headlessServiceContext app)
+      manager <- newManager defaultManagerSettings
+      eventually_ (assertWaiCommandRoutesAbsent manager)
+        `finally` (do
+          killThread tid
+          threadDelay 100000)
+
   it "lists every public route in OpenAPI" $ do
     let doc = openApiDocument publicHttpRouteSpecs
     forM_ publicHttpRouteSpecs $ \route -> do
@@ -1008,7 +1046,9 @@ spec = describe "Seer.HTTP.Server" $ do
           routeMethod = Text.toLower (hrsMethod route)
       pathMethods doc path `shouldSatisfy` maybe False (routeMethod `elem`)
 
-  it "omits internal command routes from public OpenAPI" $ do
+  it "keeps command routes absent from runtime dispatch and public OpenAPI" $ do
+    httpRouteSpecs `shouldBe` friendlyHttpRouteSpecs
+    publicHttpRouteSpecs `shouldBe` friendlyHttpRouteSpecs
     let doc = openApiDocument publicHttpRouteSpecs
     pathMethods doc "/commands/get_state" `shouldBe` Nothing
     openApiSignatureLines doc `shouldSatisfy` all (not . Text.isInfixOf "/commands/")
@@ -1264,10 +1304,6 @@ spec = describe "Seer.HTTP.Server" $ do
           killThread tid
           threadDelay 100000)
 
-  it "publishes a command HTTP route for every AppService operation" $
-    sort (map (last . hrsPath) commandHttpRouteSpecs)
-      `shouldBe` sort appServiceOperationMethods
-
   it "maps retired MCP tools/list and tools/call coverage to HTTP, service, and OpenAPI routes" $ do
     let doc = openApiDocument publicHttpRouteSpecs
         toolNames = map ptLegacyName retiredMcpToolTargets
@@ -1276,7 +1312,6 @@ spec = describe "Seer.HTTP.Server" $ do
     forM_ retiredMcpToolTargets $ \target -> do
       assertFriendlyRouteTarget target
       assertOpenApiTarget doc target
-      assertInternalCommandRouteTarget target
 
   it "dispatches representative retired MCP tools/call primary HTTP routes" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -1469,13 +1504,13 @@ spec = describe "Seer.HTTP.Server" $ do
         isRouteMiss rsp `shouldBe` False
       assertTemplateResourceBodies app
 
-  it "replaces the MCP-to-seer IPC bridge with direct HTTP AppService dispatch" $
+  it "dispatches primary HTTP routes directly through AppService" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
-      stateViaCommand <- request app (mkRequest "POST" ["commands", "get_state"])
-      hresStatusCode stateViaCommand `shouldBe` 200
-      objectHasKey "seed" (hresBody stateViaCommand) `shouldBe` True
+      state <- request app (mkRequest "GET" ["state"])
+      hresStatusCode state `shouldBe` 200
+      objectHasKey "seed" (hresBody state) `shouldBe` True
 
-      setSeed <- request app (mkRequest "POST" ["commands", "set_seed"])
+      setSeed <- request app (mkRequest "POST" ["ui", "seed"])
         { hreqBody = Just (object ["seed" .= (321 :: Int)]) }
       hresStatusCode setSeed `shouldBe` 200
       lookupValue "seed" (hresBody setSeed) `shouldBe` Just (Number 321)
@@ -1551,9 +1586,6 @@ httpUiPublicationCases =
   , ("PATCH /world/name", noHttpSetup, withBody "PATCH" ["world", "name"]
         (object ["name" .= ("HTTP Publication Matrix" :: Text)]), ExpectNoHttpAtlas,
         \ui -> uiWorldName ui `shouldBe` "HTTP Publication Matrix")
-  , ("POST /commands/set_seed compatibility", noHttpSetup, withBody "POST" ["commands", "set_seed"]
-        (object ["seed" .= (2468 :: Int)]), ExpectNoHttpAtlas,
-        \ui -> uiSeed ui `shouldBe` 2468)
   ]
 
 withBody :: Text -> [Text] -> Value -> HttpRequest
@@ -1937,15 +1969,6 @@ assertFriendlyRouteTarget t = case find matching friendlyHttpRouteSpecs of
 assertOpenApiTarget :: Value -> ParityTarget -> Expectation
 assertOpenApiTarget doc t =
   operationIdAt doc (targetPathText t) (Text.toLower (ptMethod t)) `shouldBe` Just (ptOperationId t)
-
-assertInternalCommandRouteTarget :: ParityTarget -> Expectation
-assertInternalCommandRouteTarget t = case find matching commandHttpRouteSpecs of
-  Nothing -> expectationFailure ("missing internal command-compatible HTTP route for " <> Text.unpack (ptLegacyName t) <> " via " <> Text.unpack (ptServiceMethod t))
-  Just route -> do
-    hrsOperationId route `shouldBe` ("command." <> ptServiceMethod t)
-    hrsServiceMethod route `shouldBe` Just (ptServiceMethod t)
-  where
-    matching route = hrsMethod route == "POST" && hrsPath route == ["commands", ptServiceMethod t]
 
 operationIdAt :: Value -> Text -> Text -> Maybe Text
 operationIdAt doc path routeMethod = do
@@ -2770,6 +2793,32 @@ assertMalformedUtf8QueryErrors manager =
       lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just "validation_failed"
       errorDetailCode (hresBody response) `shouldBe` Just "invalid_query_param"
       lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
+
+assertWaiCommandRoutesAbsent :: Manager -> IO ()
+assertWaiCommandRoutesAbsent manager = do
+  let requestId = "wai-commands-permanently-absent"
+      cases =
+        [ ("http://127.0.0.1:7380/commands/get_sliders", LBS.fromStrict (BS.replicate 9 123), [("Content-Type", "text/plain")])
+        , ("http://127.0.0.1:7380/commands/get_sliders", "{", [jsonContentTypeHeader, ("Authorization", "Bearer wrong")])
+        , ("http://127.0.0.1:7380/commands/get_sliders", "{", [jsonContentTypeHeader, ("Authorization", "Bearer secret")])
+        , ("http://127.0.0.1:7380/commands/unknown", "{", [jsonContentTypeHeader, ("Authorization", "Bearer secret")])
+        ]
+  forM_ cases $ \(url, rawBody, headers) -> do
+    response <- waiRawRequest manager requestId "POST" url rawBody headers
+    assertCommandRouteAbsent requestId response
+
+assertCommandRouteAbsent :: Text -> HttpResponse -> Expectation
+assertCommandRouteAbsent requestId response = do
+  hresStatusCode response `shouldBe` 404
+  lookupHeaderText "x-request-id" (hresHeaders response) `shouldBe` Just requestId
+  hresBody response `shouldBe` object
+    [ "error" .= object
+        [ "code" .= ("not_found" :: Text)
+        , "message" .= ("route not found" :: Text)
+        , "details" .= ([] :: [Value])
+        , "request_id" .= requestId
+        ]
+    ]
 
 assertUnauthorizedProtectedTransportErrors :: Manager -> IO ()
 assertUnauthorizedProtectedTransportErrors manager = do

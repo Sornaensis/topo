@@ -82,7 +82,7 @@ Prefer the layered routes and fields:
 | `GET /state` top-level `view_mode` | `GET /state` `view` object, or `GET /state/views` for state plus choices |
 | `GET /state/view-modes` / `get_view_modes` | `GET /state/views` / `get_views` |
 | `POST /ui/view-mode` with `{ "mode": ... }` | `POST /ui/view` with `{ "base_mode": ..., "overlay_mode": ..., "weather_basis": ... }` |
-| `POST /commands/set_view_mode` | Not a public automation target; use `POST /ui/view` or `POST /ui/view-mode` while migrating. |
+| Historical `POST /commands/set_view_mode` | Removed permanently; it returns the generic `404`. Use `POST /ui/view` or the API v1 alias `POST /ui/view-mode`. |
 
 Layered request fields accepted by `POST /ui/view`:
 

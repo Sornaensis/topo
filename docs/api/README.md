@@ -11,6 +11,12 @@ curl http://127.0.0.1:7373/openapi.json
 
 Loopback binds are intended for local automation. Non-loopback binds require `--http-token TOKEN`, and protected routes require `Authorization: Bearer TOKEN`. `GET /health` remains unauthenticated for readiness checks.
 
+HTTP command dispatch is not part of this server. `POST /commands/<method>` is
+permanently absent for both known and unknown method names, returns the generic
+route-miss `404` before authentication or body handling, and has no CLI or
+configuration enable flag. This does not remove the separate internal/test
+named-pipe or Unix-socket command IPC adapter.
+
 ## Contract contents
 
 - **Endpoint tags:** `meta`, `events`, `state`, `ui`, `config`, `presets`, `world`, `terrain`, `overlays`, `editor`, `pipeline`, `plugins`, `data`, `simulation`, `logs`, `screenshots`, and `camera` group operations in the OpenAPI `tags` section.

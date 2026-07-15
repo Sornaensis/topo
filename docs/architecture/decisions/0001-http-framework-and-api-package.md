@@ -37,12 +37,13 @@ API-version metadata once the MVP surface is stable. In that target split,
 `topo-seer` will depend on `topo-api` and provide the server implementation by
 mapping route handlers to AppService.
 
-For M4, the legacy command IPC status is explicitly **internal/test
-compatibility only**. It is not publicly deprecated because it is not a public
-1.0 interface, and it is not removed immediately because current service
-extraction and tests still use command-context adapters. Public 1.0 automation
-docs must show HTTP/OpenAPI routes; command IPC or command-shaped dispatch may
-appear only in internal or migration parity notes labelled as non-public.
+For M4, the legacy named-pipe/Unix-socket command IPC status is explicitly
+**internal/test compatibility only**. It is not publicly deprecated because it
+is not a public 1.0 interface, and it remains because current service extraction
+and tests still use command-context adapters. This retained IPC adapter is
+separate from HTTP: generated `POST /commands/<method>` dispatch has been
+removed permanently, with generic `404` route misses and no enable flag. Public
+1.0 automation docs show only the resource-oriented HTTP/OpenAPI routes.
 
 Potential package split:
 
@@ -141,8 +142,8 @@ package keeps the boundary explicit without polluting `topo`.
   larger route groups.
 - Keep all HTTP behavior loopback-only by default and require auth for any
   non-loopback binding.
-- Do not expose MCP, legacy command IPC, or command-shaped compatibility routes
-  as 1.0 public automation paths in API docs.
+- Keep MCP retired and legacy command IPC internal/test-only; HTTP command-shaped
+  routes are removed rather than hidden or configurable.
 - Keep backend-neutral external data-source DTOs abstract: provider ids,
   capability scopes, opaque references, health/status, and diagnostics. Do not
   encode SQLite or any other backend as the API model.

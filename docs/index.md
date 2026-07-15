@@ -42,8 +42,9 @@ curl -X POST http://127.0.0.1:7373/ui/seed \
 
 The retired MCP bridge and legacy command IPC appear only in migration/internal
 compatibility notes. New clients should use the resource-oriented HTTP routes in
-OpenAPI only; there is no public 1.0 command IPC exception. The committed
-contract artifact and usage notes live in the [HTTP/OpenAPI contract guide](api/README.md).
+OpenAPI only. HTTP `/commands/*` dispatch is permanently absent, returns generic
+`404` route misses, and has no enable flag. The committed contract artifact and
+usage notes live in the [HTTP/OpenAPI contract guide](api/README.md).
 Use the [pre-1.0 migration guide](migration/pre-1.0-to-1.0.md) for client and
 plugin upgrades, and see the [MCP-to-HTTP parity matrix](inventory/mcp-http-parity.md)
 when translating old MCP tool or resource names.

@@ -20,7 +20,6 @@ module Seer.HTTP.Server
   , httpRouteSpecs
   , publicHttpRouteSpecs
   , friendlyHttpRouteSpecs
-  , commandHttpRouteSpecs
   ) where
 import Control.Concurrent
   ( MVar
@@ -899,10 +898,9 @@ lookupRoute method path = asum
   ]
 
 httpRouteSpecs :: [HttpRouteSpec]
-httpRouteSpecs = friendlyHttpRouteSpecs <> commandHttpRouteSpecs
+httpRouteSpecs = friendlyHttpRouteSpecs
 
--- | Routes published in the public OpenAPI contract. Internal command-shaped
--- compatibility routes remain dispatchable but are intentionally omitted.
+-- | Routes published in the public OpenAPI contract.
 publicHttpRouteSpecs :: [HttpRouteSpec]
 publicHttpRouteSpecs = friendlyHttpRouteSpecs
 
@@ -1095,17 +1093,6 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   , service "POST" ["ui", "dialog", "confirm"] "ui.dialog.confirm" "ui" "dialog_confirm" "Confirm dialog." NoRequestBody
   , service "POST" ["ui", "dialog", "cancel"] "ui.dialog.cancel" "ui" "dialog_cancel" "Cancel dialog." NoRequestBody
   , service "POST" ["ui", "key"] "ui.key.send" "ui" "send_key" "Send key." RequiredJsonRequestBody
-  ]
-
-commandHttpRouteSpecs :: [HttpRouteSpec]
-commandHttpRouteSpecs =
-  [ service "POST" ["commands", serviceOperationMethod spec]
-      ("command." <> serviceOperationMethod spec)
-      "commands"
-      (serviceOperationMethod spec)
-      ("Dispatch AppService command method " <> serviceOperationMethod spec <> ".")
-      OptionalJsonRequestBody
-  | spec <- appServiceOperationSpecs
   ]
 
 special :: Text -> [Text] -> Text -> Text -> Text -> HttpRouteSpec

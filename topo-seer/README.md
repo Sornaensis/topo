@@ -84,11 +84,13 @@ When `--http-token TOKEN` is configured, `GET /health` remains unauthenticated
 for readiness checks and every other route, including `GET /openapi.json`,
 requires `Authorization: Bearer TOKEN`.
 
-MCP was a transition bridge and is retired for 1.0. Legacy command IPC is
-internal/test compatibility only while service extraction continues. Use the
-parity matrix at `../docs/inventory/mcp-http-parity.md` only to migrate old MCP
-tool/resource names to HTTP/OpenAPI routes; do not build new automation against
-MCP, command IPC, or command-shaped compatibility routes.
+MCP was a transition bridge and is retired for 1.0. Legacy named-pipe/Unix-
+socket command IPC is internal/test compatibility only while service extraction
+continues. HTTP-shaped `POST /commands/<method>` routes are absent: requests to
+known or unknown command names receive the ordinary route-miss `404`, and no CLI
+or configuration flag can enable them. Use the parity matrix at
+`../docs/inventory/mcp-http-parity.md` only to migrate old MCP tool/resource
+names to HTTP/OpenAPI routes.
 
 ## Related workspace packages
 

@@ -374,7 +374,6 @@ runHttpSurfacesAllowBusyProbe
   -> IO [HttpResponse]
 runHttpSurfacesAllowBusyProbe app ctx body = mapM requestFor
   [ ["screenshots"]
-  , ["commands", "take_screenshot"]
   ]
   where
     requestFor path = handleHttpRequest defaultHttpServerConfig app ctx HttpRequest

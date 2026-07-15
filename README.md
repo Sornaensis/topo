@@ -84,7 +84,9 @@ Migration guidance lives in `docs/migration/pre-1.0-to-1.0.md`, release notes
 live in `docs/release-notes/1.0.md`, and the old-tool/resource mapping remains
 in `docs/inventory/mcp-http-parity.md`; new clients should use resource-oriented
 HTTP/OpenAPI routes only. Command IPC remains internal/test compatibility while
-service extraction continues, with no public 1.0 exception.
+service extraction continues. HTTP-shaped `POST /commands/<method>` routes have
+been removed permanently, always return the ordinary route-miss `404`, and have
+no CLI or configuration enable flag.
 
 ## Release packaging
 
