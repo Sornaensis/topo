@@ -71,6 +71,8 @@ library
       Seer.Command.Channel
       Seer.Command.Dispatch
       Seer.DataBrowser.AppService
+      Seer.DataBrowser.Executor
+      Seer.DataBrowser.Lifecycle
       Seer.DataBrowser.Model
       Seer.System
       Seer.System.Cache
@@ -154,6 +156,7 @@ library
       Actor.PluginManager.Types
       Actor.UiActions.Handles
       Seer.Command.Handlers.Camera
+      Seer.DataBrowser.Executor.Types
       Seer.Command.Handlers.Data
       Seer.Command.Handlers.Editor
       Seer.Command.Handlers.Enums
@@ -273,6 +276,7 @@ test-suite topo-seer-test
       Spec.ConfigSnapshot
       Spec.DataBrowser
       Spec.DataBrowserAppService
+      Spec.DataBrowserExecutor
       Spec.DataDetailPopover
       Spec.DataResourceE2E
       Spec.DayNight

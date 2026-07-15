@@ -81,6 +81,10 @@ import Actor.UiActions.Command (UiAction(..), UiActionRequest(..), runUiAction)
 
 import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation)
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
+import Seer.DataBrowser.Executor
+  ( newDataBrowserExecutor
+  , shutdownDataBrowserExecutor
+  )
 import Seer.Editor.History (emptyHistory)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
 import Seer.System.Cache (RenderCacheState, initialRenderCacheState)
@@ -1353,6 +1357,18 @@ spec = describe "CommandDispatch" $ do
       ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
       (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "enabled") `shouldBe` Just (Bool False)
 
+    it "returns accepted request metadata for asynchronous Data Browser clicks" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetConfigTabData" :: Text) ])
+      srSuccess rsp `shouldBe` True
+      case srResult rsp of
+        Object result -> do
+          KM.lookup "status" result `shouldBe` Just (String "accepted")
+          KM.lookup "operation" result `shouldBe` Just (String "load_catalog")
+          KM.lookup "request_id" result `shouldSatisfy` maybe False (\case Number _ -> True; _ -> False)
+          KM.lookup "info" result `shouldBe` Nothing
+        value -> expectationFailure ("unexpected click response: " <> show value)
+
   describe "click_widget layered view controls" $ do
     it "selects base view, weather overlay, and basis independently" $ withCtx $ \ctx -> do
       baseBaseline <- beginPublicationAssertion ctx
@@ -2233,6 +2249,7 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
   versionRef     <- newRenderSnapshotVersionRef uiSnapRef logSnapRef dataSnapRef terrainSnapRef
   screenshotRef  <- newScreenshotRequestRef
   historyRef     <- newIORef (emptyHistory 50)
+  dataBrowserExecutor <- newDataBrowserExecutor uiH
   let handles = ActorHandles
         { ahUiHandle              = uiH
         , ahLogHandle             = logH
@@ -2253,8 +2270,9 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
         , ccScreenshotRef   = screenshotRef
         , ccScreenshotStoragePolicy = ScreenshotStorageDisabled
         , ccLogSnapshotRef  = Just logSnapRef
+        , ccDataBrowserExecutor = dataBrowserExecutor
         }
-  action ctx
+  action ctx `finally` shutdownDataBrowserExecutor dataBrowserExecutor
 
 withPluginCtx :: (CommandContext -> IO a) -> IO a
 withPluginCtx action = withIsolatedPluginDir $ \_pluginRoot ->
@@ -2528,6 +2546,7 @@ commandTestServiceContext ctx = ServiceContext
   , svcScreenshotStoragePolicy = ccScreenshotStoragePolicy ctx
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
   , svcEventBus = Nothing
+  , svcDataBrowserExecutor = ccDataBrowserExecutor ctx
   }
 
 isServiceFailureWithStatus :: Int -> ServiceResult -> Bool
@@ -2602,6 +2621,7 @@ serviceContextFromCommand ctx = ServiceContext
   , svcScreenshotStoragePolicy = ccScreenshotStoragePolicy ctx
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
   , svcEventBus = Nothing
+  , svcDataBrowserExecutor = ccDataBrowserExecutor ctx
   }
 
 data ExpectedServiceOutcome

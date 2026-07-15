@@ -37,7 +37,7 @@ import Actor.Log
   , setLogFileHandle
   , setLogSnapshotRef
   )
-import Actor.PluginManager (PluginManager, discoverPlugins)
+import Actor.PluginManager (PluginManager, discoverPlugins, shutdownPlugins)
 import Actor.Simulation (Simulation, beginSimShutdown, setSimHandles, simulationHandlesConfigured)
 import Actor.SnapshotReceiver
   ( DataSnapshotRef
@@ -61,8 +61,19 @@ import Actor.UI
   )
 import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles(..), mkActorHandles)
-import Control.Concurrent (forkIO)
-import Control.Monad (replicateM, when)
+import Control.Concurrent
+  ( MVar
+  , ThreadId
+  , forkIOWithUnmask
+  , killThread
+  , modifyMVar_
+  , newEmptyMVar
+  , newMVar
+  , readMVar
+  , tryPutMVar
+  )
+import Control.Exception (finally, mask, onException)
+import Control.Monad (replicateM, void, when)
 import Data.IORef (newIORef)
 import qualified Data.Text as Text
 import Hyperspace.Actor
@@ -75,11 +86,26 @@ import Hyperspace.Actor
   , spawnActor
   )
 import Seer.Command.AppServiceAdapter (commandAppService)
-import Seer.Command.Channel (CommandChannelEnv(..), runCommandChannel)
+import Seer.Command.Channel
+  ( CommandChannelControl
+  , CommandChannelEnv(..)
+  , newCommandChannelControl
+  , runCommandChannelWithControl
+  , shutdownCommandChannelControl
+  )
 import Seer.Command.Context (CommandContext(..), commandServiceContext)
 import Seer.Config.Runtime (TopoSeerConfig(..))
+import Seer.DataBrowser.Executor
+  ( DataBrowserExecutor
+  , newDataBrowserExecutor
+  , shutdownDataBrowserExecutor
+  )
 import Seer.Editor.History (emptyHistory)
-import Seer.HTTP.Server (forkHttpServer)
+import Seer.HTTP.Server
+  ( HttpServerHandle
+  , shutdownHttpServer
+  , startHttpServer
+  )
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Events (newDefaultServiceEventBus)
 import Seer.Screenshot.Request
@@ -121,6 +147,10 @@ data AppActors = AppActors
   , aaScreenshotRef :: !ScreenshotRequestRef
   , aaScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , aaAutoTickScheduler :: !AutoTickScheduler
+  , aaDataBrowserExecutor :: !DataBrowserExecutor
+  , aaCommandChannelControl :: !CommandChannelControl
+  , aaHttpServerHandle :: !(MVar (Maybe HttpServerHandle))
+  , aaIngressThreads :: !(MVar [(ThreadId, MVar ())])
   }
 
 initialiseAppActors :: TopoSeerConfig -> IO AppActors
@@ -188,6 +218,10 @@ initialiseAppActors runtimeCfg = do
   screenshotRef <- newScreenshotRequestRef
   historyRef <- newIORef (emptyHistory 50)
   let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
+  dataBrowserExecutor <- newDataBrowserExecutor uiHandle
+  commandChannelControl <- newCommandChannelControl
+  httpServerHandle <- newMVar Nothing
+  ingressThreads <- newMVar []
   pure AppActors
     { aaSystem = system
     , aaLogHandle = logHandle
@@ -208,27 +242,59 @@ initialiseAppActors runtimeCfg = do
     , aaScreenshotRef = screenshotRef
     , aaScreenshotStoragePolicy = screenshotStoragePolicy
     , aaAutoTickScheduler = autoTickScheduler
+    , aaDataBrowserExecutor = dataBrowserExecutor
+    , aaCommandChannelControl = commandChannelControl
+    , aaHttpServerHandle = httpServerHandle
+    , aaIngressThreads = ingressThreads
     }
 
 startCommandServices :: RuntimeOptions -> AppActors -> IO ()
-startCommandServices opts actors = do
+startCommandServices opts actors = mask $ \_ -> do
   let cmdContext = commandContextForActors actors
       cmdEnv = commandEnvForActors actors
-  _ <- forkIO (runCommandChannel cmdEnv)
+  commandDone <- newEmptyMVar
+  commandThread <- forkIOWithUnmask $ \unmask ->
+    unmask (runCommandChannelWithControl (aaCommandChannelControl actors) cmdEnv)
+      `finally` void (tryPutMVar commandDone ())
+  retainIngressThread actors commandThread commandDone
   eventBus <- newDefaultServiceEventBus
   let httpServiceContext = (commandServiceContext cmdContext) { svcEventBus = Just eventBus }
   case roHttp opts of
     Nothing -> pure ()
     Just httpCfg -> do
-      _ <- forkHttpServer httpCfg commandAppService httpServiceContext
-      pure ()
+      httpHandle <- startHttpServer httpCfg commandAppService httpServiceContext
+      modifyMVar_ (aaHttpServerHandle actors) (const (pure (Just httpHandle)))
+        `onException` shutdownHttpServer httpHandle
+
+retainIngressThread :: AppActors -> ThreadId -> MVar () -> IO ()
+retainIngressThread actors threadId done =
+  modifyMVar_ (aaIngressThreads actors) (pure . ((threadId, done) :))
+    `onException` (killThread threadId >> readMVar done)
+
+stopIngressThreads :: AppActors -> IO ()
+stopIngressThreads actors = mask $ \_ -> do
+  -- Retain ownership until every cleanup step succeeds so an interrupted or
+  -- failed shutdown can be retried without orphaning live ingress.
+  threads <- readMVar (aaIngressThreads actors)
+  mapM_ (killThread . fst) threads
+  mapM_ (readMVar . snd) threads
+  shutdownCommandChannelControl (aaCommandChannelControl actors)
+  httpHandle <- readMVar (aaHttpServerHandle actors)
+  mapM_ shutdownHttpServer httpHandle
+  modifyMVar_ (aaIngressThreads actors) (const (pure []))
+  modifyMVar_ (aaHttpServerHandle actors) (const (pure Nothing))
 
 shutdownAppActors :: AppActors -> IO ()
 shutdownAppActors actors = do
   shutdownScreenshotRequestRef (aaScreenshotRef actors)
+  -- No command or HTTP request may acquire new executor ownership once close
+  -- begins. Worker completion still has live plugin and actor dependencies.
+  stopIngressThreads actors
+  shutdownDataBrowserExecutor (aaDataBrowserExecutor actors)
   waitForSimIdle <- beginSimShutdown (ahSimulationHandle (aaActorHandles actors))
   stopAutoTickScheduler (aaAutoTickScheduler actors)
   waitForSimIdle
+  shutdownPlugins (ahPluginManagerHandle (aaActorHandles actors))
   shutdownActorSystem (aaSystem actors)
 
 commandContextForActors :: AppActors -> CommandContext
@@ -239,6 +305,7 @@ commandContextForActors actors = CommandContext
   , ccScreenshotRef = aaScreenshotRef actors
   , ccScreenshotStoragePolicy = aaScreenshotStoragePolicy actors
   , ccLogSnapshotRef = Just (aaLogSnapshotRef actors)
+  , ccDataBrowserExecutor = aaDataBrowserExecutor actors
   }
 
 commandEnvForActors :: AppActors -> CommandChannelEnv
@@ -250,4 +317,5 @@ commandEnvForActors actors = CommandChannelEnv
   , cceScreenshotRef = aaScreenshotRef actors
   , cceScreenshotStoragePolicy = aaScreenshotStoragePolicy actors
   , cceLogSnapshotRef = Just (aaLogSnapshotRef actors)
+  , cceDataBrowserExecutor = aaDataBrowserExecutor actors
   }

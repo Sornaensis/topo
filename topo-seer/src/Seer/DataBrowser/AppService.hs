@@ -14,6 +14,7 @@ module Seer.DataBrowser.AppService
   , dataBrowserStateFromModel
   , runDataBrowserAppAction
   , runDataBrowserPendingRequest
+  , performDataBrowserWorkerRequest
   ) where
 
 import Actor.UI.State (DataBrowserState(..), emptyDataBrowserState)
@@ -25,11 +26,13 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Seer.DataBrowser.Lifecycle (DataBrowserAppAction(..))
 import Seer.DataBrowser.Model hiding (DataBrowserAction(..))
 import qualified Seer.DataBrowser.Model as Model
 import Seer.Service.Types (ServiceResponse(..), ServiceResult, serviceErrorText)
 import Topo.Plugin.DataResource
-  ( DataResourceSchema(..)
+  ( DataOperations(..)
+  , DataResourceSchema(..)
   , currentDataResourceSchemaVersion
   , defaultDataPagination
   , defaultDataResourceVersion
@@ -39,44 +42,12 @@ import Topo.Plugin.RPC.DataService (DataRecord(..), QueryResult(..))
 -- | AppService invocation used by Data Browser integration.
 type DataBrowserRunService = Text -> Value -> IO ServiceResult
 
--- | UI-facing state used while interpreting Data Browser actions.
-data DataBrowserUi = DataBrowserUi
-  { dbuResources :: !(Map Text [DataResourceSchema])
-  , dbuModel :: !DataBrowserModel
-  } deriving (Eq, Show)
-
 -- | Result of interpreting an action. The model is always updated; service
 -- failures are also returned for command/test callers that need to surface them.
 data DataBrowserActionResult = DataBrowserActionResult
   { dbarUi :: !DataBrowserUi
   , dbarError :: !(Maybe Text)
   } deriving (Eq, Show)
-
--- | Integration actions. Pure-only actions are interpreted by the reducer;
--- data loading and mutations are performed through AppService.
-data DataBrowserAppAction
-  = DataBrowserLoadPlugins
-  | DataBrowserSelectPlugin !Text
-  | DataBrowserSelectResource !Text !Text
-  | DataBrowserQueryRecords !DataBrowserPageAction
-  | DataBrowserSelectRecord !Int
-  | DataBrowserDismissRecord
-  | DataBrowserToggleField !Text
-  | DataBrowserStartEdit
-  | DataBrowserStartCreate
-  | DataBrowserCancelEdit
-  | DataBrowserFocusField !Text
-  | DataBrowserBlurField
-  | DataBrowserSetFieldValue !Text !Value
-  | DataBrowserStepNumberField !Text !Int
-  | DataBrowserToggleBoolField !Text
-  | DataBrowserCycleEnumField !Text !Int
-  | DataBrowserCreateRecord
-  | DataBrowserUpdateRecord
-  | DataBrowserRequestDelete
-  | DataBrowserCancelDelete
-  | DataBrowserDeleteRecord
-  deriving (Eq, Show)
 
 emptyDataBrowserUi :: DataBrowserUi
 emptyDataBrowserUi = DataBrowserUi Map.empty emptyDataBrowserModel
@@ -112,8 +83,10 @@ dataBrowserStateToModel resources state = DataBrowserModel
   , dbModelFocusedField = dbsFocusedField state
   , dbModelTextCursor = dbsTextCursor state
   , dbModelValidationErrors = dbsValidationErrors state
-  , dbModelPendingRequest = Nothing
-  , dbModelLoading = dbsLoading state
+  , dbModelPendingRequest = dbsPendingRequest state >>= dataBrowserPendingDescriptor . dbpeRequest
+  , dbModelPendingEnvelope = dbsPendingRequest state
+  , dbModelAsyncError = dbsAsyncError state
+  , dbModelLoading = maybe False (const True) (dbsPendingRequest state)
   }
   where
     schema = do
@@ -147,6 +120,8 @@ dataBrowserStateFromModel model = emptyDataBrowserState
   , dbsTextCursor = dbModelTextCursor model
   , dbsDeleteConfirm = dbModelMode model == DataBrowserDeleteConfirmMode
   , dbsValidationErrors = dbModelValidationErrors model
+  , dbsPendingRequest = dbModelPendingEnvelope model
+  , dbsAsyncError = dbModelAsyncError model
   }
   where
     selection = dbModelSelection model
@@ -217,6 +192,21 @@ runDataBrowserAppAction runService ui action = case action of
   DataBrowserSetFieldValue path value ->
     pureAction ui (Model.DataBrowserSetFieldValue path value)
 
+  DataBrowserInsertText text ->
+    pureAction ui (Model.DataBrowserInsertText text)
+
+  DataBrowserReplaceText text ->
+    pureAction ui (Model.DataBrowserReplaceText text)
+
+  DataBrowserBackspace ->
+    pureAction ui Model.DataBrowserBackspace
+
+  DataBrowserDeleteText ->
+    pureAction ui Model.DataBrowserDeleteText
+
+  DataBrowserSetTextCursor cursor ->
+    pureAction ui (Model.DataBrowserSetTextCursor cursor)
+
   DataBrowserStepNumberField path delta ->
     pureAction ui (Model.DataBrowserStepNumberField path delta)
 
@@ -240,6 +230,54 @@ runDataBrowserAppAction runService ui action = case action of
 
   DataBrowserDeleteRecord ->
     runReducerThenPending runService ui Model.DataBrowserConfirmDelete
+
+-- | Perform worker-side service IO without owning or mutating UI state.
+performDataBrowserWorkerRequest
+  :: DataBrowserRunService
+  -> DataBrowserWorkerRequest
+  -> IO (Either Text DataBrowserWorkerOutcome)
+performDataBrowserWorkerRequest runService request = case request of
+  DataBrowserLoadCatalogRequest ->
+    fmap DataBrowserCatalogLoaded <$> loadAllResources runService
+  DataBrowserLoadPluginRequest pluginName ->
+    fmap (DataBrowserPluginLoaded pluginName) <$> loadPluginResources runService pluginName
+  DataBrowserSelectResourceRequest pluginName resourceName -> do
+    loaded <- loadPluginResources runService pluginName
+    case loaded of
+      Left err -> pure (Left err)
+      Right schemas -> case findSchema resourceName schemas of
+        Nothing -> pure (Left ("unknown resource: " <> resourceName))
+        Just schema
+          | not (doList (drsOperations schema)) ->
+              pure (Right (DataBrowserResourceLoaded pluginName schemas schema Nothing))
+          | otherwise -> do
+              let (pageSize, pageOffset) = dataBrowserPageRequestFor schema
+              body <- callService runService "data_list_records" $
+                listRecordsParams pluginName resourceName pageSize pageOffset
+              pure $ do
+                result <- body >>= parseBody parseQueryResult
+                pure (DataBrowserResourceLoaded pluginName schemas schema (Just result))
+  DataBrowserRecordRequest descriptor -> case descriptor of
+    DataBrowserListRecordsRequest pluginName resourceName pageSize pageOffset -> do
+      body <- callService runService "data_list_records" $
+        listRecordsParams pluginName resourceName pageSize pageOffset
+      pure $ DataBrowserRecordsLoaded <$> (body >>= parseBody parseQueryResult)
+    DataBrowserCreateRecordRequest pluginName resourceName record -> do
+      body <- callService runService "data_create_record" $
+        object [ "plugin" .= pluginName, "resource" .= resourceName, "fields" .= unDataRecord record ]
+      pure $ DataBrowserMutationCompleted <$> (body >>= parseBody parseMutationRecord)
+    DataBrowserUpdateRecordRequest pluginName resourceName keyValue record -> do
+      body <- callService runService "data_update_record" $ object
+        [ "plugin" .= pluginName
+        , "resource" .= resourceName
+        , "key" .= keyValue
+        , "fields" .= unDataRecord record
+        ]
+      pure $ DataBrowserMutationCompleted <$> (body >>= parseBody parseMutationRecord)
+    DataBrowserDeleteRecordRequest pluginName resourceName keyValue -> do
+      body <- callService runService "data_delete_record" $
+        object [ "plugin" .= pluginName, "resource" .= resourceName, "key" .= keyValue ]
+      pure $ body >> Right (DataBrowserMutationCompleted Nothing)
 
 -- | Run one pending reducer request through AppService and feed completion back
 -- into the reducer.

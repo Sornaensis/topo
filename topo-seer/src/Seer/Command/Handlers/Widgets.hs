@@ -19,6 +19,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
+import Data.Word (Word64)
 import qualified Data.Text as Text
 import qualified Data.Text.Read as Text
 
@@ -55,11 +56,10 @@ import Actor.UI.Setters
   , setUiChunkSize
   , setUiPluginNames
   , setUiPluginExpanded
-  , setUiDataBrowser
-  , setUiDataResources
   )
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
+import Seer.DataBrowser.Executor (submitDataBrowserAction)
 import qualified Seer.Command.Handlers.Data as HData
 import qualified Seer.Command.Handlers.Pipeline as HPipeline
 import qualified Seer.Command.Handlers.Plugin as HPlugin
@@ -73,7 +73,13 @@ import Seer.Service.Types (ServiceError(..), ServiceResponse(..), ServiceResult)
 import Topo.Command.Types (SeerResponse(..), okResponse, errResponse)
 import Topo.Pipeline.Stage (parseStageId, stageCanonicalName, allBuiltinStageIds)
 import qualified Seer.DataBrowser.AppService as DataBrowser
-import Seer.DataBrowser.Model (DataBrowserPageAction(..))
+import Seer.DataBrowser.Model
+  ( DataBrowserBeginResult(..)
+  , DataBrowserPageAction(..)
+  , DataBrowserPendingEnvelope(..)
+  , DataBrowserRequestId(..)
+  , dataBrowserOperationText
+  )
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
 import Seer.Editor.Types (EditorState(..))
 import UI.Components.PipelineControls (pipelineParamToggleValue)
@@ -410,11 +416,18 @@ handleClickWidget ctx reqId params = do
         Just wid -> do
           result <- executeWidgetClick ctx wid
           case result of
-            Right msg -> pure $ okResponse reqId $ object
-              [ "widget_id" .= widgetIdToText wid
-              , "status" .= ("clicked" :: Text)
-              , "info" .= msg
-              ]
+            Right msg -> case decodeAsyncAcceptance msg of
+              Just (requestId, operation) -> pure $ okResponse reqId $ object
+                [ "widget_id" .= widgetIdToText wid
+                , "status" .= ("accepted" :: Text)
+                , "request_id" .= requestId
+                , "operation" .= operation
+                ]
+              Nothing -> pure $ okResponse reqId $ object
+                [ "widget_id" .= widgetIdToText wid
+                , "status" .= ("clicked" :: Text)
+                , "info" .= msg
+                ]
             Left err -> pure $ errResponse reqId err
   where
     parseWidgetParam = Aeson.withObject "params" $ \o -> o .: "widget_id"
@@ -430,8 +443,11 @@ executeWidgetClick ctx wid = do
   -- of clicks observes UI updates enqueued by prior clicks before it.
   uiSnap <- getUiSnapshot uiH
   let dataBrowserResult message action = do
-        result <- applyDataBrowserClick ctx uiSnap action
-        pure (result *> Right message)
+        result <- applyDataBrowserClick ctx action
+        pure $ case result of
+          Left err -> Left err
+          Right Nothing -> Right message
+          Right (Just envelope) -> Right (encodeAsyncAcceptance envelope)
       setBase baseMode = do
         submitAction ctx (UiActionSetBaseViewMode baseMode)
         pure $ Right "base view set"
@@ -503,8 +519,11 @@ executeWidgetClick ctx wid = do
     WidgetConfigTabPipeline -> setTab uiH ConfigPipeline
     WidgetConfigTabData -> do
       tabResult <- setTab uiH ConfigData
-      dataResult <- applyDataBrowserClick ctx uiSnap DataBrowser.DataBrowserLoadPlugins
-      pure (dataResult *> tabResult)
+      dataResult <- applyDataBrowserClick ctx DataBrowser.DataBrowserLoadPlugins
+      pure $ case dataResult of
+        Left err -> Left err
+        Right Nothing -> tabResult
+        Right (Just envelope) -> Right (encodeAsyncAcceptance envelope)
 
     -- ----- Layered View tab controls -----
     WidgetViewBaseElevation -> setBase BaseViewElevation
@@ -793,19 +812,37 @@ runWidgetDataService ctx method params = do
     then Right (ServiceResponse (srResult response))
     else Left (ServiceInternalError (maybe "data browser service failed" id (srError response)))
 
-applyDataBrowserClick :: CommandContext -> UiState -> DataBrowser.DataBrowserAppAction -> IO (Either Text ())
-applyDataBrowserClick ctx uiSnap action = do
-  let uiH = ahUiHandle (ccActorHandles ctx)
-  result <- DataBrowser.runDataBrowserAppAction
+applyDataBrowserClick
+  :: CommandContext
+  -> DataBrowser.DataBrowserAppAction
+  -> IO (Either Text (Maybe DataBrowserPendingEnvelope))
+applyDataBrowserClick ctx action = do
+  result <- submitDataBrowserAction
+    (ccDataBrowserExecutor ctx)
     (runWidgetDataService ctx)
-    (DataBrowser.dataBrowserUiFromState (uiDataResources uiSnap) (uiDataBrowser uiSnap))
     action
-  let (resources, dbs) = DataBrowser.dataBrowserUiToState (DataBrowser.dbarUi result)
-  setUiDataResources uiH resources
-  setUiDataBrowser uiH dbs
-  pure $ case DataBrowser.dbarError result of
-    Nothing -> Right ()
-    Just err -> Left err
+  pure $ case result of
+    DataBrowserBeginRejected err -> Left err
+    DataBrowserBeginPure -> Right Nothing
+    DataBrowserBeginAccepted envelope _ -> Right (Just envelope)
+
+asyncAcceptancePrefix :: Text
+asyncAcceptancePrefix = "__data_browser_accepted__:"
+
+encodeAsyncAcceptance :: DataBrowserPendingEnvelope -> Text
+encodeAsyncAcceptance envelope =
+  asyncAcceptancePrefix
+    <> Text.pack (show (unDataBrowserRequestId (dbpeRequestId envelope)))
+    <> ":" <> dataBrowserOperationText (dbpeOperation envelope)
+
+decodeAsyncAcceptance :: Text -> Maybe (Word64, Text)
+decodeAsyncAcceptance value = do
+  payload <- Text.stripPrefix asyncAcceptancePrefix value
+  case Text.splitOn ":" payload of
+    [rawId, operation] -> case Text.decimal rawId of
+      Right (requestId, "") -> Just (requestId, operation)
+      _ -> Nothing
+    _ -> Nothing
 
 bumpSlider ctx uiSnap sid part = do
   let style = sliderStyleForId sid

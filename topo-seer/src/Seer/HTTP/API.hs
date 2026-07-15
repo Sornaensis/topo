@@ -1688,6 +1688,8 @@ dataStateResponseSchema = objectSchema "DataStateResponse"
   , ("total_count", nullableSchema integerSchema)
   , ("page_offset", integerSchema)
   , ("loading", booleanSchema)
+  , ("pending", nullableSchema dataBrowserPendingSchema)
+  , ("async_error", nullableSchema dataBrowserAsyncErrorSchema)
   , ("edit_mode", booleanSchema)
   , ("create_mode", booleanSchema)
   , ("has_selection", booleanSchema)
@@ -1695,6 +1697,23 @@ dataStateResponseSchema = objectSchema "DataStateResponse"
   , ("external_data_sources", arraySchema pluginExternalDataSourceSchema)
   , ("external_data_source_count", integerSchema)
   , ("external_data_source_failures", integerSchema)
+  ]
+
+dataBrowserPendingSchema :: Value
+dataBrowserPendingSchema = inlineObjectSchema
+  [ "request_id", "operation", "target" ]
+  [ ("request_id", integerSchema)
+  , ("operation", stringSchema)
+  , ("target", freeObjectSchema)
+  ]
+
+dataBrowserAsyncErrorSchema :: Value
+dataBrowserAsyncErrorSchema = inlineObjectSchema
+  [ "request_id", "operation", "target", "message" ]
+  [ ("request_id", integerSchema)
+  , ("operation", stringSchema)
+  , ("target", freeObjectSchema)
+  , ("message", stringSchema)
   ]
 
 dataPluginSummarySchema :: Value
@@ -2311,10 +2330,12 @@ widgetClickRequestSchema = widgetIdRequestSchema "WidgetClickRequest"
 
 widgetClickResponseSchema :: JsonSchema
 widgetClickResponseSchema = objectSchema "WidgetClickResponse"
-  [ "widget_id", "status", "info" ]
+  [ "widget_id", "status" ]
   [ ("widget_id", stringSchema)
-  , ("status", enumStringSchema ["clicked"])
+  , ("status", enumStringSchema ["clicked", "accepted"])
   , ("info", stringSchema)
+  , ("request_id", integerSchema)
+  , ("operation", stringSchema)
   ]
 
 widgetListResponseSchema :: JsonSchema
@@ -2441,6 +2462,8 @@ dataBrowserStateSchema = inlineObjectSchema
   , ("total_count", nullableSchema integerSchema)
   , ("page_offset", integerSchema)
   , ("loading", booleanSchema)
+  , ("pending", nullableSchema dataBrowserPendingSchema)
+  , ("async_error", nullableSchema dataBrowserAsyncErrorSchema)
   , ("edit_mode", booleanSchema)
   , ("create_mode", booleanSchema)
   , ("has_selection", booleanSchema)

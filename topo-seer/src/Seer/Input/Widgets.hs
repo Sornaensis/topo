@@ -27,8 +27,6 @@ import Actor.UI
   , setUiConfigScroll
   , setUiContextHex
   , setUiContextPos
-  , setUiDataBrowser
-  , setUiDataResources
   , setUiLeftTab
   , setUiSeedEditing
   , setUiSeedInput
@@ -71,6 +69,7 @@ import Seer.World.Persist (listWorlds)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Pipeline.Stage (parseStageId)
 import qualified Seer.DataBrowser.AppService as DataBrowser
+import Seer.DataBrowser.Executor (submitDataBrowserAction)
 import Seer.DataBrowser.Model (DataBrowserPageAction(..))
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..), noOperations)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
@@ -475,14 +474,12 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         applyDataBrowserAction uiState (DataBrowser.DataBrowserCycleEnumField path 1)
       _ -> pure ()
 
-    applyDataBrowserAction uiState action = do
-      result <- DataBrowser.runDataBrowserAppAction
+    applyDataBrowserAction _uiState action = do
+      _ <- submitDataBrowserAction
+        (ieDataBrowserExecutor widgetEnv)
         (runInputService widgetEnv)
-        (DataBrowser.dataBrowserUiFromState (uiDataResources uiState) (uiDataBrowser uiState))
         action
-      let (resources, dbs) = DataBrowser.dataBrowserUiToState (DataBrowser.dbarUi result)
-      setUiDataResources uiHandle resources
-      setUiDataBrowser uiHandle dbs
+      pure ()
 
     handleMenuClick ly _widgets point = do
       uiSnap <- getUiSnapshot uiHandle

@@ -42,6 +42,10 @@ import Actor.PluginManager
 import Actor.UiActions.Handles (ActorHandles(..))
 import Actor.UI.State (UiState(..), DataBrowserState(..), readUiSnapshotRef)
 import Seer.Command.Context (CommandContext(..))
+import Seer.DataBrowser.Model
+  ( dataBrowserAsyncErrorValue
+  , dataBrowserPendingEnvelopeValue
+  )
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Plugin.DataResource
   ( DataResourceSchema(..)
@@ -292,6 +296,8 @@ handleDataGetState ctx reqId _params = do
     , "total_count" .= dbsTotalCount dbs
     , "page_offset" .= dbsPageOffset dbs
     , "loading" .= dbsLoading dbs
+    , "pending" .= fmap dataBrowserPendingEnvelopeValue (dbsPendingRequest dbs)
+    , "async_error" .= fmap dataBrowserAsyncErrorValue (dbsAsyncError dbs)
     , "edit_mode" .= dbsEditMode dbs
     , "create_mode" .= dbsCreateMode dbs
     , "has_selection" .= case dbsSelectedRecord dbs of

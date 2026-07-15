@@ -5,6 +5,7 @@ module Spec.DataBrowser (spec) where
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Map.Strict as Map
 import qualified Data.Vector as Vector
+import qualified Seer.DataBrowser.Lifecycle as Lifecycle
 import Seer.DataBrowser.Model
 import Test.Hspec
 import Topo.Plugin.DataResource
@@ -234,6 +235,58 @@ spec = describe "DataBrowser model reducer" $ do
     dbModelPendingRequest paged `shouldBe` Nothing
     dbModelValidationErrors paged `shouldBe` [DataBrowserValidationError Nothing "list not supported"]
 
+  it "uses request IDs to make stale completions a total no-op" $ do
+    let initial = DataBrowserUi (Map.singleton "atlas" [pagedSchema]) emptyDataBrowserModel
+        (firstUi, firstBegin) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 1) initial (Lifecycle.DataBrowserSelectResource "atlas" "cities")
+        (secondUi, secondBegin) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 2) firstUi (Lifecycle.DataBrowserSelectResource "atlas" "cities")
+        firstEnvelope = accepted firstBegin
+        secondEnvelope = accepted secondBegin
+        staleCompletion = DataBrowserCompletion
+          { dbcRequestId = dbpeRequestId firstEnvelope
+          , dbcRequest = dbpeRequest firstEnvelope
+          , dbcOutcome = DataBrowserRecordsLoaded (QueryResult "cities" [record1] (Just 1))
+          }
+        (afterStale, applied) = completeDataBrowserRequest staleCompletion secondUi
+    dbpeRequestId secondEnvelope `shouldNotBe` dbpeRequestId firstEnvelope
+    applied `shouldBe` False
+    afterStale `shouldBe` secondUi
+
+  it "applies resources and browser records in one guarded completion" $ do
+    let initial = DataBrowserUi Map.empty emptyDataBrowserModel
+        (pendingUi, begun) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 7) initial (Lifecycle.DataBrowserSelectResource "atlas" "cities")
+        envelope = accepted begun
+        completion = DataBrowserCompletion
+          { dbcRequestId = dbpeRequestId envelope
+          , dbcRequest = dbpeRequest envelope
+          , dbcOutcome = DataBrowserResourceLoaded "atlas" [pagedSchema] pagedSchema
+              (Just (QueryResult "cities" [record1, record2] (Just 2)))
+          }
+        (completedUi, applied) = completeDataBrowserRequest completion pendingUi
+    applied `shouldBe` True
+    dbuResources completedUi `shouldBe` Map.singleton "atlas" [pagedSchema]
+    dbModelRecords (dbuModel completedUi) `shouldBe` [record1, record2]
+    dbModelPendingEnvelope (dbuModel completedUi) `shouldBe` Nothing
+
+  it "locks navigation while a mutation is pending without losing edit state" $ do
+    let initial = DataBrowserUi (Map.singleton "atlas" [pagedSchema]) loadedModel
+        (creatingUi, _) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 10) initial Lifecycle.DataBrowserStartCreate
+        editedModel = dataBrowserReducer (dbuModel creatingUi)
+          (DataBrowserSetFieldValue "name" (String "Retained"))
+        editedUi = creatingUi { dbuModel = editedModel }
+        (mutationUi, mutationBegin) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 10) editedUi Lifecycle.DataBrowserCreateRecord
+        (rejectedUi, rejected) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 11) mutationUi (Lifecycle.DataBrowserSelectPlugin "other")
+    mutationBegin `shouldSatisfy` isAccepted
+    rejected `shouldBe` DataBrowserBeginRejected "data browser mutation in progress"
+    rejectedUi `shouldBe` mutationUi
+    Map.lookup "name" (dbEditBufferValues (dbModelEditBuffer (dbuModel rejectedUi)))
+      `shouldBe` Just (String "Retained")
+
 selectedResourceModel :: DataBrowserModel
 selectedResourceModel =
   dataBrowserReducer emptyDataBrowserModel (DataBrowserSelectResource "atlas" pagedSchema)
@@ -247,6 +300,14 @@ loadedModel =
 
 selectFirstRecord :: DataBrowserModel -> DataBrowserModel
 selectFirstRecord model = dataBrowserReducer model (DataBrowserSelectRecord 0)
+
+accepted :: DataBrowserBeginResult -> DataBrowserPendingEnvelope
+accepted (DataBrowserBeginAccepted envelope _) = envelope
+accepted result = error ("expected accepted request, got " <> show result)
+
+isAccepted :: DataBrowserBeginResult -> Bool
+isAccepted DataBrowserBeginAccepted {} = True
+isAccepted _ = False
 
 record1 :: DataRecord
 record1 = DataRecord $ Map.fromList

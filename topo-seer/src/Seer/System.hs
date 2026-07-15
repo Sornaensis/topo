@@ -23,7 +23,7 @@ module Seer.System
   , retryPublicationRace
   ) where
 
-import Control.Exception (finally)
+import Control.Exception (bracket, finally)
 import Seer.Config.Runtime (loadConfig)
 import Seer.System.Actors
   ( AppActors(..)
@@ -83,14 +83,12 @@ runSdlApp opts = do
   boostMainThreadPriority
   pinMainThreadToCore0
   runtimeCfg <- loadConfig
-  actors <- initialiseAppActors runtimeCfg
-  startCommandServices opts actors
-  sdl <- initialiseSdlResources
-  finalState <- runRendererWithScreenshotBroker (aaScreenshotRef actors)
-    (runMainLoop runtimeCfg actors sdl)
-  destroyRenderCacheState (srTexturePool sdl) finalState
-  shutdownSdlResources sdl
-  shutdownAppActors actors
+  bracket (initialiseAppActors runtimeCfg) shutdownAppActors $ \actors -> do
+    startCommandServices opts actors
+    bracket initialiseSdlResources shutdownSdlResources $ \sdl -> do
+      finalState <- runRendererWithScreenshotBroker (aaScreenshotRef actors)
+        (runMainLoop runtimeCfg actors sdl)
+      destroyRenderCacheState (srTexturePool sdl) finalState
 
 -- | Close capture under 'finally' before propagating any normal or exceptional
 -- renderer-loop exit. This also removes the async-exception window between a

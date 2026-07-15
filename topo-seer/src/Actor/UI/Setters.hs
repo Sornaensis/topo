@@ -272,7 +272,6 @@ module Actor.UI.Setters
   , setUiSeedInput
   , setUiOverlayNames
   , setUiOverlayFields
-  , setUiDataBrowser
   , setUiDataResources
   , setUiEditor
   ) where
@@ -608,6 +607,5 @@ setUiPluginParamSpecs = sendUnary SetPluginParamSpecs
 setUiPluginLifecycles = sendUnary SetPluginLifecycles
 setUiPluginDiagnosticLines = sendUnary SetPluginDiagnosticLines
 setUiPluginDiagnosticStatuses = sendUnary SetPluginDiagnosticStatuses
-setUiDataBrowser = sendUnary SetDataBrowser
 setUiDataResources = sendUnary SetDataResources
 setUiEditor = sendUnary SetEditor

@@ -9,6 +9,9 @@ module Seer.HTTP.Server
   , defaultHttpServerConfig
   , parseHttpBind
   , runHttpServer
+  , HttpServerHandle
+  , startHttpServer
+  , shutdownHttpServer
   , forkHttpServer
   , httpApplication
   , handleHttpRequest
@@ -19,10 +22,27 @@ module Seer.HTTP.Server
   , friendlyHttpRouteSpecs
   , commandHttpRouteSpecs
   ) where
-import Control.Concurrent (ThreadId, forkIO)
+import Control.Concurrent
+  ( MVar
+  , ThreadId
+  , forkIOWithUnmask
+  , newEmptyMVar
+  , putMVar
+  , readMVar
+  , tryPutMVar
+  , tryReadMVar
+  )
 import Control.Concurrent.STM (TChan, atomically, readTChan)
-import Control.Exception (SomeException, try)
-import Control.Monad (forever)
+import Control.Exception
+  ( SomeAsyncException
+  , SomeException
+  , finally
+  , fromException
+  , mask
+  , throwIO
+  , try
+  )
+import Control.Monad (forever, void, when)
 import Data.Aeson (Value(..), eitherDecode, object, (.=))
 import Data.Char (toLower)
 import qualified Data.Aeson as Aeson
@@ -91,20 +111,76 @@ breakOnLast needle input = go input Nothing
 
 runHttpServer :: HttpServerConfig -> AppService -> ServiceContext -> IO ()
 runHttpServer cfg app ctx = do
-  case validateHttpAuthConfig (HttpAuthConfig (hscBindHost cfg) (hscBearerToken cfg)) of
-    Left err -> fail (Text.unpack err)
-    Right () -> pure ()
-  Warp.runSettings settings (httpApplication cfg app ctx)
-  where
-    settings = Warp.setHost (fromStringHost (hscBindHost cfg))
-      $ Warp.setPort (hscBindPort cfg) Warp.defaultSettings
+  validateServerConfig cfg
+  Warp.runSettings (serverSettings cfg (const (pure ())))
+    (httpApplication cfg app ctx)
+
+data HttpServerHandle = HttpServerHandle
+  { hshThreadId :: !ThreadId
+  , hshShutdownRequested :: !(MVar ())
+  , hshCloseAction :: !(MVar (IO ()))
+  , hshCloseStarted :: !(MVar ())
+  , hshDone :: !(MVar ())
+  }
+
+startHttpServer
+  :: HttpServerConfig
+  -> AppService
+  -> ServiceContext
+  -> IO HttpServerHandle
+startHttpServer cfg app ctx = mask $ \_ -> do
+  validateServerConfig cfg
+  shutdownRequested <- newEmptyMVar
+  closeAction <- newEmptyMVar
+  closeStarted <- newEmptyMVar
+  done <- newEmptyMVar
+  let closeOnce close = do
+        first <- tryPutMVar closeStarted ()
+        when first close
+      installClose close = do
+        putMVar closeAction close
+        requested <- tryReadMVar shutdownRequested
+        when (maybe False (const True) requested) (closeOnce close)
+      settings = serverSettings cfg installClose
+  threadId <- forkIOWithUnmask $ \unmask ->
+    unmask (Warp.runSettings settings (httpApplication cfg app ctx))
+      `finally` void (tryPutMVar done ())
+  pure HttpServerHandle
+    { hshThreadId = threadId
+    , hshShutdownRequested = shutdownRequested
+    , hshCloseAction = closeAction
+    , hshCloseStarted = closeStarted
+    , hshDone = done
+    }
+
+shutdownHttpServer :: HttpServerHandle -> IO ()
+shutdownHttpServer handle = mask $ \_ -> do
+  void (tryPutMVar (hshShutdownRequested handle) ())
+  close <- tryReadMVar (hshCloseAction handle)
+  case close of
+    Nothing -> pure ()
+    Just action -> do
+      first <- tryPutMVar (hshCloseStarted handle) ()
+      when first action
+  readMVar (hshDone handle)
 
 forkHttpServer :: HttpServerConfig -> AppService -> ServiceContext -> IO ThreadId
-forkHttpServer cfg app ctx = do
+forkHttpServer cfg app ctx = hshThreadId <$> startHttpServer cfg app ctx
+
+validateServerConfig :: HttpServerConfig -> IO ()
+validateServerConfig cfg =
   case validateHttpAuthConfig (HttpAuthConfig (hscBindHost cfg) (hscBearerToken cfg)) of
     Left err -> fail (Text.unpack err)
     Right () -> pure ()
-  forkIO (runHttpServer cfg app ctx)
+
+serverSettings
+  :: HttpServerConfig
+  -> (IO () -> IO ())
+  -> Warp.Settings
+serverSettings cfg installShutdown =
+  Warp.setInstallShutdownHandler installShutdown
+    $ Warp.setHost (fromStringHost (hscBindHost cfg))
+    $ Warp.setPort (hscBindPort cfg) Warp.defaultSettings
 
 fromStringHost :: String -> Warp.HostPreference
 fromStringHost = fromString
@@ -355,10 +431,12 @@ invokeService :: AppService -> ServiceContext -> HttpRouteSpec -> HttpRequest ->
 invokeService app ctx spec req params = do
   result <- try (runServiceOperation app ctx method params) :: IO (Either SomeException ServiceResult)
   case result of
-    Left _ -> do
-      let body = errorEnvelope "internal_error" "service handler exception" []
-      publishHttpEvent ctx spec req ServiceEventError "error" body
-      pure (jsonResponse 500 body)
+    Left err -> case fromException err of
+      Just async -> throwIO (async :: SomeAsyncException)
+      Nothing -> do
+        let body = errorEnvelope "internal_error" "service handler exception" []
+        publishHttpEvent ctx spec req ServiceEventError "error" body
+        pure (jsonResponse 500 body)
     Right (Right response) -> do
       publishHttpEvent ctx spec req ServiceEventInfo "ok" (serviceResponseBody response)
       pure (jsonResponse 200 (serviceResponseBody response))

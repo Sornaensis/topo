@@ -25,7 +25,6 @@ import Actor.UI
   , setUiConfigScroll
   , setUiContextHex
   , setUiContextPos
-  , setUiDataBrowser
   , setUiHexTooltipPinned
   , setUiPanOffset
   , setUiHoverHex
@@ -42,14 +41,13 @@ import Actor.UI
   , setUiLeftViewScroll
   )
 import Control.Applicative ((<|>))
-import Control.Monad (when)
+import Control.Monad (void, when)
 import Data.Aeson (Value(..), object, (.=))
 import Data.IORef (IORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word32, Word64)
 import qualified Data.Text as Text
 import qualified Data.IntMap.Strict as IntMap
-import qualified Data.Set as Set
 import Linear (V2(..))
 import qualified SDL
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -67,9 +65,9 @@ import Seer.Input.ViewControls
   , defaultZoomSettings
   , viewHotkeyForKey
   )
-import Seer.DataBrowser.Model (clearAdtSiblingEditValues)
+import Seer.DataBrowser.Executor (submitDataBrowserAction)
+import qualified Seer.DataBrowser.Lifecycle as DataBrowser
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
-import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Types (BiomeId, TerrainForm, biomeIdToCode, terrainFormToCode)
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildSliderRowWidgets, hitTest)
@@ -313,25 +311,13 @@ handleEvent inputContext event = do
       when (uiMenuMode uiSnap == MenuWorldLoad) $
         handleModalTextInput (uiWorldFilter uiSnap) txt
           (\f -> setUiWorldFilter uiHandle f >> setUiWorldSelected uiHandle 0)
-      -- Data browser text field editing
+      -- Data browser text editing is reduced against the latest Ui-owned state.
       let dbs = uiDataBrowser uiSnap
       case dbsFocusedField dbs of
-        Just path | dbsEditMode dbs || dbsCreateMode dbs -> do
-          let editVals = dbsEditValues dbs
-              cursor = dbsTextCursor dbs
-              filtered = Text.filter (\c -> c >= ' ') txt
-          when (not (Text.null filtered)) $ do
-            let currentText = case Map.lookup path editVals of
-                  Just (String t) -> t
-                  _ -> ""
-                (before, after) = Text.splitAt cursor currentText
-                newText = before <> filtered <> after
-                newCursor = cursor + Text.length filtered
-                newDbs = dbs
-                  { dbsEditValues = dataFieldEditValues uiSnap dbs path (String newText)
-                  , dbsTextCursor = newCursor
-                  }
-            setUiDataBrowser uiHandle newDbs
+        Just _ | dbsEditMode dbs || dbsCreateMode dbs -> do
+          let filtered = Text.filter (\c -> c >= ' ') txt
+          when (not (Text.null filtered)) $
+            applyDataBrowserAction (DataBrowser.DataBrowserInsertText filtered)
         _ -> pure ()
     SDL.KeyboardEvent keyboardEvent
       | SDL.keyboardEventKeyMotion keyboardEvent == SDL.Pressed ->
@@ -392,6 +378,11 @@ handleEvent inputContext event = do
 
     runService method params =
       runInputService inputEnv method params >> pure ()
+
+    applyDataBrowserAction action = void $ submitDataBrowserAction
+      (ieDataBrowserExecutor inputEnv)
+      (runInputService inputEnv)
+      action
 
     setSeedValue :: Word64 -> IO ()
     setSeedValue seed =
@@ -635,117 +626,35 @@ handleEvent inputContext event = do
 
     -- | Handle keyboard events when a data browser text field is focused.
     handleDataFieldKey :: UiState -> DataBrowserState -> Text.Text -> SDL.Keycode -> IO ()
-    handleDataFieldKey uiSnap dbs path keycode = do
-      let editVals = dbsEditValues dbs
-          cursor   = dbsTextCursor dbs
-          currentText = case Map.lookup path editVals of
+    handleDataFieldKey _uiSnap dbs path keycode = do
+      let cursor = dbsTextCursor dbs
+          currentText = case Map.lookup path (dbsEditValues dbs) of
             Just (String t) -> t
             _ -> ""
+          unfocus = applyDataBrowserAction DataBrowser.DataBrowserBlurField >> SDL.stopTextInput
       case keycode of
-        SDL.KeycodeEscape -> do
-          -- Unfocus the field
-          let newDbs = dbs { dbsFocusedField = Nothing, dbsTextCursor = 0 }
-          setUiDataBrowser uiHandle newDbs
-          SDL.stopTextInput
-        SDL.KeycodeReturn -> do
-          -- Unfocus the field (confirm)
-          let newDbs = dbs { dbsFocusedField = Nothing, dbsTextCursor = 0 }
-          setUiDataBrowser uiHandle newDbs
-          SDL.stopTextInput
-        SDL.KeycodeTab -> do
-          -- Unfocus the field
-          let newDbs = dbs { dbsFocusedField = Nothing, dbsTextCursor = 0 }
-          setUiDataBrowser uiHandle newDbs
-          SDL.stopTextInput
-        SDL.KeycodeBackspace -> do
-          when (cursor > 0) $ do
-            let (before, after) = Text.splitAt cursor currentText
-                newText = Text.dropEnd 1 before <> after
-                newDbs = dbs
-                  { dbsEditValues = dataFieldEditValues uiSnap dbs path (String newText)
-                  , dbsTextCursor = cursor - 1
-                  }
-            setUiDataBrowser uiHandle newDbs
-        SDL.KeycodeDelete -> do
-          when (cursor < Text.length currentText) $ do
-            let (before, after) = Text.splitAt cursor currentText
-                newText = before <> Text.drop 1 after
-                newDbs = dbs
-                  { dbsEditValues = dataFieldEditValues uiSnap dbs path (String newText)
-                  }
-            setUiDataBrowser uiHandle newDbs
-        SDL.KeycodeLeft -> do
-          when (cursor > 0) $ do
-            let newDbs = dbs { dbsTextCursor = cursor - 1 }
-            setUiDataBrowser uiHandle newDbs
-        SDL.KeycodeRight -> do
-          when (cursor < Text.length currentText) $ do
-            let newDbs = dbs { dbsTextCursor = cursor + 1 }
-            setUiDataBrowser uiHandle newDbs
-        SDL.KeycodeHome -> do
-          let newDbs = dbs { dbsTextCursor = 0 }
-          setUiDataBrowser uiHandle newDbs
-        SDL.KeycodeEnd -> do
-          let newDbs = dbs { dbsTextCursor = Text.length currentText }
-          setUiDataBrowser uiHandle newDbs
+        SDL.KeycodeEscape -> unfocus
+        SDL.KeycodeReturn -> unfocus
+        SDL.KeycodeTab -> unfocus
+        SDL.KeycodeBackspace -> applyDataBrowserAction DataBrowser.DataBrowserBackspace
+        SDL.KeycodeDelete -> applyDataBrowserAction DataBrowser.DataBrowserDeleteText
+        SDL.KeycodeLeft -> applyDataBrowserAction (DataBrowser.DataBrowserSetTextCursor (cursor - 1))
+        SDL.KeycodeRight -> applyDataBrowserAction (DataBrowser.DataBrowserSetTextCursor (cursor + 1))
+        SDL.KeycodeHome -> applyDataBrowserAction (DataBrowser.DataBrowserSetTextCursor 0)
+        SDL.KeycodeEnd -> applyDataBrowserAction (DataBrowser.DataBrowserSetTextCursor (Text.length currentText))
         _ -> pure ()
-
-    dataFieldEditValues ui dbs path value =
-      let cleared = case selectedDataSchema ui dbs of
-            Nothing -> dbsEditValues dbs
-            Just schema -> clearAdtSiblingEditValues (drsFields schema) path (dbsEditValues dbs)
-      in Map.insert path value cleared
-
-    selectedDataSchema ui dbs = do
-      pName <- dbsSelectedPlugin dbs
-      rName <- dbsSelectedResource dbs
-      schemas <- Map.lookup pName (uiDataResources ui)
-      foldr (\schema acc -> if drsName schema == rName then Just schema else acc) Nothing schemas
 
     closeContextOrMenu = do
       uiSnap <- getUiSnapshot uiHandle
       let dbs = uiDataBrowser uiSnap
       if dbsDeleteConfirm dbs
-        then do
-          -- Cancel delete confirmation first
-          let newDbs = dbs { dbsDeleteConfirm = False }
-          setUiDataBrowser uiHandle newDbs
+        then applyDataBrowserAction DataBrowser.DataBrowserCancelDelete
         else if dbsEditMode dbs || dbsCreateMode dbs
           then do
-            -- Cancel edit/create mode, revert to read-only
-            if dbsCreateMode dbs
-              then do
-                let newDbs = dbs
-                      { dbsEditMode         = False
-                      , dbsCreateMode        = False
-                      , dbsEditValues        = Map.empty
-                      , dbsFocusedField      = Nothing
-                      , dbsTextCursor        = 0
-                      , dbsSelectedRecord    = Nothing
-                      , dbsSelectedRecordKey = Nothing
-                      , dbsSelectedRowIndex  = Nothing
-                      }
-                setUiDataBrowser uiHandle newDbs
-                SDL.stopTextInput
-              else do
-                let newDbs = dbs
-                      { dbsEditMode     = False
-                      , dbsEditValues   = Map.empty
-                      , dbsFocusedField = Nothing
-                      , dbsTextCursor   = 0
-                      }
-                setUiDataBrowser uiHandle newDbs
-                SDL.stopTextInput
+            applyDataBrowserAction DataBrowser.DataBrowserCancelEdit
+            SDL.stopTextInput
           else case dbsSelectedRecord dbs of
-            Just _ -> do
-              -- Dismiss the data detail popover on first Escape press.
-              let newDbs = dbs
-                    { dbsSelectedRecord    = Nothing
-                    , dbsSelectedRecordKey = Nothing
-                    , dbsSelectedRowIndex  = Nothing
-                    , dbsExpandedFields    = Set.empty
-                    }
-              setUiDataBrowser uiHandle newDbs
+            Just _ -> applyDataBrowserAction DataBrowser.DataBrowserDismissRecord
             Nothing ->
               case uiContextHex uiSnap of
                 Just _ -> do

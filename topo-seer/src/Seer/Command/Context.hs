@@ -14,6 +14,7 @@ import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles)
 import Actor.UI.State (UiSnapshotRef)
 import Hyperspace.Actor (ActorHandle, Protocol)
+import Seer.DataBrowser.Executor (DataBrowserExecutor)
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
@@ -26,6 +27,7 @@ data CommandContext = CommandContext
   , ccScreenshotRef   :: !ScreenshotRequestRef
   , ccScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , ccLogSnapshotRef  :: !(Maybe LogSnapshotRef)
+  , ccDataBrowserExecutor :: !DataBrowserExecutor
     -- ^ Log snapshot for @get_logs@.  'Nothing' only in tests.
   }
 
@@ -42,6 +44,7 @@ commandServiceContext ctx = ServiceContext
   , svcScreenshotStoragePolicy = ccScreenshotStoragePolicy ctx
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
   , svcEventBus = Nothing
+  , svcDataBrowserExecutor = ccDataBrowserExecutor ctx
   }
 
 -- | Adapt service-layer context back into the legacy command-handler context.
@@ -56,4 +59,5 @@ serviceCommandContext ctx = CommandContext
   , ccScreenshotRef = svcScreenshotRef ctx
   , ccScreenshotStoragePolicy = svcScreenshotStoragePolicy ctx
   , ccLogSnapshotRef = svcLogSnapshotRef ctx
+  , ccDataBrowserExecutor = svcDataBrowserExecutor ctx
   }

@@ -3,7 +3,7 @@
 module Spec.HTTP (spec) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
-import Control.Exception (SomeException, bracket, finally, throwIO, try)
+import Control.Exception (SomeException, bracket, catch, finally, throwIO, try)
 import Control.Monad (forM_)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson as Aeson
@@ -134,6 +134,7 @@ import System.Directory
   )
 import System.Environment (lookupEnv, setEnv, unsetEnv, withArgs)
 import System.FilePath ((</>), takeDirectory)
+import System.IO.Error (isDoesNotExistError)
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Overlay (emptyOverlayStore, insertOverlay, OverlayProvenance(..))
 import Topo.Plugin.RPC.DataService (DataResourceErrorCode(..), dataResourceErrorCodeText)
@@ -1668,7 +1669,13 @@ requireScreenshotPersistence app root = do
   response <- request app (mkRequest "POST" ["screenshots"])
     { hreqBody = Just (object ["path" .= Text.pack probeName]) }
   case hresStatusCode response of
-    200 -> removeFile (root </> probeName)
+    200 -> do
+      let probePath = root </> probeName
+      persisted <- doesFileExist probePath
+      if persisted
+        then removeFile probePath `catch` \err ->
+          if isDoesNotExistError err then pure () else throwIO err
+        else pendingWith "platform/filesystem did not retain the screenshot capability probe"
     503
       | lookupNestedText ["error", "message"] (hresBody response)
           == Just "screenshot storage is unavailable" ->

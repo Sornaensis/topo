@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE InterruptibleFFI #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -18,20 +19,50 @@
 -- if nothing connects, it just sleeps in an accept loop.
 module Seer.Command.Channel
   ( CommandChannelEnv(..)
+  , CommandChannelControl
+  , newCommandChannelControl
+  , shutdownCommandChannelControl
   , dispatchCommandChannel
   , runCommandChannel
+  , runCommandChannelWithControl
   ) where
 
-import Control.Concurrent (forkIO)
-import Control.Exception (SomeException, catch, finally)
+import Control.Concurrent
+  ( MVar
+  , ThreadId
+  , forkIO
+  , killThread
+  , modifyMVar
+  , modifyMVar_
+  , myThreadId
+  , newEmptyMVar
+  , newMVar
+  , putMVar
+  , readMVar
+  , takeMVar
+  , tryPutMVar
+  )
+import Control.Exception
+  ( SomeAsyncException
+  , SomeException
+  , catch
+  , finally
+  , fromException
+  , mask
+  , onException
+  , throwIO
+  )
+import Control.Monad (void)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as BL
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import System.IO (Handle, hPutStrLn, stderr, hSetBinaryMode, hSetBuffering, BufferMode(..), hClose)
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..), errResponse, commandPipeName)
 import Topo.Plugin.RPC.Transport (Transport(..), sendMessage, recvMessage)
 import Seer.Command.AppServiceAdapter (dispatchAppServiceCommand)
 import Seer.Command.Context (CommandContext(..))
+import Seer.DataBrowser.Executor (DataBrowserExecutor)
 import Seer.Service.AppService (AppService)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
@@ -64,7 +95,61 @@ data CommandChannelEnv = CommandChannelEnv
   , cceScreenshotRef   :: !ScreenshotRequestRef
   , cceScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , cceLogSnapshotRef  :: !(Maybe LogSnapshotRef)
+  , cceDataBrowserExecutor :: !DataBrowserExecutor
   }
+
+data CommandChannelControl = CommandChannelControl !(MVar CommandChannelState)
+
+data CommandChannelState = CommandChannelState
+  { ccsClosed :: !Bool
+  , ccsClients :: !(Map.Map ThreadId (MVar ()))
+  }
+
+newCommandChannelControl :: IO CommandChannelControl
+newCommandChannelControl =
+  CommandChannelControl <$> newMVar (CommandChannelState False Map.empty)
+
+shutdownCommandChannelControl :: CommandChannelControl -> IO ()
+shutdownCommandChannelControl (CommandChannelControl stateVar) = mask $ \_ -> do
+  clients <- modifyMVar stateVar $ \state ->
+    pure (state { ccsClosed = True }, Map.toList (ccsClients state))
+  mapM_ (killThread . fst) clients
+  mapM_ (readMVar . snd) clients
+
+spawnCommandClient :: CommandChannelControl -> IO () -> IO () -> IO Bool
+spawnCommandClient (CommandChannelControl stateVar) rejectedCleanup action = mask $ \restore -> do
+  gate <- newEmptyMVar
+  done <- newEmptyMVar
+  threadId <- forkIO $
+    (takeMVar gate >> restore action)
+      `finally` finalizeCurrentClient stateVar done
+  accepted <- modifyMVar stateVar (register threadId done)
+    `onException` cleanupRejected threadId done
+  if accepted
+    then putMVar gate ()
+    else cleanupRejected threadId done
+  pure accepted
+  where
+    register threadId doneSignal state
+      | ccsClosed state = pure (state, False)
+      | otherwise = pure
+          ( state
+              { ccsClients = Map.insert threadId doneSignal (ccsClients state) }
+          , True
+          )
+    cleanupRejected threadId doneSignal = do
+      killThread threadId
+      readMVar doneSignal
+      rejectedCleanup
+
+finalizeCurrentClient :: MVar CommandChannelState -> MVar () -> IO ()
+finalizeCurrentClient stateVar done = mask $ \_ -> do
+  threadId <- myThreadId
+  modifyMVar_ stateVar (pure . removeClient threadId)
+    `finally` void (tryPutMVar done ())
+  where
+    removeClient threadId state = state
+      { ccsClients = Map.delete threadId (ccsClients state) }
 
 -- | Run the command IPC listener.
 --
@@ -73,8 +158,13 @@ data CommandChannelEnv = CommandChannelEnv
 -- 'forkIO' or 'async' thread.
 runCommandChannel :: CommandChannelEnv -> IO ()
 runCommandChannel env = do
+  control <- newCommandChannelControl
+  runCommandChannelWithControl control env
+
+runCommandChannelWithControl :: CommandChannelControl -> CommandChannelEnv -> IO ()
+runCommandChannelWithControl control env = do
   hPutStrLn stderr ("[ipc] command listener on " ++ commandPipeName)
-  listenLoop env
+  listenLoop control env
 
 -- --------------------------------------------------------------------------
 -- Platform-specific listener
@@ -98,7 +188,7 @@ foreign import ccall safe "windows.h CreateNamedPipeA"
     -> Ptr ()       -- lpSecurityAttributes
     -> IO HANDLE
 
-foreign import ccall safe "windows.h ConnectNamedPipe"
+foreign import ccall interruptible "windows.h ConnectNamedPipe"
   c_ConnectNamedPipe :: HANDLE -> Ptr () -> IO Word8
 
 foreign import ccall unsafe "windows.h DisconnectNamedPipe"
@@ -112,8 +202,8 @@ foreign import ccall unsafe "windows.h CloseHandle"
 foreign import ccall unsafe "_open_osfhandle"
   c_open_osfhandle :: HANDLE -> CInt -> IO CInt
 
-listenLoop :: CommandChannelEnv -> IO ()
-listenLoop env = go
+listenLoop :: CommandChannelControl -> CommandChannelEnv -> IO ()
+listenLoop control env = go
   where
     pipeAccessDuplex :: Word32
     pipeAccessDuplex = 0x00000003
@@ -141,9 +231,11 @@ listenLoop env = go
       let badHandle = nullPtr `plusPtr` (-1)  -- INVALID_HANDLE_VALUE
       if pipeH == badHandle
         then hPutStrLn stderr "[ipc] CreateNamedPipe failed"
-        else do
-          -- Block until a client connects to this pipe instance.
-          _ <- c_ConnectNamedPipe pipeH nullPtr
+        else mask $ \restore -> do
+          -- Keep ownership of the pending instance until the interruptible
+          -- wait either connects or is cancelled during ingress shutdown.
+          _ <- restore (c_ConnectNamedPipe pipeH nullPtr)
+            `onException` void (c_CloseHandle pipeH)
           -- Convert Win32 HANDLE → C fd → GHC Handle
           fd <- c_open_osfhandle pipeH 0  -- 0 = binary mode
           if fd == (-1)
@@ -160,7 +252,8 @@ listenLoop env = go
                     , tWriteHandle = h
                     , tPluginName  = "cmd-client"
                     }
-              _ <- forkIO (handleClient env transport `finally` hClose h)
+              _ <- spawnCommandClient control (hClose h)
+                (handleClient env transport `finally` hClose h)
               pure ()
           -- Loop to accept the next connection.
           go
@@ -169,8 +262,8 @@ listenLoop env = go
 
 -- Unix: Unix domain socket implementation
 
-listenLoop :: CommandChannelEnv -> IO ()
-listenLoop env = bracket setup cleanup acceptLoop
+listenLoop :: CommandChannelControl -> CommandChannelEnv -> IO ()
+listenLoop control env = bracket setup cleanup acceptLoop
   where
     sockPath = commandPipeName
 
@@ -196,7 +289,9 @@ listenLoop env = bracket setup cleanup acceptLoop
             , tWriteHandle = h
             , tPluginName  = "cmd-client"
             }
-      _ <- forkIO (handleClient env transport `finally` hClose h)
+      _ <- spawnCommandClient control (hClose h)
+        (handleClient env transport `finally` hClose h)
+      pure ()
       acceptLoop sock
 
 #endif
@@ -218,6 +313,7 @@ commandContext env = CommandContext
   , ccScreenshotRef = cceScreenshotRef env
   , ccScreenshotStoragePolicy = cceScreenshotStoragePolicy env
   , ccLogSnapshotRef = cceLogSnapshotRef env
+  , ccDataBrowserExecutor = cceDataBrowserExecutor env
   }
 
 -- | Handle a single client connection.
@@ -252,9 +348,11 @@ handleClient env transport = do
             Right cmd -> do
               let method = scMethod cmd
               rsp <- dispatchCommandChannel env cmd
-                `catch` \(e :: SomeException) -> do
-                  logMsg LogError ("[command] " <> method <> " internal error: " <> Text.pack (show e))
-                  pure (errResponse (scId cmd) (Text.pack ("internal error: " <> show e)))
+                `catch` \(e :: SomeException) -> case fromException e of
+                  Just async -> throwIO (async :: SomeAsyncException)
+                  Nothing -> do
+                    logMsg LogError ("[command] " <> method <> " internal error: " <> Text.pack (show e))
+                    pure (errResponse (scId cmd) (Text.pack ("internal error: " <> show e)))
               -- Log mutation/input commands to the seer console.
               case commandCategory method of
                 CatMutation -> logCommandResult method rsp

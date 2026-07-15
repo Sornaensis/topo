@@ -19,6 +19,7 @@ import Data.Word (Word32)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import qualified SDL
+import Seer.DataBrowser.Executor (DataBrowserExecutor)
 import Seer.Input (handleEvent, isQuit, tickTooltipHover)
 import Seer.Input.Actions (mkInputEnv)
 import Seer.Input.Context (DragState, TooltipHover, mkInputContext)
@@ -37,6 +38,7 @@ data EventPumpEnv = EventPumpEnv
   , epeScreenshotRef :: !ScreenshotRequestRef
   , epeScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , epeLogSnapshotRef :: !(Maybe LogSnapshotRef)
+  , epeDataBrowserExecutor :: !DataBrowserExecutor
   , epeQuitRef :: !(IORef Bool)
   , epeLineHeightRef :: !(IORef Int)
   , epeMousePosRef :: !(IORef (Int, Int))
@@ -77,6 +79,7 @@ processEvents env _timingLogThresholdMs events renderSnap =
             (epeScreenshotRef env)
             (epeScreenshotStoragePolicy env)
             (epeLogSnapshotRef env)
+            (epeDataBrowserExecutor env)
             (rsUi renderSnap)
             (rsLog renderSnap)
             (rsData renderSnap)

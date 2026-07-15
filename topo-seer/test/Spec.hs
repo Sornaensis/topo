@@ -46,6 +46,7 @@ import qualified Spec.Component
 import qualified Spec.UIDrawSnapshots
 import qualified Spec.DataBrowser
 import qualified Spec.DataBrowserAppService
+import qualified Spec.DataBrowserExecutor
 import qualified Spec.DataDetailPopover
 import qualified Spec.DataResourceE2E
 import qualified Spec.Headless
@@ -109,6 +110,7 @@ main = do
         Spec.UIDrawSnapshots.spec
         Spec.DataBrowser.spec
         Spec.DataBrowserAppService.spec
+        Spec.DataBrowserExecutor.spec
         Spec.DataDetailPopover.spec
         Spec.DataResourceE2E.spec
         Spec.Headless.spec

@@ -13,14 +13,30 @@ module Seer.DataBrowser.Model
   , DataBrowserPagination(..)
   , DataBrowserEditBuffer(..)
   , DataBrowserValidationError(..)
+  , DataBrowserRequestId(..)
+  , DataBrowserOperation(..)
+  , dataBrowserOperationText
   , DataBrowserPendingRequest(..)
+  , DataBrowserWorkerRequest(..)
+  , DataBrowserPendingEnvelope(..)
+  , DataBrowserAsyncError(..)
+  , DataBrowserWorkerOutcome(..)
+  , DataBrowserCompletion(..)
+  , DataBrowserBeginResult(..)
   , DataBrowserPageAction(..)
   , DataBrowserAction(..)
+  , DataBrowserUi(..)
   , emptyDataBrowserModel
   , emptyDataBrowserSelection
   , emptyDataBrowserPagination
   , emptyDataBrowserEditBuffer
   , dataBrowserReducer
+  , completeDataBrowserRequest
+  , dataBrowserRequestOperation
+  , dataBrowserRequestIsMutation
+  , dataBrowserPendingDescriptor
+  , dataBrowserPendingEnvelopeValue
+  , dataBrowserAsyncErrorValue
   , validateEditBuffer
   , dataBrowserCanList
   , dataBrowserCanCreate
@@ -33,7 +49,7 @@ module Seer.DataBrowser.Model
   , clearAdtSiblingEditValues
   ) where
 
-import Data.Aeson (Value(..))
+import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as AesonKM
 import Data.List (find, findIndex)
@@ -44,6 +60,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word64)
 import qualified Data.Vector as Vector
 import Topo.Plugin.DataResource
   ( DataConstructorDef(..)
@@ -97,12 +114,83 @@ data DataBrowserValidationError = DataBrowserValidationError
   , dbValidationMessage :: !Text
   } deriving (Eq, Show)
 
+-- | Monotonically allocated by the Ui actor for accepted asynchronous work.
+newtype DataBrowserRequestId = DataBrowserRequestId
+  { unDataBrowserRequestId :: Word64
+  } deriving (Eq, Ord, Show)
+
+-- | Stable operation kind exposed to click and state APIs.
+data DataBrowserOperation
+  = DataBrowserLoadCatalogOperation
+  | DataBrowserLoadPluginOperation
+  | DataBrowserSelectResourceOperation
+  | DataBrowserListOperation
+  | DataBrowserCreateOperation
+  | DataBrowserUpdateOperation
+  | DataBrowserDeleteOperation
+  deriving (Eq, Ord, Show)
+
+dataBrowserOperationText :: DataBrowserOperation -> Text
+dataBrowserOperationText operation = case operation of
+  DataBrowserLoadCatalogOperation -> "load_catalog"
+  DataBrowserLoadPluginOperation -> "load_plugin_resources"
+  DataBrowserSelectResourceOperation -> "select_resource"
+  DataBrowserListOperation -> "list_records"
+  DataBrowserCreateOperation -> "create_record"
+  DataBrowserUpdateOperation -> "update_record"
+  DataBrowserDeleteOperation -> "delete_record"
+
 -- | Effect descriptor produced by the pure reducer for integration layers.
 data DataBrowserPendingRequest
   = DataBrowserListRecordsRequest !Text !Text !(Maybe Int) !(Maybe Int)
   | DataBrowserCreateRecordRequest !Text !Text !DataRecord
   | DataBrowserUpdateRecordRequest !Text !Text !Value !DataRecord
   | DataBrowserDeleteRecordRequest !Text !Text !Value
+  deriving (Eq, Show)
+
+-- | Concrete worker IO request. The envelope containing this value is the
+-- authoritative target captured when the Ui actor accepts an action.
+data DataBrowserWorkerRequest
+  = DataBrowserLoadCatalogRequest
+  | DataBrowserLoadPluginRequest !Text
+  | DataBrowserSelectResourceRequest !Text !Text
+  | DataBrowserRecordRequest !DataBrowserPendingRequest
+  deriving (Eq, Show)
+
+data DataBrowserPendingEnvelope = DataBrowserPendingEnvelope
+  { dbpeRequestId :: !DataBrowserRequestId
+  , dbpeOperation :: !DataBrowserOperation
+  , dbpeRequest :: !DataBrowserWorkerRequest
+  } deriving (Eq, Show)
+
+data DataBrowserAsyncError = DataBrowserAsyncError
+  { dbaeRequestId :: !DataBrowserRequestId
+  , dbaeOperation :: !DataBrowserOperation
+  , dbaeRequest :: !DataBrowserWorkerRequest
+  , dbaeMessage :: !Text
+  } deriving (Eq, Show)
+
+-- | Typed worker result. Resource/schema and record changes are deliberately
+-- returned together so the Ui owner can publish one atomic snapshot.
+data DataBrowserWorkerOutcome
+  = DataBrowserCatalogLoaded !(Map Text [DataResourceSchema])
+  | DataBrowserPluginLoaded !Text ![DataResourceSchema]
+  | DataBrowserResourceLoaded !Text ![DataResourceSchema] !DataResourceSchema !(Maybe QueryResult)
+  | DataBrowserRecordsLoaded !QueryResult
+  | DataBrowserMutationCompleted !(Maybe DataRecord)
+  | DataBrowserWorkerFailed !Text
+  deriving (Eq, Show)
+
+data DataBrowserCompletion = DataBrowserCompletion
+  { dbcRequestId :: !DataBrowserRequestId
+  , dbcRequest :: !DataBrowserWorkerRequest
+  , dbcOutcome :: !DataBrowserWorkerOutcome
+  } deriving (Eq, Show)
+
+data DataBrowserBeginResult
+  = DataBrowserBeginRejected !Text
+  | DataBrowserBeginPure
+  | DataBrowserBeginAccepted !DataBrowserPendingEnvelope !(Maybe DataBrowserRequestId)
   deriving (Eq, Show)
 
 -- | Pagination intent.
@@ -128,7 +216,9 @@ data DataBrowserAction
   | DataBrowserBlurField
   | DataBrowserSetFieldValue !Text !Value
   | DataBrowserInsertText !Text
+  | DataBrowserReplaceText !Text
   | DataBrowserBackspace
+  | DataBrowserDeleteText
   | DataBrowserSetTextCursor !Int
   | DataBrowserStepNumberField !Text !Int
   | DataBrowserToggleBoolField !Text
@@ -154,7 +244,15 @@ data DataBrowserModel = DataBrowserModel
   , dbModelTextCursor :: !Int
   , dbModelValidationErrors :: ![DataBrowserValidationError]
   , dbModelPendingRequest :: !(Maybe DataBrowserPendingRequest)
+  , dbModelPendingEnvelope :: !(Maybe DataBrowserPendingEnvelope)
+  , dbModelAsyncError :: !(Maybe DataBrowserAsyncError)
   , dbModelLoading :: !Bool
+  } deriving (Eq, Show)
+
+-- | Resource catalog plus browser model, atomically owned by the Ui actor.
+data DataBrowserUi = DataBrowserUi
+  { dbuResources :: !(Map Text [DataResourceSchema])
+  , dbuModel :: !DataBrowserModel
   } deriving (Eq, Show)
 
 emptyDataBrowserSelection :: DataBrowserSelection
@@ -189,6 +287,8 @@ emptyDataBrowserModel = DataBrowserModel
   , dbModelTextCursor = 0
   , dbModelValidationErrors = []
   , dbModelPendingRequest = Nothing
+  , dbModelPendingEnvelope = Nothing
+  , dbModelAsyncError = Nothing
   , dbModelLoading = False
   }
 
@@ -274,8 +374,16 @@ dataBrowserReducer model action = case action of
   DataBrowserInsertText text ->
     editFocusedText (insertAtCursor text) model
 
+  DataBrowserReplaceText text -> case dbModelFocusedField model of
+    Nothing -> model
+    Just path -> (updateEditValue path (String text) model)
+      { dbModelTextCursor = Text.length text }
+
   DataBrowserBackspace ->
     editFocusedText deleteBeforeCursor model
+
+  DataBrowserDeleteText ->
+    editFocusedText deleteAtCursor model
 
   DataBrowserSetTextCursor cursor ->
     model { dbModelTextCursor = clampTextCursor cursor model }
@@ -321,6 +429,189 @@ dataBrowserReducer model action = case action of
           , dbModelValidationErrors = [validationError Nothing message]
           }
     | otherwise -> model
+
+-- | Apply one terminal worker result. ID and current target context are the
+-- correctness guards; the descriptor echoed by the worker is diagnostic only.
+-- A stale completion is a total no-op.
+completeDataBrowserRequest
+  :: DataBrowserCompletion
+  -> DataBrowserUi
+  -> (DataBrowserUi, Bool)
+completeDataBrowserRequest completion ui = case dbModelPendingEnvelope model of
+  Nothing -> (ui, False)
+  Just pending
+    | dbpeRequestId pending /= dbcRequestId completion -> (ui, False)
+    | not (requestMatchesCurrent (dbpeRequest pending) model) -> (ui, False)
+    | otherwise ->
+        let ui' = applyOutcome pending (dbcOutcome completion) ui
+        in (ui', True)
+  where
+    model = dbuModel ui
+
+applyOutcome :: DataBrowserPendingEnvelope -> DataBrowserWorkerOutcome -> DataBrowserUi -> DataBrowserUi
+applyOutcome pending outcome ui = case outcome of
+  DataBrowserWorkerFailed message ->
+    ui { dbuModel = failedModel message }
+  DataBrowserCatalogLoaded resources ->
+    ui
+      { dbuResources = resources
+      , dbuModel = clearPending (attachSelectionSchema resources model)
+      }
+  DataBrowserPluginLoaded pluginName schemas ->
+    let resources = Map.insert pluginName schemas (dbuResources ui)
+    in ui
+      { dbuResources = resources
+      , dbuModel = clearPending (attachSelectionSchema resources model)
+      }
+  DataBrowserResourceLoaded pluginName schemas schema mResult ->
+    let resources = Map.insert pluginName schemas (dbuResources ui)
+        selected = dataBrowserReducer model (DataBrowserSelectResource pluginName schema)
+        completed = case (dbModelPendingRequest selected, mResult) of
+          (Just descriptor, Just result) ->
+            dataBrowserReducer selected (DataBrowserListSucceeded descriptor result)
+          _ -> selected
+    in ui { dbuResources = resources, dbuModel = clearPending completed }
+  DataBrowserRecordsLoaded result ->
+    ui { dbuModel = clearPending (completeRecords result) }
+  DataBrowserMutationCompleted returned ->
+    ui { dbuModel = clearPending (completeMutation returned) }
+  where
+    model = dbuModel ui
+    request = dbpeRequest pending
+
+    failedModel message =
+      let next = case dataBrowserPendingDescriptor request of
+            Just descriptor@DataBrowserListRecordsRequest {} ->
+              dataBrowserReducer (withDescriptor descriptor model) (DataBrowserListFailed descriptor message)
+            Just descriptor ->
+              dataBrowserReducer (withDescriptor descriptor model) (DataBrowserMutationFailed descriptor message)
+            Nothing -> model
+              { dbModelValidationErrors = [DataBrowserValidationError Nothing message] }
+      in (clearPending next)
+        { dbModelAsyncError = Just DataBrowserAsyncError
+            { dbaeRequestId = dbpeRequestId pending
+            , dbaeOperation = dbpeOperation pending
+            , dbaeRequest = request
+            , dbaeMessage = message
+            }
+        }
+
+    completeRecords result = case dataBrowserPendingDescriptor request of
+      Just descriptor@DataBrowserListRecordsRequest {} ->
+        dataBrowserReducer (withDescriptor descriptor model) (DataBrowserListSucceeded descriptor result)
+      _ -> model
+
+    completeMutation returned = case dataBrowserPendingDescriptor request of
+      Just descriptor ->
+        dataBrowserReducer (withDescriptor descriptor model) (DataBrowserMutationSucceeded descriptor returned)
+      Nothing -> model
+
+clearPending :: DataBrowserModel -> DataBrowserModel
+clearPending model = model
+  { dbModelPendingRequest = Nothing
+  , dbModelPendingEnvelope = Nothing
+  , dbModelLoading = False
+  }
+
+withDescriptor :: DataBrowserPendingRequest -> DataBrowserModel -> DataBrowserModel
+withDescriptor descriptor model = model
+  { dbModelPendingRequest = Just descriptor
+  , dbModelLoading = True
+  }
+
+dataBrowserRequestOperation :: DataBrowserWorkerRequest -> DataBrowserOperation
+dataBrowserRequestOperation request = case request of
+  DataBrowserLoadCatalogRequest -> DataBrowserLoadCatalogOperation
+  DataBrowserLoadPluginRequest _ -> DataBrowserLoadPluginOperation
+  DataBrowserSelectResourceRequest _ _ -> DataBrowserSelectResourceOperation
+  DataBrowserRecordRequest descriptor -> case descriptor of
+    DataBrowserListRecordsRequest {} -> DataBrowserListOperation
+    DataBrowserCreateRecordRequest {} -> DataBrowserCreateOperation
+    DataBrowserUpdateRecordRequest {} -> DataBrowserUpdateOperation
+    DataBrowserDeleteRecordRequest {} -> DataBrowserDeleteOperation
+
+dataBrowserRequestIsMutation :: DataBrowserWorkerRequest -> Bool
+dataBrowserRequestIsMutation request = case dataBrowserRequestOperation request of
+  DataBrowserCreateOperation -> True
+  DataBrowserUpdateOperation -> True
+  DataBrowserDeleteOperation -> True
+  _ -> False
+
+dataBrowserPendingDescriptor :: DataBrowserWorkerRequest -> Maybe DataBrowserPendingRequest
+dataBrowserPendingDescriptor (DataBrowserRecordRequest descriptor) = Just descriptor
+dataBrowserPendingDescriptor _ = Nothing
+
+dataBrowserPendingEnvelopeValue :: DataBrowserPendingEnvelope -> Value
+dataBrowserPendingEnvelopeValue envelope = object
+  [ "request_id" .= unDataBrowserRequestId (dbpeRequestId envelope)
+  , "operation" .= dataBrowserOperationText (dbpeOperation envelope)
+  , "target" .= dataBrowserWorkerTargetValue (dbpeRequest envelope)
+  ]
+
+dataBrowserAsyncErrorValue :: DataBrowserAsyncError -> Value
+dataBrowserAsyncErrorValue asyncError = object
+  [ "request_id" .= unDataBrowserRequestId (dbaeRequestId asyncError)
+  , "operation" .= dataBrowserOperationText (dbaeOperation asyncError)
+  , "target" .= dataBrowserWorkerTargetValue (dbaeRequest asyncError)
+  , "message" .= dbaeMessage asyncError
+  ]
+
+dataBrowserWorkerTargetValue :: DataBrowserWorkerRequest -> Value
+dataBrowserWorkerTargetValue request = case request of
+  DataBrowserLoadCatalogRequest -> object []
+  DataBrowserLoadPluginRequest pluginName -> object ["plugin" .= pluginName]
+  DataBrowserSelectResourceRequest pluginName resourceName -> object
+    [ "plugin" .= pluginName, "resource" .= resourceName ]
+  DataBrowserRecordRequest descriptor -> case descriptor of
+    DataBrowserListRecordsRequest pluginName resourceName pageSize pageOffset -> object
+      [ "plugin" .= pluginName
+      , "resource" .= resourceName
+      , "page_size" .= pageSize
+      , "page_offset" .= pageOffset
+      ]
+    DataBrowserCreateRecordRequest pluginName resourceName _ -> object
+      [ "plugin" .= pluginName, "resource" .= resourceName ]
+    DataBrowserUpdateRecordRequest pluginName resourceName key _ -> object
+      [ "plugin" .= pluginName, "resource" .= resourceName, "key" .= key ]
+    DataBrowserDeleteRecordRequest pluginName resourceName key -> object
+      [ "plugin" .= pluginName, "resource" .= resourceName, "key" .= key ]
+
+requestMatchesCurrent :: DataBrowserWorkerRequest -> DataBrowserModel -> Bool
+requestMatchesCurrent request model = case request of
+  DataBrowserLoadCatalogRequest -> True
+  DataBrowserLoadPluginRequest pluginName -> selectedPlugin == Just pluginName
+  DataBrowserSelectResourceRequest pluginName resourceName ->
+    selectedPlugin == Just pluginName && selectedResource == Just resourceName
+  DataBrowserRecordRequest descriptor -> case descriptor of
+    DataBrowserListRecordsRequest pluginName resourceName _ _ -> sameResource pluginName resourceName
+    DataBrowserCreateRecordRequest pluginName resourceName _ -> sameResource pluginName resourceName
+    DataBrowserUpdateRecordRequest pluginName resourceName key _ ->
+      sameResource pluginName resourceName && dbSelectionRecordKey selection == Just key
+    DataBrowserDeleteRecordRequest pluginName resourceName key ->
+      sameResource pluginName resourceName && dbSelectionRecordKey selection == Just key
+  where
+    selection = dbModelSelection model
+    selectedPlugin = dbSelectionPlugin selection
+    selectedResource = dbSelectionResource selection
+    sameResource pluginName resourceName =
+      selectedPlugin == Just pluginName && selectedResource == Just resourceName
+
+resourceSchemaFor :: Map Text [DataResourceSchema] -> Text -> Text -> Maybe DataResourceSchema
+resourceSchemaFor resources pluginName resourceName = do
+  schemas <- Map.lookup pluginName resources
+  find ((== resourceName) . drsName) schemas
+
+attachSelectionSchema :: Map Text [DataResourceSchema] -> DataBrowserModel -> DataBrowserModel
+attachSelectionSchema resources model = model
+  { dbModelSelection = selection
+      { dbSelectionSchema = do
+          pluginName <- dbSelectionPlugin selection
+          resourceName <- dbSelectionResource selection
+          resourceSchemaFor resources pluginName resourceName
+      }
+  }
+  where
+    selection = dbModelSelection model
 
 -- | Validate every buffered dot-path value against the selected resource schema.
 validateEditBuffer :: DataResourceSchema -> DataBrowserEditBuffer -> [DataBrowserValidationError]
@@ -720,6 +1011,13 @@ deleteBeforeCursor current cursor
       let before = Text.take (cursor' - 1) current
           after = Text.drop cursor' current
       in (before <> after, cursor' - 1)
+  where
+    cursor' = clamp 0 (Text.length current) cursor
+
+deleteAtCursor :: Text -> Int -> (Text, Int)
+deleteAtCursor current cursor
+  | cursor' >= Text.length current = (current, cursor')
+  | otherwise = (Text.take cursor' current <> Text.drop (cursor' + 1) current, cursor')
   where
     cursor' = clamp 0 (Text.length current) cursor
 

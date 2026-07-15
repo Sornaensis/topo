@@ -502,6 +502,7 @@ runMainLoop runtimeCfg actors sdl = do
         , epeScreenshotRef = aaScreenshotRef actors
         , epeScreenshotStoragePolicy = aaScreenshotStoragePolicy actors
         , epeLogSnapshotRef = Just (aaLogSnapshotRef actors)
+        , epeDataBrowserExecutor = aaDataBrowserExecutor actors
         , epeQuitRef = quitRef
         , epeLineHeightRef = lineHeightRef
         , epeMousePosRef = mousePosRef

@@ -27,6 +27,7 @@ import Data.Aeson (Value)
 import Data.Text (Text)
 import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
 import Seer.Command.AppServiceAdapter (commandAppService, runServiceOperation)
+import Seer.DataBrowser.Executor (DataBrowserExecutor)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 import Seer.Service.Context (ServiceContext(..))
@@ -40,6 +41,7 @@ data InputEnv = InputEnv
   , ieScreenshotRef :: !ScreenshotRequestRef
   , ieScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , ieLogSnapshotRef :: !(Maybe LogSnapshotRef)
+  , ieDataBrowserExecutor :: !DataBrowserExecutor
   , ieUiSnapshot :: !UiState
   , ieLogSnapshot :: !LogSnapshot
   , ieDataSnapshot :: !DataSnapshot
@@ -54,12 +56,13 @@ mkInputEnv
   -> ScreenshotRequestRef
   -> ScreenshotStoragePolicy
   -> Maybe LogSnapshotRef
+  -> DataBrowserExecutor
   -> UiState
   -> LogSnapshot
   -> DataSnapshot
   -> TerrainSnapshot
   -> InputEnv
-mkInputEnv actorHandles uiActionsHandle uiSnapshotRef screenshotRef screenshotStoragePolicy logSnapshotRef uiSnapshot logSnapshot dataSnapshot terrainSnapshot =
+mkInputEnv actorHandles uiActionsHandle uiSnapshotRef screenshotRef screenshotStoragePolicy logSnapshotRef dataBrowserExecutor uiSnapshot logSnapshot dataSnapshot terrainSnapshot =
   InputEnv
     { ieActorHandles = actorHandles
     , ieUiActionsHandle = uiActionsHandle
@@ -67,6 +70,7 @@ mkInputEnv actorHandles uiActionsHandle uiSnapshotRef screenshotRef screenshotSt
     , ieScreenshotRef = screenshotRef
     , ieScreenshotStoragePolicy = screenshotStoragePolicy
     , ieLogSnapshotRef = logSnapshotRef
+    , ieDataBrowserExecutor = dataBrowserExecutor
     , ieUiSnapshot = uiSnapshot
     , ieLogSnapshot = logSnapshot
     , ieDataSnapshot = dataSnapshot
@@ -112,6 +116,7 @@ inputServiceContext env = ServiceContext
   , svcScreenshotStoragePolicy = ieScreenshotStoragePolicy env
   , svcLogSnapshotRef = ieLogSnapshotRef env
   , svcEventBus = Nothing
+  , svcDataBrowserExecutor = ieDataBrowserExecutor env
   }
 
 -- | Invoke the app service from the UI/input path without constructing a

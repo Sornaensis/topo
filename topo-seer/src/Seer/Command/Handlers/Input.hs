@@ -19,7 +19,6 @@ import Control.Monad (when)
 import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson.Types as Aeson
 import Data.Char (isPrint)
-import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 
@@ -33,7 +32,6 @@ import Actor.UI.Setters
   , setUiWorldSelected
   , setUiSeedEditing
   , setUiSeedInput
-  , setUiDataBrowser
   )
 import Actor.UI.State
   ( DataBrowserState(..)
@@ -43,9 +41,11 @@ import Actor.UI.State
   )
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
-import Seer.DataBrowser.Model (clearAdtSiblingEditValues)
+import Seer.DataBrowser.Executor (submitDataBrowserAction)
+import qualified Seer.DataBrowser.Lifecycle as DataBrowser
+import Seer.DataBrowser.Model (DataBrowserBeginResult(..))
+import Seer.Service.Types (ServiceError(..))
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import Topo.Plugin.DataResource (DataResourceSchema(..))
 
 -- --------------------------------------------------------------------------
 -- get_dialog_state
@@ -153,16 +153,14 @@ handleSetDialogText ctx reqId params = do
           case dbsFocusedField dbs of
             Just path -> do
               let filtered = Text.filter isPrint txt
-                  newDbs = dbs
-                    { dbsEditValues = dataFieldEditValues ui dbs path (String filtered)
-                    , dbsTextCursor = Text.length filtered
-                    }
-              setUiDataBrowser uiH newDbs
-              pure $ okResponse reqId $ object
-                [ "target" .= ("data_field" :: Text)
-                , "field"  .= path
-                , "text"   .= filtered
-                ]
+              applied <- runDataBrowserOwnerAction ctx (DataBrowser.DataBrowserReplaceText filtered)
+              pure $ case applied of
+                Left err -> errResponse reqId err
+                Right () -> okResponse reqId $ object
+                  [ "target" .= ("data_field" :: Text)
+                  , "field"  .= path
+                  , "text"   .= filtered
+                  ]
             Nothing ->
               pure $ errResponse reqId "no data browser field is currently focused"
         _ ->
@@ -196,11 +194,11 @@ handleDialogConfirm ctx reqId _params = do
   let dbs = uiDataBrowser ui
   case dbsFocusedField dbs of
     Just _path | dbsEditMode dbs || dbsCreateMode dbs -> do
-      -- Unfocus the field (accept text)
-      let newDbs = dbs { dbsFocusedField = Nothing, dbsTextCursor = 0 }
-      setUiDataBrowser uiH newDbs
-      pure $ okResponse reqId $ object
-        [ "action" .= ("data_field_confirm" :: Text) ]
+      applied <- runDataBrowserOwnerAction ctx DataBrowser.DataBrowserBlurField
+      pure $ case applied of
+        Left err -> errResponse reqId err
+        Right () -> okResponse reqId $ object
+          [ "action" .= ("data_field_confirm" :: Text) ]
     _ ->
       case uiMenuMode ui of
         MenuPresetSave -> do
@@ -251,48 +249,31 @@ handleDialogCancel ctx reqId _params = do
   let dbs = uiDataBrowser ui
   -- Priority cascade matching Events.hs closeContextOrMenu
   if dbsDeleteConfirm dbs
-    then do
-      let newDbs = dbs { dbsDeleteConfirm = False }
-      setUiDataBrowser uiH newDbs
-      pure $ okResponse reqId $ object
-        [ "action" .= ("cancel_delete_confirm" :: Text) ]
+    then ownerCancel DataBrowser.DataBrowserCancelDelete "cancel_delete_confirm"
     else if dbsEditMode dbs || dbsCreateMode dbs
-      then do
-        let newDbs = if dbsCreateMode dbs
-              then dbs
-                { dbsEditMode         = False
-                , dbsCreateMode       = False
-                , dbsEditValues       = Map.empty
-                , dbsFocusedField     = Nothing
-                , dbsTextCursor       = 0
-                , dbsSelectedRecord   = Nothing
-                , dbsSelectedRecordKey = Nothing
-                , dbsSelectedRowIndex = Nothing
-                }
-              else dbs
-                { dbsEditMode     = False
-                , dbsEditValues   = Map.empty
-                , dbsFocusedField = Nothing
-                , dbsTextCursor   = 0
-                }
-        setUiDataBrowser uiH newDbs
-        pure $ okResponse reqId $ object
-          [ "action" .= (if dbsCreateMode dbs
-                          then "cancel_create" :: Text
-                          else "cancel_edit") ]
-      else case uiMenuMode ui of
-        MenuNone -> do
-          setUiMenuMode uiH MenuEscape
-          pure $ okResponse reqId $ object
-            [ "action" .= ("open_escape_menu" :: Text) ]
-        MenuEscape -> do
-          setUiMenuMode uiH MenuNone
-          pure $ okResponse reqId $ object
-            [ "action" .= ("close_escape_menu" :: Text) ]
-        _ -> do
-          setUiMenuMode uiH MenuNone
-          pure $ okResponse reqId $ object
-            [ "action" .= ("cancel_dialog" :: Text) ]
+      then ownerCancel DataBrowser.DataBrowserCancelEdit
+        (if dbsCreateMode dbs then "cancel_create" else "cancel_edit")
+      else case dbsSelectedRecord dbs of
+        Just _ -> ownerCancel DataBrowser.DataBrowserDismissRecord "dismiss_record"
+        Nothing -> case uiMenuMode ui of
+          MenuNone -> do
+            setUiMenuMode uiH MenuEscape
+            pure $ okResponse reqId $ object
+              [ "action" .= ("open_escape_menu" :: Text) ]
+          MenuEscape -> do
+            setUiMenuMode uiH MenuNone
+            pure $ okResponse reqId $ object
+              [ "action" .= ("close_escape_menu" :: Text) ]
+          _ -> do
+            setUiMenuMode uiH MenuNone
+            pure $ okResponse reqId $ object
+              [ "action" .= ("cancel_dialog" :: Text) ]
+  where
+    ownerCancel action label = do
+      applied <- runDataBrowserOwnerAction ctx action
+      pure $ case applied of
+        Left err -> errResponse reqId err
+        Right () -> okResponse reqId $ object ["action" .= (label :: Text)]
 
 -- --------------------------------------------------------------------------
 -- send_key
@@ -320,6 +301,7 @@ handleSendKey ctx reqId params = do
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
       let dbs = uiDataBrowser ui
           keyLower = Text.toLower keyName
+          applyDataBrowser = runDataBrowserOwnerAction ctx
       case keyLower of
         -- Navigation keys for list dialogs
         "up" -> do
@@ -336,7 +318,7 @@ handleSendKey ctx reqId params = do
                 [ "key" .= keyName, "selected" .= sel ]
             _ -> do
               -- Data field cursor: move cursor left
-              handleDataFieldCursorKey ui dbs uiH "left" reqId keyName
+              handleDataFieldCursorKey dbs applyDataBrowser "left" reqId keyName
 
         "down" -> do
           case uiMenuMode ui of
@@ -380,22 +362,22 @@ handleSendKey ctx reqId params = do
               pure $ okResponse reqId $ object
                 [ "key" .= keyName, "filter" .= newFilter ]
             _ ->
-              handleDataFieldBackspace ui dbs uiH reqId keyName
+              handleDataFieldBackspace dbs applyDataBrowser reqId keyName
 
         "delete" ->
-          handleDataFieldDeleteKey ui dbs uiH reqId keyName
+          handleDataFieldDeleteKey dbs applyDataBrowser reqId keyName
 
         "left" ->
-          handleDataFieldCursorKey ui dbs uiH "left" reqId keyName
+          handleDataFieldCursorKey dbs applyDataBrowser "left" reqId keyName
 
         "right" ->
-          handleDataFieldCursorKey ui dbs uiH "right" reqId keyName
+          handleDataFieldCursorKey dbs applyDataBrowser "right" reqId keyName
 
         "home" ->
-          handleDataFieldCursorKey ui dbs uiH "home" reqId keyName
+          handleDataFieldCursorKey dbs applyDataBrowser "home" reqId keyName
 
         "end" ->
-          handleDataFieldCursorKey ui dbs uiH "end" reqId keyName
+          handleDataFieldCursorKey dbs applyDataBrowser "end" reqId keyName
 
         "escape" -> do
           -- Delegate to dialog_cancel
@@ -408,10 +390,11 @@ handleSendKey ctx reqId params = do
           -- Tab unfocuses data browser field
           case dbsFocusedField dbs of
             Just _path | dbsEditMode dbs || dbsCreateMode dbs -> do
-              let newDbs = dbs { dbsFocusedField = Nothing, dbsTextCursor = 0 }
-              setUiDataBrowser uiH newDbs
-              pure $ okResponse reqId $ object
-                [ "key" .= keyName, "action" .= ("unfocus_field" :: Text) ]
+              applied <- applyDataBrowser DataBrowser.DataBrowserBlurField
+              pure $ case applied of
+                Left err -> errResponse reqId err
+                Right () -> okResponse reqId $ object
+                  [ "key" .= keyName, "action" .= ("unfocus_field" :: Text) ]
             _ ->
               pure $ okResponse reqId $ object
                 [ "key" .= keyName, "action" .= ("no_effect" :: Text) ]
@@ -445,131 +428,70 @@ handleSendKey ctx reqId params = do
                   pure $ okResponse reqId $ object
                     [ "key" .= keyName, "filter" .= newFilter ]
                 _ ->
-                  handleDataFieldChar ui dbs uiH ch reqId keyName
+                  handleDataFieldChar dbs applyDataBrowser ch reqId keyName
             else
               pure $ errResponse reqId ("unrecognized key: " <> keyName)
 
 -- --------------------------------------------------------------------------
--- Data field helpers (no type signatures — UiHandle is module-internal)
+-- Data field helpers
 -- --------------------------------------------------------------------------
 
-handleDataFieldBackspace ui dbs uiH reqId keyName =
+handleDataFieldBackspace dbs applyAction reqId keyName =
   case dbsFocusedField dbs of
-    Just path | dbsEditMode dbs || dbsCreateMode dbs -> do
-      let cursor = dbsTextCursor dbs
-          editVals = dbsEditValues dbs
-          currentText = case Map.lookup path editVals of
-            Just (String t) -> t
-            _ -> ""
-      if cursor > 0
-        then do
-          let (before, after) = Text.splitAt cursor currentText
-              newText = Text.dropEnd 1 before <> after
-              newDbs = dbs
-                { dbsEditValues = dataFieldEditValues ui dbs path (String newText)
-                , dbsTextCursor = cursor - 1
-                }
-          setUiDataBrowser uiH newDbs
-          pure $ okResponse reqId $ object
-            [ "key" .= keyName, "field" .= path, "text" .= newText ]
-        else
-          pure $ okResponse reqId $ object
-            [ "key" .= keyName, "action" .= ("no_effect" :: Text) ]
-    _ ->
-      pure $ okResponse reqId $ object
-        [ "key" .= keyName, "action" .= ("no_effect" :: Text) ]
+    Just path | dbsEditMode dbs || dbsCreateMode dbs ->
+      ownerKeyResult applyAction DataBrowser.DataBrowserBackspace reqId keyName path
+    _ -> noEffect reqId keyName
 
-handleDataFieldDeleteKey ui dbs uiH reqId keyName =
+handleDataFieldDeleteKey dbs applyAction reqId keyName =
   case dbsFocusedField dbs of
-    Just path | dbsEditMode dbs || dbsCreateMode dbs -> do
-      let cursor = dbsTextCursor dbs
-          editVals = dbsEditValues dbs
-          currentText = case Map.lookup path editVals of
-            Just (String t) -> t
-            _ -> ""
-      if cursor < Text.length currentText
-        then do
-          let (before, after) = Text.splitAt cursor currentText
-              newText = before <> Text.drop 1 after
-              newDbs = dbs
-                { dbsEditValues = dataFieldEditValues ui dbs path (String newText)
-                }
-          setUiDataBrowser uiH newDbs
-          pure $ okResponse reqId $ object
-            [ "key" .= keyName, "field" .= path, "text" .= newText ]
-        else
-          pure $ okResponse reqId $ object
-            [ "key" .= keyName, "action" .= ("no_effect" :: Text) ]
-    _ ->
-      pure $ okResponse reqId $ object
-        [ "key" .= keyName, "action" .= ("no_effect" :: Text) ]
+    Just path | dbsEditMode dbs || dbsCreateMode dbs ->
+      ownerKeyResult applyAction DataBrowser.DataBrowserDeleteText reqId keyName path
+    _ -> noEffect reqId keyName
 
-handleDataFieldCursorKey _ui dbs uiH direction reqId keyName =
+handleDataFieldCursorKey dbs applyAction direction reqId keyName =
   case dbsFocusedField dbs of
-    Just path | dbsEditMode dbs || dbsCreateMode dbs -> do
+    Just _path | dbsEditMode dbs || dbsCreateMode dbs -> do
       let cursor = dbsTextCursor dbs
-          editVals = dbsEditValues dbs
-          currentText = case Map.lookup path editVals of
-            Just (String t) -> t
-            _ -> ""
           newCursor = case direction of
-            "left"  -> max 0 (cursor - 1)
-            "right" -> min (Text.length currentText) (cursor + 1)
-            "home"  -> 0
-            "end"   -> Text.length currentText
-            _       -> cursor
-      if newCursor /= cursor
-        then do
-          let newDbs = dbs { dbsTextCursor = newCursor }
-          setUiDataBrowser uiH newDbs
-          pure $ okResponse reqId $ object
-            [ "key" .= keyName, "cursor" .= newCursor ]
-        else
-          pure $ okResponse reqId $ object
-            [ "key" .= keyName, "cursor" .= cursor ]
-    _ ->
-      pure $ okResponse reqId $ object
-        [ "key" .= keyName, "action" .= ("no_effect" :: Text) ]
+            "left" -> cursor - 1
+            "right" -> cursor + 1
+            "home" -> 0
+            "end" -> maxBound
+            _ -> cursor
+      applied <- applyAction (DataBrowser.DataBrowserSetTextCursor newCursor)
+      pure $ case applied of
+        Left err -> errResponse reqId err
+        Right () -> okResponse reqId $ object ["key" .= keyName, "cursor" .= newCursor]
+    _ -> noEffect reqId keyName
 
-handleDataFieldChar ui dbs uiH ch reqId keyName =
+handleDataFieldChar dbs applyAction ch reqId keyName =
   case dbsFocusedField dbs of
-    Just path | dbsEditMode dbs || dbsCreateMode dbs -> do
-      let cursor = dbsTextCursor dbs
-          editVals = dbsEditValues dbs
-          currentText = case Map.lookup path editVals of
-            Just (String t) -> t
-            _ -> ""
-          (before, after) = Text.splitAt cursor currentText
-          newText = before <> ch <> after
-          newCursor = cursor + Text.length ch
-          newDbs = dbs
-            { dbsEditValues = dataFieldEditValues ui dbs path (String newText)
-            , dbsTextCursor = newCursor
-            }
-      setUiDataBrowser uiH newDbs
-      pure $ okResponse reqId $ object
-        [ "key" .= keyName, "field" .= path, "text" .= newText ]
-    _ ->
-      pure $ okResponse reqId $ object
-        [ "key" .= keyName, "action" .= ("no_effect" :: Text) ]
+    Just path | dbsEditMode dbs || dbsCreateMode dbs ->
+      ownerKeyResult applyAction (DataBrowser.DataBrowserInsertText ch) reqId keyName path
+    _ -> noEffect reqId keyName
+
+ownerKeyResult applyAction action reqId keyName path = do
+  applied <- applyAction action
+  pure $ case applied of
+    Left err -> errResponse reqId err
+    Right () -> okResponse reqId $ object ["key" .= keyName, "field" .= path]
+
+noEffect reqId keyName =
+  pure $ okResponse reqId $ object
+    [ "key" .= keyName, "action" .= ("no_effect" :: Text) ]
 
 -- --------------------------------------------------------------------------
 -- Internal helpers
 -- --------------------------------------------------------------------------
 
-dataFieldEditValues :: UiState -> DataBrowserState -> Text -> Value -> Map.Map Text Value
-dataFieldEditValues ui dbs path value =
-  let cleared = case selectedDataSchema ui dbs of
-        Nothing -> dbsEditValues dbs
-        Just schema -> clearAdtSiblingEditValues (drsFields schema) path (dbsEditValues dbs)
-  in Map.insert path value cleared
-
-selectedDataSchema :: UiState -> DataBrowserState -> Maybe DataResourceSchema
-selectedDataSchema ui dbs = do
-  pName <- dbsSelectedPlugin dbs
-  rName <- dbsSelectedResource dbs
-  schemas <- Map.lookup pName (uiDataResources ui)
-  foldr (\schema acc -> if drsName schema == rName then Just schema else acc) Nothing schemas
+runDataBrowserOwnerAction ctx action = do
+  result <- submitDataBrowserAction
+    (ccDataBrowserExecutor ctx)
+    (\_ _ -> pure (Left (ServiceInternalError "pure Data Browser action attempted service IO")))
+    action
+  pure $ case result of
+    DataBrowserBeginRejected err -> Left err
+    _ -> Right ()
 
 autoDetectTarget :: UiState -> Text
 autoDetectTarget ui = case uiMenuMode ui of

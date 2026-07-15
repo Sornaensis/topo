@@ -15,6 +15,7 @@ import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles)
 import Actor.UI.State (UiSnapshotRef)
 import Hyperspace.Actor (ActorHandle, Protocol)
+import Seer.DataBrowser.Executor.Types (DataBrowserExecutor)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 import Seer.Service.Events (ServiceEventBus)
@@ -31,4 +32,5 @@ data ServiceContext = ServiceContext
     -- ^ Log snapshot for log reads. 'Nothing' is allowed for focused tests.
   , svcEventBus :: !(Maybe ServiceEventBus)
     -- ^ Optional HTTP/event-stream buffer. 'Nothing' keeps focused tests lightweight.
+  , svcDataBrowserExecutor :: !DataBrowserExecutor
   }

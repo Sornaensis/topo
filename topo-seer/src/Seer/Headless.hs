@@ -78,9 +78,17 @@ import Actor.UI
   )
 import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles, mkActorHandles)
-import Control.Concurrent (ThreadId, forkIO, killThread)
-import Control.Exception (bracket, onException)
-import Control.Monad (replicateM, unless, when)
+import Control.Concurrent
+  ( MVar
+  , ThreadId
+  , forkIOWithUnmask
+  , killThread
+  , newEmptyMVar
+  , readMVar
+  , tryPutMVar
+  )
+import Control.Exception (bracket, finally, onException)
+import Control.Monad (replicateM, unless, void, when)
 import Data.IORef (IORef, newIORef)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -94,12 +102,20 @@ import Hyperspace.Actor
   , spawnActor
   )
 import Seer.Command.Channel
-  ( CommandChannelEnv(..)
+  ( CommandChannelControl
+  , CommandChannelEnv(..)
   , dispatchCommandChannel
-  , runCommandChannel
+  , newCommandChannelControl
+  , runCommandChannelWithControl
+  , shutdownCommandChannelControl
   )
 import Seer.Command.Context (CommandContext(..), commandServiceContext)
 import Seer.Config.Runtime (TopoSeerConfig(..), defaultConfig)
+import Seer.DataBrowser.Executor
+  ( DataBrowserExecutor
+  , newDataBrowserExecutor
+  , shutdownDataBrowserExecutor
+  )
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Headless
   ( deterministicHeadlessPng
@@ -187,8 +203,10 @@ data HeadlessApp = HeadlessApp
   , haActorHandles :: !ActorHandles
   , haCommandContext :: !CommandContext
   , haCommandChannelEnv :: !CommandChannelEnv
-  , haCommandChannelThread :: !(Maybe ThreadId)
+  , haCommandChannelControl :: !CommandChannelControl
+  , haCommandChannelThread :: !(Maybe (ThreadId, MVar ()))
   , haAutoTickScheduler :: !AutoTickScheduler
+  , haDataBrowserExecutor :: !DataBrowserExecutor
   }
 
 -- | Command context wired to the headless actor graph. Service and HTTP tests
@@ -294,13 +312,15 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
   historyRef <- newIORef (emptyHistory 50)
   eventBus <- newDefaultServiceEventBus
   let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
-      commandContext = CommandContext
+  dataBrowserExecutor <- newDataBrowserExecutor uiHandle
+  let commandContext = CommandContext
         { ccActorHandles = actorHandles
         , ccUiSnapshotRef = uiSnapshotRef
         , ccUiActionsHandle = uiActionsHandle
         , ccScreenshotRef = screenshotRef
         , ccScreenshotStoragePolicy = screenshotStoragePolicy
         , ccLogSnapshotRef = Just logSnapshotRef
+        , ccDataBrowserExecutor = dataBrowserExecutor
         }
       commandEnv = CommandChannelEnv
         { cceAppService = headlessAppService
@@ -310,9 +330,16 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
         , cceScreenshotRef = screenshotRef
         , cceScreenshotStoragePolicy = screenshotStoragePolicy
         , cceLogSnapshotRef = Just logSnapshotRef
+        , cceDataBrowserExecutor = dataBrowserExecutor
         }
+  commandControl <- newCommandChannelControl
   commandThread <- if hcStartCommandChannel cfg
-    then Just <$> forkIO (runCommandChannel commandEnv)
+    then do
+      done <- newEmptyMVar
+      threadId <- forkIOWithUnmask $ \unmask ->
+        unmask (runCommandChannelWithControl commandControl commandEnv)
+          `finally` void (tryPutMVar done ())
+      pure (Just (threadId, done))
     else pure Nothing
 
   pure HeadlessApp
@@ -345,18 +372,23 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
     , haActorHandles = actorHandles
     , haCommandContext = commandContext
     , haCommandChannelEnv = commandEnv
+    , haCommandChannelControl = commandControl
     , haCommandChannelThread = commandThread
     , haAutoTickScheduler = autoTickScheduler
+    , haDataBrowserExecutor = dataBrowserExecutor
     }
 
 -- | Stop a headless runtime and release actor resources.
 stopHeadlessApp :: HeadlessApp -> IO ()
 stopHeadlessApp app = do
   shutdownScreenshotRequestRef (haScreenshotRef app)
+  mapM_ (killThread . fst) (haCommandChannelThread app)
+  mapM_ (readMVar . snd) (haCommandChannelThread app)
+  shutdownCommandChannelControl (haCommandChannelControl app)
+  shutdownDataBrowserExecutor (haDataBrowserExecutor app)
   waitForSimIdle <- beginSimShutdown (haSimulationHandle app)
   stopAutoTickScheduler (haAutoTickScheduler app)
   waitForSimIdle
-  mapM_ killThread (haCommandChannelThread app)
   shutdownPlugins (haPluginManagerHandle app)
   shutdownActorSystem (haActorSystem app)
   mapM_ hClose (haLogFileHandle app)

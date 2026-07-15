@@ -93,9 +93,12 @@ module Actor.UI.State
   , setUiSnapshotRef
   , readUiSnapshotRef
   , newUiSnapshotRef
+  , beginUiDataBrowserAction
+  , completeUiDataBrowserRequest
   ) where
 
 import Actor.PluginManager.Types (PluginLifecycleSnapshot)
+import Control.Monad (when)
 import Data.Aeson (Value, object, (.=))
 import Data.Aeson.Types (Pair)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -112,7 +115,24 @@ import Hyperspace.Actor.QQ (hyperspace)
 import Hyperspace.Actor.Spec (OpTag(..))
 import Seer.Config.SliderRegistry (SliderId(..), SliderTab(..), sliderDefaultValueForId, sliderRowCountForTab)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
-import Seer.DataBrowser.Model (DataBrowserValidationError)
+import Seer.DataBrowser.Lifecycle (DataBrowserAppAction, beginDataBrowserAction)
+import Seer.DataBrowser.Model
+  ( DataBrowserAsyncError
+  , DataBrowserBeginResult(..)
+  , DataBrowserCompletion
+  , DataBrowserEditBuffer(..)
+  , DataBrowserMode(..)
+  , DataBrowserModel(..)
+  , DataBrowserPagination(..)
+  , DataBrowserPendingEnvelope(..)
+  , DataBrowserRequestId(..)
+  , DataBrowserSelection(..)
+  , DataBrowserUi(..)
+  , DataBrowserValidationError
+  , completeDataBrowserRequest
+  , dataBrowserPageRequestFor
+  , dataBrowserPendingDescriptor
+  )
 import Seer.Editor.Types (EditorState(..), defaultEditorState)
 import Seer.Render.ZoomStage (maxCameraZoom)
 import Seer.World.Persist.Types (WorldSaveManifest)
@@ -121,7 +141,7 @@ import Topo.Export (canonicalBasisQualifiedExportFields)
 import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Pipeline (StageStatus)
 import Topo.Pipeline.Stage (StageId)
-import Topo.Plugin.DataResource (DataResourceSchema)
+import Topo.Plugin.DataResource (DataResourceSchema(..))
 import Topo.Plugin.RPC.DataService (DataRecord)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.WidgetId (WidgetId)
@@ -1105,6 +1125,10 @@ data DataBrowserState = DataBrowserState
   -- ^ Whether the delete confirmation modal is shown.
   , dbsValidationErrors :: ![DataBrowserValidationError]
   -- ^ Validation or reducer guard errors shown in the detail popover.
+  , dbsPendingRequest :: !(Maybe DataBrowserPendingEnvelope)
+  -- ^ ID-tagged accepted request and exact target owned by the Ui actor.
+  , dbsAsyncError :: !(Maybe DataBrowserAsyncError)
+  -- ^ Error scoped to the most recently completed asynchronous operation.
   } deriving (Eq, Show)
 
 -- | Empty initial state for the data browser.
@@ -1127,6 +1151,8 @@ emptyDataBrowserState = DataBrowserState
   , dbsTextCursor       = 0
   , dbsDeleteConfirm    = False
   , dbsValidationErrors = []
+  , dbsPendingRequest = Nothing
+  , dbsAsyncError = Nothing
   }
 
 -- | Number of rows to display in the data browser tab.
@@ -2157,10 +2183,15 @@ type UiSnapshotRef = IORef UiState
 data UiActorState = UiActorState
   { uasUi :: !UiState
   , uasSnapshotRef :: !(Maybe UiSnapshotRef)
+  , uasNextDataBrowserRequestId :: !Word64
   }
 
 emptyUiActorState :: UiActorState
-emptyUiActorState = UiActorState emptyUiState Nothing
+emptyUiActorState = UiActorState
+  { uasUi = emptyUiState
+  , uasSnapshotRef = Nothing
+  , uasNextDataBrowserRequestId = 1
+  }
 
 -- | Publish the current UI snapshot to the shared 'IORef', if registered.
 publishUiSnapshot :: UiActorState -> IO ()
@@ -2168,6 +2199,80 @@ publishUiSnapshot st =
   case uasSnapshotRef st of
     Nothing -> pure ()
     Just ref -> writeIORef ref (uasUi st)
+
+dataBrowserUiFromUiState :: UiState -> DataBrowserUi
+dataBrowserUiFromUiState ui = DataBrowserUi resources model
+  where
+    resources = uiDataResources ui
+    state = uiDataBrowser ui
+    selection = DataBrowserSelection
+      { dbSelectionPlugin = dbsSelectedPlugin state
+      , dbSelectionResource = dbsSelectedResource state
+      , dbSelectionSchema = schema
+      , dbSelectionRecord = dbsSelectedRecord state
+      , dbSelectionRecordKey = dbsSelectedRecordKey state
+      , dbSelectionRowIndex = dbsSelectedRowIndex state
+      }
+    schema = do
+      pluginName <- dbsSelectedPlugin state
+      resourceName <- dbsSelectedResource state
+      schemas <- Map.lookup pluginName resources
+      find ((== resourceName) . drsName) schemas
+    mode
+      | dbsDeleteConfirm state = DataBrowserDeleteConfirmMode
+      | dbsCreateMode state = DataBrowserCreateMode
+      | dbsEditMode state = DataBrowserEditMode
+      | dbsSelectedRecord state /= Nothing = DataBrowserViewMode
+      | otherwise = DataBrowserBrowseMode
+    model = DataBrowserModel
+      { dbModelMode = mode
+      , dbModelSelection = selection
+      , dbModelRecords = dbsRecords state
+      , dbModelPagination = DataBrowserPagination
+          { dbPaginationOffset = dbsPageOffset state
+          , dbPaginationPageSize = schema >>= fst . dataBrowserPageRequestFor
+          , dbPaginationTotalCount = dbsTotalCount state
+          }
+      , dbModelExpandedFields = dbsExpandedFields state
+      , dbModelEditBuffer = DataBrowserEditBuffer (dbsEditValues state)
+      , dbModelFocusedField = dbsFocusedField state
+      , dbModelTextCursor = dbsTextCursor state
+      , dbModelValidationErrors = dbsValidationErrors state
+      , dbModelPendingRequest = dbsPendingRequest state >>= dataBrowserPendingDescriptor . dbpeRequest
+      , dbModelPendingEnvelope = dbsPendingRequest state
+      , dbModelAsyncError = dbsAsyncError state
+      , dbModelLoading = maybe False (const True) (dbsPendingRequest state)
+      }
+
+dataBrowserUiIntoUiState :: DataBrowserUi -> UiState -> UiState
+dataBrowserUiIntoUiState browserUi ui = ui
+  { uiDataResources = dbuResources browserUi
+  , uiDataBrowser = state
+  }
+  where
+    model = dbuModel browserUi
+    selection = dbModelSelection model
+    state = emptyDataBrowserState
+      { dbsSelectedPlugin = dbSelectionPlugin selection
+      , dbsSelectedResource = dbSelectionResource selection
+      , dbsRecords = dbModelRecords model
+      , dbsPageOffset = dbPaginationOffset (dbModelPagination model)
+      , dbsTotalCount = dbPaginationTotalCount (dbModelPagination model)
+      , dbsLoading = maybe False (const True) (dbModelPendingEnvelope model)
+      , dbsSelectedRecord = dbSelectionRecord selection
+      , dbsSelectedRecordKey = dbSelectionRecordKey selection
+      , dbsSelectedRowIndex = dbSelectionRowIndex selection
+      , dbsExpandedFields = dbModelExpandedFields model
+      , dbsEditMode = dbModelMode model == DataBrowserEditMode
+      , dbsCreateMode = dbModelMode model == DataBrowserCreateMode
+      , dbsEditValues = dbEditBufferValues (dbModelEditBuffer model)
+      , dbsFocusedField = dbModelFocusedField model
+      , dbsTextCursor = dbModelTextCursor model
+      , dbsDeleteConfirm = dbModelMode model == DataBrowserDeleteConfirmMode
+      , dbsValidationErrors = dbModelValidationErrors model
+      , dbsPendingRequest = dbModelPendingEnvelope model
+      , dbsAsyncError = dbModelAsyncError model
+      }
 
 uiSnapshotTag :: OpTag "uiSnapshot"
 uiSnapshotTag = OpTag
@@ -2187,6 +2292,8 @@ actor Ui
   cast snapshotAsync :: () reply UiSnapshotReply
   cast setSnapshotRef :: UiSnapshotRef
   call snapshot :: () -> UiState
+  call dataBrowserBegin :: DataBrowserAppAction -> DataBrowserBeginResult
+  call dataBrowserComplete :: DataBrowserCompletion -> Bool
 
   initial emptyUiActorState
   on_ update = \upd st -> do
@@ -2201,11 +2308,47 @@ actor Ui
     publishUiSnapshot st'
     pure st'
   onPure snapshot = \() st -> (st, uasUi st)
+  on dataBrowserBegin = \action st -> do
+    let requestId = DataBrowserRequestId (uasNextDataBrowserRequestId st)
+        current = dataBrowserUiFromUiState (uasUi st)
+        (next, result) = beginDataBrowserAction requestId current action
+        ui' = dataBrowserUiIntoUiState next (uasUi st)
+        consumed = case result of
+          DataBrowserBeginAccepted {} -> True
+          _ -> False
+        st' = st
+          { uasUi = ui'
+          , uasNextDataBrowserRequestId =
+              if consumed then uasNextDataBrowserRequestId st + 1 else uasNextDataBrowserRequestId st
+          }
+    when (ui' /= uasUi st) (publishUiSnapshot st')
+    pure (st', result)
+  on dataBrowserComplete = \completion st -> do
+    let current = dataBrowserUiFromUiState (uasUi st)
+        (next, applied) = completeDataBrowserRequest completion current
+        ui' = dataBrowserUiIntoUiState next (uasUi st)
+        st' = st { uasUi = ui' }
+    when applied (publishUiSnapshot st')
+    pure (st', applied)
 |]
 
 getUiSnapshot :: ActorHandle Ui (Protocol Ui) -> IO UiState
 getUiSnapshot handle =
   call @"snapshot" handle #snapshot ()
+
+beginUiDataBrowserAction
+  :: ActorHandle Ui (Protocol Ui)
+  -> DataBrowserAppAction
+  -> IO DataBrowserBeginResult
+beginUiDataBrowserAction handle action =
+  call @"dataBrowserBegin" handle #dataBrowserBegin action
+
+completeUiDataBrowserRequest
+  :: ActorHandle Ui (Protocol Ui)
+  -> DataBrowserCompletion
+  -> IO Bool
+completeUiDataBrowserRequest handle completion =
+  call @"dataBrowserComplete" handle #dataBrowserComplete completion
 
 requestUiSnapshot :: ActorHandle Ui (Protocol Ui) -> ReplyTo UiSnapshotReply -> IO ()
 requestUiSnapshot handle replyTo =
