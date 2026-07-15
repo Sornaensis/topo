@@ -6,7 +6,9 @@
 -- including base64 chunk encoding and decode/apply helpers.
 module Topo.Plugin.RPC.Payload
   ( terrainWorldToPayload
+  , terrainWorldToPayloadWithLimits
   , terrainWorldToCompletePayload
+  , terrainWorldToCompletePayloadWithLimits
   , decodeTerrainWritesValue
   , decodeTerrainWritesValueWithLimits
   , terrainWritesValueEmpty
@@ -17,16 +19,17 @@ module Topo.Plugin.RPC.Payload
   ) where
 
 import Control.Monad (foldM, unless, when)
-import Data.Bits ((.&.), (.|.), shiftL, shiftR)
+import Data.Bits ((.|.), shiftL)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Base64 as Base64
 import Data.Foldable (traverse_)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word8)
-import Text.Read (readMaybe)
+import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text.Read as TextRead
 
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.=), object)
@@ -75,11 +78,20 @@ import qualified Topo.World
 -- This is used for plugin @readTerrain@ delivery and intentionally excludes
 -- overlays/weather, which are delivered through separate capability gates.
 terrainWorldToPayload :: Topo.World.TerrainWorld -> Either Text Value
-terrainWorldToPayload world = do
+terrainWorldToPayload = terrainWorldToPayloadWithLimits defaultRPCPayloadLimits
+
+-- | Encode a terrain payload while consuming the configured decoded-binary
+-- budget before each chunk is converted to base64.
+terrainWorldToPayloadWithLimits :: RPCPayloadLimits -> Topo.World.TerrainWorld -> Either Text Value
+terrainWorldToPayloadWithLimits limits =
+  terrainWorldToPayloadWithBudget (Just (toInteger (rplMaxDecodedTerrainBytes limits)))
+
+terrainWorldToPayloadWithBudget :: Maybe Integer -> Topo.World.TerrainWorld -> Either Text Value
+terrainWorldToPayloadWithBudget budget world = do
   let config = Topo.World.twConfig world
-  terrainObj <- encodeChunkMap (Topo.World.twTerrain world) (encodeTerrainChunk config)
-  climateObj <- encodeChunkMap (Topo.World.twClimate world) (encodeClimateChunk config)
-  vegetationObj <- encodeChunkMap (Topo.World.twVegetation world) (encodeVegetationChunk config)
+  (terrainObj, budget1) <- encodeChunkMap budget "terrain" (Topo.World.twTerrain world) (encodeTerrainChunk config)
+  (climateObj, budget2) <- encodeChunkMap budget1 "climate" (Topo.World.twClimate world) (encodeClimateChunk config)
+  (vegetationObj, _) <- encodeChunkMap budget2 "vegetation" (Topo.World.twVegetation world) (encodeVegetationChunk config)
   Right $ object
     [ "chunk_count" .= IntMap.size (Topo.World.twTerrain world)
     , "climate_count" .= IntMap.size (Topo.World.twClimate world)
@@ -100,19 +112,28 @@ terrainWorldToPayload world = do
 -- This is not used for capability-scoped plugin terrain reads; callers that
 -- need every generated/persisted layer must opt in explicitly.
 terrainWorldToCompletePayload :: Topo.World.TerrainWorld -> Either Text Value
-terrainWorldToCompletePayload world = do
+terrainWorldToCompletePayload = terrainWorldToCompletePayloadWithLimits defaultRPCPayloadLimits
+
+-- | Encode the complete payload with one aggregate decoded-binary budget shared
+-- by every chunk section.
+terrainWorldToCompletePayloadWithLimits :: RPCPayloadLimits -> Topo.World.TerrainWorld -> Either Text Value
+terrainWorldToCompletePayloadWithLimits limits =
+  terrainWorldToCompletePayloadWithBudget (Just (toInteger (rplMaxDecodedTerrainBytes limits)))
+
+terrainWorldToCompletePayloadWithBudget :: Maybe Integer -> Topo.World.TerrainWorld -> Either Text Value
+terrainWorldToCompletePayloadWithBudget budget world = do
   let config = Topo.World.twConfig world
       weather = getWeatherFromOverlay world
-  terrainObj <- encodeChunkMap (Topo.World.twTerrain world) (encodeTerrainChunk config)
-  climateObj <- encodeChunkMap (Topo.World.twClimate world) (encodeClimateChunk config)
-  riverObj <- encodeChunkMap (Topo.World.twRivers world) (encodeRiverChunk config)
-  groundwaterObj <- encodeChunkMap (Topo.World.twGroundwater world) (encodeGroundwaterChunk config)
-  volcanismObj <- encodeChunkMap (Topo.World.twVolcanism world) (encodeVolcanismChunk config)
-  glacierObj <- encodeChunkMap (Topo.World.twGlaciers world) (encodeGlacierChunk config)
-  waterBodyObj <- encodeChunkMap (Topo.World.twWaterBodies world) (encodeWaterBodyChunk config)
-  vegetationObj <- encodeChunkMap (Topo.World.twVegetation world) (encodeVegetationChunk config)
-  biomeObj <- encodeChunkMap (Topo.World.twTerrain world) (encodeBiomeChunk config)
-  weatherObj <- encodeChunkMap weather (encodeWeatherChunk config)
+  (terrainObj, budget1) <- encodeChunkMap budget "terrain" (Topo.World.twTerrain world) (encodeTerrainChunk config)
+  (climateObj, budget2) <- encodeChunkMap budget1 "climate" (Topo.World.twClimate world) (encodeClimateChunk config)
+  (riverObj, budget3) <- encodeChunkMap budget2 "rivers" (Topo.World.twRivers world) (encodeRiverChunk config)
+  (groundwaterObj, budget4) <- encodeChunkMap budget3 "groundwater" (Topo.World.twGroundwater world) (encodeGroundwaterChunk config)
+  (volcanismObj, budget5) <- encodeChunkMap budget4 "volcanism" (Topo.World.twVolcanism world) (encodeVolcanismChunk config)
+  (glacierObj, budget6) <- encodeChunkMap budget5 "glaciers" (Topo.World.twGlaciers world) (encodeGlacierChunk config)
+  (waterBodyObj, budget7) <- encodeChunkMap budget6 "water_bodies" (Topo.World.twWaterBodies world) (encodeWaterBodyChunk config)
+  (vegetationObj, budget8) <- encodeChunkMap budget7 "vegetation" (Topo.World.twVegetation world) (encodeVegetationChunk config)
+  (biomeObj, budget9) <- encodeChunkMap budget8 "biomes" (Topo.World.twTerrain world) (encodeBiomeChunk config)
+  (weatherObj, _) <- encodeChunkMap budget9 "weather" weather (encodeWeatherChunk config)
   Right $ object
     [ "chunk_count" .= IntMap.size (Topo.World.twTerrain world)
     , "climate_count" .= IntMap.size (Topo.World.twClimate world)
@@ -352,19 +373,33 @@ terrainWritesObjectEmpty payload = do
         Just _ -> Left (fieldName <> " payload must be an object")
 
 encodeChunkMap
-  :: IntMap.IntMap a
+  :: Maybe Integer
+  -> Text
+  -> IntMap.IntMap a
   -> (a -> Either ExportError BS.ByteString)
-  -> Either Text (KM.KeyMap Value)
-encodeChunkMap chunks encodeChunk = do
-  pairs <- traverse encodeOne (IntMap.toList chunks)
-  Right (KM.fromList pairs)
+  -> Either Text (KM.KeyMap Value, Maybe Integer)
+encodeChunkMap initialBudget section chunks encodeChunk =
+  IntMap.foldlWithKey' encodeOne (Right (KM.empty, initialBudget)) chunks
   where
-    encodeOne (chunkId, chunk) = do
-      encoded <- firstExportError (encodeChunk chunk)
-      Right
-        ( Key.fromText (Text.pack (show chunkId))
-        , Aeson.String (encodeBase64Text encoded)
-        )
+    encodeOne (Left err) _ _ = Left err
+    encodeOne (Right (encodedChunks, budget)) chunkId chunk = do
+      binary <- firstExportError (encodeChunk chunk)
+      budget' <- consumeEncodedBudget section chunkId (toInteger (BS.length binary)) budget
+      let key = Key.fromText (Text.pack (show chunkId))
+          encodedText = encodeBase64Text binary
+          encodedChunks' = KM.insert key (Aeson.String encodedText) encodedChunks
+      Text.length encodedText `seq` encodedChunks' `seq` budget' `seq`
+        Right (encodedChunks', budget')
+
+consumeEncodedBudget :: Text -> Int -> Integer -> Maybe Integer -> Either Text (Maybe Integer)
+consumeEncodedBudget _ _ _ Nothing = Right Nothing
+consumeEncodedBudget section chunkId chunkBytes (Just remaining)
+  | chunkBytes <= remaining = Right (Just (remaining - chunkBytes))
+  | otherwise = Left
+      ("outgoing terrain payload decoded aggregate exceeds limit while encoding "
+        <> section <> " chunk " <> tshow chunkId
+        <> ": chunk=" <> tshow chunkBytes <> " bytes, remaining="
+        <> tshow remaining <> " bytes")
 
 firstExportError :: Either ExportError a -> Either Text a
 firstExportError (Right value) = Right value
@@ -397,9 +432,10 @@ terrainWritesFromPayloadWithConfig
   -> Either Text TerrainWrites
 terrainWritesFromPayloadWithConfig limits payloadConfig payload = do
   validateTerrainPayload limits payloadConfig payload
-  terrain <- decodeChunkSection payload "terrain" decodeTerrainChunk payloadConfig
-  climate <- decodeChunkSection payload "climate" decodeClimateChunk payloadConfig
-  vegetation <- decodeChunkSection payload "vegetation" decodeVegetationChunk payloadConfig
+  let initialBudget = toInteger (rplMaxDecodedTerrainBytes limits)
+  (terrain, budget1) <- decodeChunkSection initialBudget payload "terrain" decodeTerrainChunk payloadConfig
+  (climate, budget2) <- decodeChunkSection budget1 payload "climate" decodeClimateChunk payloadConfig
+  (vegetation, _) <- decodeChunkSection budget2 payload "vegetation" decodeVegetationChunk payloadConfig
   Right TerrainWrites
     { twrTerrain = terrain
     , twrClimate = climate
@@ -455,14 +491,6 @@ data ChunkSectionSpec = ChunkSectionSpec
   , cssLayout :: !ChunkBinaryLayout
   }
 
-data ValidatedChunk = ValidatedChunk
-  { vcSection :: !Text
-  , vcChunkId :: !Int
-  , vcRawBase64 :: !Text
-  , vcDecodedLength :: !Integer
-  , vcLayout :: !ChunkBinaryLayout
-  }
-
 chunkSectionSpecs :: [ChunkSectionSpec]
 chunkSectionSpecs =
   [ ChunkSectionSpec "terrain" "chunk_count" (FixedBytesPerTile 113)
@@ -487,13 +515,12 @@ validateTerrainPayload
 validateTerrainPayload limits config payload = do
   ensureTerrainPayloadEncoding payload
   tileCount <- checkedTileCount config
-  chunks <- concat <$> traverse (validateChunkSection limits tileCount payload) chunkSectionSpecs
-  let actualDecoded = sum (map vcDecodedLength chunks)
-      decodedLimit = toInteger (rplMaxDecodedTerrainBytes limits)
+  let decodedLimit = toInteger (rplMaxDecodedTerrainBytes limits)
+  actualDecoded <- foldM (validateChunkSection limits tileCount payload) 0 chunkSectionSpecs
   when (actualDecoded > decodedLimit) $ Left
     ("incoming terrain payload decoded aggregate exceeds limit: actual="
       <> tshow actualDecoded <> " bytes, limit=" <> tshow decodedLimit <> " bytes")
-  traverse_ (validateVariableChunk tileCount) chunks
+  validateRiverChunks tileCount payload
 
 checkedTileCount :: Topo.Types.WorldConfig -> Either Text Integer
 checkedTileCount config =
@@ -509,22 +536,27 @@ validateChunkSection
   :: RPCPayloadLimits
   -> Integer
   -> KM.KeyMap Value
+  -> Integer
   -> ChunkSectionSpec
-  -> Either Text [ValidatedChunk]
-validateChunkSection limits tileCount payload spec =
+  -> Either Text Integer
+validateChunkSection limits tileCount payload decodedSoFar spec =
   case KM.lookup (Key.fromText (cssField spec)) payload of
-    Nothing -> validateSummaryCount spec payload 0 >> Right []
-    Just Null -> validateSummaryCount spec payload 0 >> Right []
+    Nothing -> validateSummaryCount spec payload 0 >> Right decodedSoFar
+    Just Null -> validateSummaryCount spec payload 0 >> Right decodedSoFar
     Just (Object chunkMap) -> do
       validateSummaryCount spec payload (KM.size chunkMap)
       let decodedLimit = toInteger (rplMaxDecodedTerrainBytes limits)
           minimumChunkBytes = minimumLayoutBytes tileCount (cssLayout spec)
           chunkCount = toInteger (KM.size chunkMap)
-      when (chunkCount * minimumChunkBytes > decodedLimit) $ Left
+      when (decodedSoFar + chunkCount * minimumChunkBytes > decodedLimit) $ Left
         ("incoming " <> cssField spec <> " chunk map exceeds decoded limit before base64 decode: actual>="
-          <> tshow (chunkCount * minimumChunkBytes) <> " bytes, limit="
+          <> tshow (decodedSoFar + chunkCount * minimumChunkBytes) <> " bytes, limit="
           <> tshow decodedLimit <> " bytes")
-      snd <$> foldM (validateChunkEntry tileCount spec) (IntSet.empty, []) (KM.toList chunkMap)
+      (_, decodedTotal) <- foldKeyMapM
+        (validateChunkEntry tileCount spec)
+        (IntSet.empty, decodedSoFar)
+        chunkMap
+      Right decodedTotal
     Just _ -> Left (cssField spec <> " payload must be an object")
 
 validateSummaryCount :: ChunkSectionSpec -> KM.KeyMap Value -> Int -> Either Text ()
@@ -540,10 +572,11 @@ validateSummaryCount spec payload actual =
 validateChunkEntry
   :: Integer
   -> ChunkSectionSpec
-  -> (IntSet.IntSet, [ValidatedChunk])
-  -> (Key.Key, Value)
-  -> Either Text (IntSet.IntSet, [ValidatedChunk])
-validateChunkEntry tileCount spec (seen, chunks) (chunkKey, rawValue) = do
+  -> (IntSet.IntSet, Integer)
+  -> Key.Key
+  -> Value
+  -> Either Text (IntSet.IntSet, Integer)
+validateChunkEntry tileCount spec (seen, decodedSoFar) chunkKey rawValue = do
   chunkId <- parseChunkId (Key.toText chunkKey)
   when (chunkId < 0) $ Left ("invalid negative chunk id: " <> Key.toText chunkKey)
   when (IntSet.member chunkId seen) $ Left
@@ -553,14 +586,9 @@ validateChunkEntry tileCount spec (seen, chunks) (chunkKey, rawValue) = do
     _ -> Left (cssField spec <> " chunk " <> tshow chunkId <> " must be a base64 string")
   decodedLength <- validatedBase64DecodedLength raw
   validateLayoutLength tileCount (cssField spec) chunkId (cssLayout spec) decodedLength
-  let chunk = ValidatedChunk
-        { vcSection = cssField spec
-        , vcChunkId = chunkId
-        , vcRawBase64 = raw
-        , vcDecodedLength = decodedLength
-        , vcLayout = cssLayout spec
-        }
-  Right (IntSet.insert chunkId seen, chunk : chunks)
+  let decodedTotal = decodedSoFar + decodedLength
+      seen' = IntSet.insert chunkId seen
+  seen' `seq` decodedTotal `seq` Right (seen', decodedTotal)
 
 minimumLayoutBytes :: Integer -> ChunkBinaryLayout -> Integer
 minimumLayoutBytes tileCount layout = case layout of
@@ -586,19 +614,29 @@ validateLayoutLength tileCount section chunkId layout actual = case layout of
     exact expected = unless (actual == expected) $ Left
       (prefix <> "expected=" <> tshow expected <> " bytes, actual=" <> tshow actual)
 
-validateVariableChunk :: Integer -> ValidatedChunk -> Either Text ()
-validateVariableChunk tileCount chunk = case vcLayout chunk of
-  RiverBytes -> do
-    bytes <- decodeBase64Text (vcRawBase64 chunk)
-    let segmentCountOffset = 4 + 34 * tileCount
-    segmentCount <- word32LEAt (vcSection chunk) (vcChunkId chunk) segmentCountOffset bytes
-    let expected = 12 + 38 * tileCount + 8 * toInteger segmentCount
-        actual = vcDecodedLength chunk
-    unless (actual == expected) $ Left
-      (vcSection chunk <> " chunk " <> tshow (vcChunkId chunk)
-        <> " length mismatch: expected=" <> tshow expected
-        <> " bytes from segment count, actual=" <> tshow actual)
-  _ -> Right ()
+validateRiverChunks :: Integer -> KM.KeyMap Value -> Either Text ()
+validateRiverChunks tileCount payload =
+  case KM.lookup "rivers" payload of
+    Nothing -> Right ()
+    Just Null -> Right ()
+    Just (Object chunkMap) ->
+      foldKeyMapM validateOne () chunkMap
+    Just _ -> Left "rivers payload must be an object"
+  where
+    validateOne () chunkKey rawValue = do
+      chunkId <- parseChunkId (Key.toText chunkKey)
+      raw <- case rawValue of
+        String value -> Right value
+        _ -> Left ("rivers chunk " <> tshow chunkId <> " must be a base64 string")
+      actual <- validatedBase64DecodedLength raw
+      bytes <- decodeBase64Text raw
+      let segmentCountOffset = 4 + 34 * tileCount
+      segmentCount <- word32LEAt "rivers" chunkId segmentCountOffset bytes
+      let expected = 12 + 38 * tileCount + 8 * toInteger segmentCount
+      unless (actual == expected) $ Left
+        ("rivers chunk " <> tshow chunkId
+          <> " length mismatch: expected=" <> tshow expected
+          <> " bytes from segment count, actual=" <> tshow actual)
 
 word32LEAt :: Text -> Int -> Integer -> BS.ByteString -> Either Text Integer
 word32LEAt section chunkId offset bytes
@@ -616,14 +654,20 @@ validatedBase64DecodedLength raw = do
   let encodedLength = Text.length raw
       padding = Text.length (Text.takeWhileEnd (== '=') raw)
       body = Text.dropEnd padding raw
-      alphabetMember ch =
-        ('A' <= ch && ch <= 'Z') || ('a' <= ch && ch <= 'z')
-          || ('0' <= ch && ch <= '9') || ch == '+' || ch == '/'
   when (encodedLength `mod` 4 /= 0) $ Left "invalid base64 length"
   when (padding > 2) $ Left "invalid base64 padding"
-  unless (Text.all alphabetMember body) $ Left "invalid base64 character or padding location"
+  unless (Text.all isBase64AlphabetChar body) $
+    Left "invalid base64 character or padding location"
   let decodedLength = toInteger (encodedLength `div` 4 * 3 - padding)
   Right decodedLength
+
+isBase64AlphabetChar :: Char -> Bool
+isBase64AlphabetChar ch =
+     ('A' <= ch && ch <= 'Z')
+  || ('a' <= ch && ch <= 'z')
+  || ('0' <= ch && ch <= '9')
+  || ch == '+'
+  || ch == '/'
 
 valueToNonNegativeInt :: Value -> Maybe Int
 valueToNonNegativeInt (Number n) =
@@ -634,34 +678,63 @@ valueToNonNegativeInt (Number n) =
 valueToNonNegativeInt _ = Nothing
 
 decodeChunkSection
-  :: KM.KeyMap Value
+  :: Integer
+  -> KM.KeyMap Value
   -> Text
   -> (Topo.Types.WorldConfig -> BS.ByteString -> Either ExportError a)
   -> Topo.Types.WorldConfig
-  -> Either Text (IntMap.IntMap a)
-decodeChunkSection payload fieldName decodeChunk config =
+  -> Either Text (IntMap.IntMap a, Integer)
+decodeChunkSection initialBudget payload fieldName decodeChunk config =
   case KM.lookup (Key.fromText fieldName) payload of
-    Nothing -> Right IntMap.empty
-    Just Null -> Right IntMap.empty
+    Nothing -> Right (IntMap.empty, initialBudget)
+    Just Null -> Right (IntMap.empty, initialBudget)
     Just (Object chunkMap) ->
-      IntMap.fromList <$> traverse decodeOne (KM.toList chunkMap)
+      foldKeyMapM decodeOne (IntMap.empty, initialBudget) chunkMap
     Just _ -> Left (fieldName <> " payload must be an object")
   where
-    decodeOne (chunkKey, rawChunkBytes) = do
+    decodeOne (decodedChunks, remaining) chunkKey rawChunkBytes = do
       chunkId <- parseChunkId (Key.toText chunkKey)
-      bytes <- decodeChunkBytes rawChunkBytes
+      raw <- case rawChunkBytes of
+        Aeson.String value -> Right value
+        _ -> Left "chunk payload must be a base64 string"
+      decodedLength <- validatedBase64DecodedLength raw
+      remaining' <- consumeDecodeBudget fieldName chunkId decodedLength remaining
+      bytes <- decodeBase64Text raw
       decoded <- firstExportError (decodeChunk config bytes)
-      Right (chunkId, decoded)
+      let decodedChunks' = IntMap.insert chunkId decoded decodedChunks
+      decodedChunks' `seq` remaining' `seq` Right (decodedChunks', remaining')
+
+consumeDecodeBudget :: Text -> Int -> Integer -> Integer -> Either Text Integer
+consumeDecodeBudget section chunkId chunkBytes remaining
+  | chunkBytes <= remaining = Right (remaining - chunkBytes)
+  | otherwise = Left
+      ("incoming terrain payload decoded aggregate exceeds limit while decoding "
+        <> section <> " chunk " <> tshow chunkId
+        <> ": chunk=" <> tshow chunkBytes <> " bytes, remaining="
+        <> tshow remaining <> " bytes")
+
+foldKeyMapM
+  :: (state -> Key.Key -> Value -> Either Text state)
+  -> state
+  -> KM.KeyMap Value
+  -> Either Text state
+foldKeyMapM step initial keyMap =
+  KM.foldrWithKey
+    (\key value continue state -> do
+      state' <- step state key value
+      state' `seq` continue state')
+    Right
+    keyMap
+    initial
 
 parseChunkId :: Text -> Either Text Int
 parseChunkId rawChunkId =
-  case readMaybe (Text.unpack rawChunkId) of
-    Nothing -> Left ("invalid chunk id: " <> rawChunkId)
-    Just chunkId -> Right chunkId
-
-decodeChunkBytes :: Value -> Either Text BS.ByteString
-decodeChunkBytes (Aeson.String raw) = decodeBase64Text raw
-decodeChunkBytes _ = Left "chunk payload must be a base64 string"
+  case TextRead.signed TextRead.decimal rawChunkId :: Either String (Integer, Text) of
+    Right (chunkId, rest)
+      | Text.null rest
+      , chunkId >= toInteger (minBound :: Int)
+      , chunkId <= toInteger (maxBound :: Int) -> Right (fromInteger chunkId)
+    _ -> Left ("invalid chunk id: " <> rawChunkId)
 
 ensureTerrainPayloadEncoding :: KM.KeyMap Value -> Either Text ()
 ensureTerrainPayloadEncoding payload =
@@ -690,87 +763,16 @@ valueToPositiveInt (Number n) =
       else Nothing
 valueToPositiveInt _ = Nothing
 
-base64Alphabet :: Text
-base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
 encodeBase64Text :: BS.ByteString -> Text
-encodeBase64Text bytes = Text.pack (go 0)
-  where
-    len = BS.length bytes
-
-    at :: Int -> Int
-    at index = fromIntegral (BS.index bytes index)
-
-    emit :: Int -> Char
-    emit index = Text.index base64Alphabet index
-
-    go :: Int -> String
-    go index
-      | index >= len = []
-      | index + 2 < len =
-          let b0 = at index
-              b1 = at (index + 1)
-              b2 = at (index + 2)
-              c0 = emit (b0 `shiftR` 2)
-              c1 = emit (((b0 .&. 0x03) `shiftL` 4) .|. (b1 `shiftR` 4))
-              c2 = emit (((b1 .&. 0x0F) `shiftL` 2) .|. (b2 `shiftR` 6))
-              c3 = emit (b2 .&. 0x3F)
-          in c0 : c1 : c2 : c3 : go (index + 3)
-      | index + 1 < len =
-          let b0 = at index
-              b1 = at (index + 1)
-              c0 = emit (b0 `shiftR` 2)
-              c1 = emit (((b0 .&. 0x03) `shiftL` 4) .|. (b1 `shiftR` 4))
-              c2 = emit ((b1 .&. 0x0F) `shiftL` 2)
-          in [c0, c1, c2, '=']
-      | otherwise =
-          let b0 = at index
-              c0 = emit (b0 `shiftR` 2)
-              c1 = emit ((b0 .&. 0x03) `shiftL` 4)
-          in [c0, c1, '=', '=']
+encodeBase64Text = TextEncoding.decodeUtf8 . Base64.encode
 
 decodeBase64Text :: Text -> Either Text BS.ByteString
 decodeBase64Text raw = do
-  sextets <- traverse decodeChar (Text.unpack raw)
-  bytes <- decodeSextets sextets
-  Right (BS.pack bytes)
-  where
-    decodeChar :: Char -> Either Text Int
-    decodeChar '=' = Right (-1)
-    decodeChar ch =
-      case Text.findIndex (== ch) base64Alphabet of
-        Just index -> Right index
-        Nothing -> Left ("invalid base64 character: " <> Text.singleton ch)
-
-    decodeSextets :: [Int] -> Either Text [Word8]
-    decodeSextets values
-      | null values = Right []
-      | (length values `mod` 4) /= 0 = Left "invalid base64 length"
-      | otherwise = go values
-
-    go :: [Int] -> Either Text [Word8]
-    go [] = Right []
-    go (a:b:c:d:rest)
-      | a < 0 || b < 0 = Left "invalid base64 padding"
-      | c == (-1) && d /= (-1) = Left "invalid base64 padding"
-      | otherwise = do
-          let byte0 = fromIntegral (((a `shiftL` 2) .|. (b `shiftR` 4)) .&. 0xFF)
-          suffix <- case (c, d) of
-            (-1, -1) ->
-              if null rest
-                then Right []
-                else Left "invalid base64 padding location"
-            (cVal, -1) | cVal >= 0 ->
-              if null rest
-                then
-                  let byte1 = fromIntegral ((((b .&. 0x0F) `shiftL` 4) .|. (cVal `shiftR` 2)) .&. 0xFF)
-                  in Right [byte1]
-                else Left "invalid base64 padding location"
-            (cVal, dVal) | cVal >= 0 && dVal >= 0 -> do
-              let byte1 = fromIntegral ((((b .&. 0x0F) `shiftL` 4) .|. (cVal `shiftR` 2)) .&. 0xFF)
-                  byte2 = fromIntegral ((((cVal .&. 0x03) `shiftL` 6) .|. dVal) .&. 0xFF)
-              more <- go rest
-              Right (byte1 : byte2 : more)
-            _ -> Left "invalid base64 sextet"
-          Right (byte0 : suffix)
-    go _ = Left "invalid base64 quartet"
+  _ <- validatedBase64DecodedLength raw
+  let encoded = TextEncoding.encodeUtf8 raw
+  decoded <- case Base64.decode encoded of
+    Left err -> Left ("invalid base64: " <> Text.pack err)
+    Right bytes -> Right bytes
+  if Base64.encode decoded == encoded
+    then Right decoded
+    else Left "invalid base64 canonical padding"

@@ -43,7 +43,6 @@ import Data.List (nub)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
-import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Map.Strict (Map)
@@ -87,7 +86,7 @@ import Topo.Plugin.RPC.Protocol
   , PluginProgress(..)
   , currentProtocolVersion
   , handshakeAuthProof
-  , encodeMessage
+  , encodeMessageLazy
   , decodeMessage
   )
 import Topo.Plugin.RPC.ExternalDataSource
@@ -104,7 +103,7 @@ import Topo.Plugin.RPC.Transport
   , RPCPayloadLimits
   , defaultRPCPayloadLimits
   , rplMaxFrameSizeBytes
-  , sendMessageWithLimit
+  , sendLazyMessageWithLimit
   , recvMessageWithLimit
   , closeTransport
   , connectPluginFromEnvironment
@@ -884,11 +883,11 @@ sendExternalDataSourceOperationResult limits transport requestId result =
 -- any bytes are written and the typed exception terminates the session.
 sendSDKEnvelope :: RPCPayloadLimits -> Transport -> RPCEnvelope -> IO ()
 sendSDKEnvelope limits transport envelope = do
-  let encoded = encodeMessage envelope
-      actual = BS.length encoded
+  let encoded = encodeMessageLazy envelope
+      actual = fromIntegral (BL.length encoded)
       limitInt = fromIntegral (rplMaxFrameSizeBytes limits)
       limit = toInteger limitInt
-  result <- sendMessageWithLimit limitInt transport encoded
+  result <- sendLazyMessageWithLimit limitInt transport encoded
   case result of
     Right () -> pure ()
     Left (TransportFramingError _)
@@ -905,13 +904,14 @@ sendSDKEnvelope limits transport envelope = do
                     ]
                 , envRequestId = Just requestId
                 }
-              compactBytes = encodeMessage compactError
-          compactResult <- sendMessageWithLimit limitInt transport compactBytes
+              compactBytes = encodeMessageLazy compactError
+              compactLength = fromIntegral (BL.length compactBytes)
+          compactResult <- sendLazyMessageWithLimit limitInt transport compactBytes
           case compactResult of
             Right () -> throwIO
               (SDKRequestPayloadRejected (envType envelope) requestId actual limit)
             Left compactErr -> throwIO
-              (SDKSendFailure MsgError (Just requestId) (BS.length compactBytes) limit compactErr)
+              (SDKSendFailure MsgError (Just requestId) compactLength limit compactErr)
     Left err -> throwIO (SDKSendFailure (envType envelope) (envRequestId envelope) actual limit err)
 
 sendResponseIfCorrelated :: RPCPayloadLimits -> Transport -> RPCEnvelope -> RPCEnvelope -> IO ()

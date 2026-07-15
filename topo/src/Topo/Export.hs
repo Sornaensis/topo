@@ -46,7 +46,7 @@ module Topo.Export
   , chunksForRegion
   ) where
 
-import Control.Monad (replicateM, when)
+import Control.Monad (when)
 import Data.Binary.Get (Get, getFloatle, getInt32le, getWord8, getWord16le, getWord32le, isEmpty, runGetOrFail)
 import Data.Binary.Put (Put, putFloatle, putInt32le, putWord8, putWord16le, putWord32le, runPut)
 import qualified Data.ByteString as BS
@@ -198,10 +198,10 @@ encodeTerrainChunk config chunk = do
     putVectorFloat n (tcRelief3Ring chunk)
     putVectorFloat n (tcMicroRelief chunk)
     putVectorFloat n (tcRuggedness chunk)
-    putVectorWord8 n (U.map terrainFormToCode (tcTerrainForm chunk))
-    putVectorWord16 n (U.map biomeIdToCode (tcFlags chunk))
+    putVectorWord8Mapped n terrainFormToCode (tcTerrainForm chunk)
+    putVectorWord16Mapped n biomeIdToCode (tcFlags chunk)
     putVectorWord16 n (tcPlateId chunk)
-    putVectorWord16 n (U.map plateBoundaryToCode (tcPlateBoundary chunk))
+    putVectorWord16Mapped n plateBoundaryToCode (tcPlateBoundary chunk)
     putVectorFloat n (tcPlateHeight chunk)
     putVectorFloat n (tcPlateHardness chunk)
     putVectorWord16 n (tcPlateCrust chunk)
@@ -367,8 +367,8 @@ encodeVolcanismChunk config chunk = do
   ensureLength n (Text.pack "depositPotential") (vcDepositPotential chunk)
   pure $ BL.toStrict $ runPut $ do
     putWord32le (fromIntegral n)
-    putVectorWord16 n (U.map ventTypeToCode (vcVentType chunk))
-    putVectorWord16 n (U.map ventActivityToCode (vcActivity chunk))
+    putVectorWord16Mapped n ventTypeToCode (vcVentType chunk)
+    putVectorWord16Mapped n ventActivityToCode (vcActivity chunk)
     putVectorFloat n (vcMagma chunk)
     putVectorWord16 n (vcEruptionCount chunk)
     putVectorFloat n (vcEruptedTotal chunk)
@@ -437,11 +437,11 @@ encodeWaterBodyChunk config chunk = do
   ensureLength n (Text.pack "wbAdjacentType") (wbAdjacentType chunk)
   pure $ BL.toStrict $ runPut $ do
     putWord32le (fromIntegral n)
-    putVectorWord8 n (U.map waterBodyToCode (wbType chunk))
+    putVectorWord8Mapped n waterBodyToCode (wbType chunk)
     putVectorFloat n (wbSurfaceElev chunk)
     putVectorWord32 n (wbBasinId chunk)
     putVectorFloat n (wbDepth chunk)
-    putVectorWord8 n (U.map waterBodyToCode (wbAdjacentType chunk))
+    putVectorWord8Mapped n waterBodyToCode (wbAdjacentType chunk)
 
 -- | Decode a 'WaterBodyChunk' from binary.
 decodeWaterBodyChunk :: WorldConfig -> BS.ByteString -> Either ExportError WaterBodyChunk
@@ -565,33 +565,34 @@ chunkKey :: ChunkId -> Int
 chunkKey (ChunkId i) = i
 
 putVectorFloat :: Int -> U.Vector Float -> Put
-putVectorFloat n vec =
-  mapM_ putFloatle (U.toList (U.take n vec))
+putVectorFloat n = U.mapM_ putFloatle . U.take n
 
 -- | Serialize a vector of 'DirectionalSlope' as 6 consecutive float vectors
 -- (E, NE, NW, W, SW, SE).
 putVectorDirSlope :: Int -> U.Vector DirectionalSlope -> Put
-putVectorDirSlope n vec = do
-  let xs = U.toList (U.take n vec)
-  mapM_ (\(DirectionalSlope e ne nw w sw se) -> do
-    putFloatle e; putFloatle ne; putFloatle nw
-    putFloatle w; putFloatle sw; putFloatle se) xs
+putVectorDirSlope n = U.mapM_ putOne . U.take n
+  where
+    putOne (DirectionalSlope e ne nw w sw se) = do
+      putFloatle e; putFloatle ne; putFloatle nw
+      putFloatle w; putFloatle sw; putFloatle se
 
 putVectorWord16 :: Int -> U.Vector Word16 -> Put
-putVectorWord16 n vec =
-  mapM_ putWord16le (U.toList (U.take n vec))
+putVectorWord16 n = U.mapM_ putWord16le . U.take n
+
+putVectorWord16Mapped :: U.Unbox a => Int -> (a -> Word16) -> U.Vector a -> Put
+putVectorWord16Mapped n encode = U.mapM_ (putWord16le . encode) . U.take n
 
 putVectorWord32 :: Int -> U.Vector Word32 -> Put
-putVectorWord32 n vec =
-  mapM_ putWord32le (U.toList (U.take n vec))
+putVectorWord32 n = U.mapM_ putWord32le . U.take n
 
 putVectorWord8 :: Int -> U.Vector Word8 -> Put
-putVectorWord8 n vec =
-  mapM_ putWord8 (U.toList (U.take n vec))
+putVectorWord8 n = U.mapM_ putWord8 . U.take n
+
+putVectorWord8Mapped :: U.Unbox a => Int -> (a -> Word8) -> U.Vector a -> Put
+putVectorWord8Mapped n encode = U.mapM_ (putWord8 . encode) . U.take n
 
 putVectorInt32 :: Int -> U.Vector Int -> Put
-putVectorInt32 n vec =
-  mapM_ (putInt32le . fromIntegral) (U.toList (U.take n vec))
+putVectorInt32 n = U.mapM_ (putInt32le . fromIntegral) . U.take n
 
 encodeBiomeChunk :: WorldConfig -> TerrainChunk -> Either ExportError BS.ByteString
 encodeBiomeChunk config chunk = do
@@ -599,7 +600,7 @@ encodeBiomeChunk config chunk = do
   ensureLength n (Text.pack "biomes") (tcFlags chunk)
   pure $ BL.toStrict $ runPut $ do
     putWord32le (fromIntegral n)
-    putVectorWord16 n (U.map biomeIdToCode (tcFlags chunk))
+    putVectorWord16Mapped n biomeIdToCode (tcFlags chunk)
 
 ensureLength :: U.Unbox a => Int -> Text -> U.Vector a -> Either ExportError ()
 ensureLength n label vec =
@@ -918,9 +919,9 @@ getWaterBodyChunkBin config = do
 getVectorWaterBodyType :: Int -> Get (U.Vector WaterBodyType)
 getVectorWaterBodyType n = do
   codes <- getVectorWord8 n
-  case traverse waterBodyFromCode (U.toList codes) of
+  case U.mapM waterBodyFromCode codes of
     Left err -> fail ("decode: invalid water body type (" <> show err <> ")")
-    Right values -> pure (U.fromList values)
+    Right values -> pure values
 
 getCount :: WorldConfig -> Get Int
 getCount config = do
@@ -931,28 +932,28 @@ getCount config = do
     else fail ("decode: unexpected element count " <> show n <> ", expected " <> show expected)
 
 getVectorFloat :: Int -> Get (U.Vector Float)
-getVectorFloat n = U.fromList <$> replicateM n getFloatle
+getVectorFloat n = U.replicateM n getFloatle
 
 -- | Deserialize a vector of 'DirectionalSlope' (6 floats per tile,
 -- interleaved: E NE NW W SW SE per tile).
 getVectorDirSlope :: Int -> Get (U.Vector DirectionalSlope)
-getVectorDirSlope n = U.fromList <$> replicateM n getDirSlope
+getVectorDirSlope n = U.replicateM n getDirSlope
   where
     getDirSlope = DirectionalSlope
       <$> getFloatle <*> getFloatle <*> getFloatle
       <*> getFloatle <*> getFloatle <*> getFloatle
 
 getVectorWord16 :: Int -> Get (U.Vector Word16)
-getVectorWord16 n = U.fromList <$> replicateM n getWord16le
+getVectorWord16 n = U.replicateM n getWord16le
 
 getVectorWord32 :: Int -> Get (U.Vector Word32)
-getVectorWord32 n = U.fromList <$> replicateM n getWord32le
+getVectorWord32 n = U.replicateM n getWord32le
 
 getVectorWord8 :: Int -> Get (U.Vector Word8)
-getVectorWord8 n = U.fromList <$> replicateM n getWord8
+getVectorWord8 n = U.replicateM n getWord8
 
 getVectorInt32 :: Int -> Get (U.Vector Int)
-getVectorInt32 n = U.fromList . map fromIntegral <$> replicateM n getInt32le
+getVectorInt32 n = U.replicateM n (fromIntegral <$> getInt32le)
 
 getVectorBiomeId :: Int -> Get (U.Vector BiomeId)
 getVectorBiomeId = getVectorMapped "biome id" biomeIdFromCode
@@ -969,13 +970,13 @@ getVectorVentActivity = getVectorMapped "vent activity" ventActivityFromCode
 getVectorTerrainForm :: Int -> Get (U.Vector TerrainForm)
 getVectorTerrainForm n = do
   codes <- getVectorWord8 n
-  case traverse terrainFormFromCode (U.toList codes) of
+  case U.mapM terrainFormFromCode codes of
     Left err -> fail ("decode: invalid terrain form (" <> show err <> ")")
-    Right values -> pure (U.fromList values)
+    Right values -> pure values
 
 getVectorMapped :: (U.Unbox a, Show e) => String -> (Word16 -> Either e a) -> Int -> Get (U.Vector a)
 getVectorMapped label decode n = do
   codes <- getVectorWord16 n
-  case traverse decode (U.toList codes) of
+  case U.mapM decode codes of
     Left err -> fail ("decode: invalid " <> label <> " (" <> show err <> ")")
-    Right values -> pure (U.fromList values)
+    Right values -> pure values

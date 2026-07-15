@@ -102,11 +102,16 @@ module Topo.Plugin.SDK
   , decodeTerrainWritesPayloadWithLimits
   , encodeOverlayPayload
   , encodeTerrainPayload
+  , encodeTerrainPayloadWithLimits
   , encodeTerrainWritesPayload
+  , encodeTerrainWritesPayloadWithLimits
   , simulationResultFromOverlay
   , simulationResultWithTerrainWrites
+  , simulationResultWithTerrainWritesWithLimits
   , generatorResultFromTerrain
+  , generatorResultFromTerrainWithLimits
   , generatorResultFromTerrainAndOverlay
+  , generatorResultFromTerrainAndOverlayWithLimits
     -- * Overlay data access (re-exported from "Topo.Plugin.SDK.Overlay")
   , module Topo.Plugin.SDK.Overlay
     -- * Terrain data access (re-exported from "Topo.Plugin.SDK.Terrain")

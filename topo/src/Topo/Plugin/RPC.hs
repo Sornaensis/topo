@@ -57,7 +57,9 @@ module Topo.Plugin.RPC
   , rpcSimNode
     -- * Terrain payload helpers
   , terrainWorldToPayload
+  , terrainWorldToPayloadWithLimits
   , terrainWorldToCompletePayload
+  , terrainWorldToCompletePayloadWithLimits
   , decodeTerrainWritesValue
   , decodeTerrainWritesValueWithLimits
   , applyGeneratorTerrainValue
@@ -97,6 +99,7 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BL
 import Data.Char (chr, ord)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map.Strict (Map)
@@ -410,16 +413,17 @@ sendCorrelatedMessage
   -> IO (Either TransportError ())
 sendCorrelatedMessage limits session transport envelope =
   modifyMVar (rpcsWriteLock session) $ \() -> do
-    let encoded = encodeMessage envelope
+    let encoded = encodeMessageLazy envelope
+        actual = toInteger (BL.length encoded)
         limit = toInteger (rplMaxFrameSizeBytes limits)
-    result <- sendMessageWithLimit (fromInteger limit) transport encoded
+    result <- sendLazyMessageWithLimit (fromInteger limit) transport encoded
     pure ((), either
-      (Left . contextualizeEnvelopeTransportError envelope (BS.length encoded) limit)
+      (Left . contextualizeEnvelopeTransportError envelope actual limit)
       Right result)
 
 contextualizeEnvelopeTransportError
   :: RPCEnvelope
-  -> Int
+  -> Integer
   -> Integer
   -> TransportError
   -> TransportError
@@ -730,7 +734,8 @@ invokeSimulation conn ctx overlay onProgress onLog = do
   let manifest = rpcManifest conn
       policy = simulationPayloadPolicy manifest
       terrainPayloadResult
-        | sppIncludeTerrain policy = Payload.terrainWorldToPayload (scTerrain ctx)
+        | sppIncludeTerrain policy = Payload.terrainWorldToPayloadWithLimits
+            (rpcPayloadLimits conn) (scTerrain ctx)
         | otherwise = Right Null
       overlaysPayload
         | sppIncludeOverlays policy = overlaysToJSON (scOverlays ctx)
@@ -1225,7 +1230,7 @@ rpcGeneratorStage conn =
     , stageRun  = do
         logInfo ("plugin:" <> rmName manifest <> ": invoking generator")
         world <- liftTopo getWorld
-        case generatorStageTerrainPayload manifest world of
+        case generatorStageTerrainPayload (rpcPayloadLimits conn) manifest world of
           Left err ->
             throwError (PluginInvariantError ("rpc generator encode failed: " <> err))
           Right terrainPayload -> do
@@ -1340,9 +1345,13 @@ generatorTerrainInputPayload manifest terrainData
   | canReadTerrain manifest = terrainData
   | otherwise = Null
 
-generatorStageTerrainPayload :: RPCManifest -> Topo.World.TerrainWorld -> Either Text Value
-generatorStageTerrainPayload manifest world
-  | canReadTerrain manifest = Payload.terrainWorldToPayload world
+generatorStageTerrainPayload
+  :: RPCPayloadLimits
+  -> RPCManifest
+  -> Topo.World.TerrainWorld
+  -> Either Text Value
+generatorStageTerrainPayload limits manifest world
+  | canReadTerrain manifest = Payload.terrainWorldToPayloadWithLimits limits world
   | otherwise = Right Null
 
 canReadOverlay :: RPCManifest -> Bool
@@ -1402,8 +1411,14 @@ applyGeneratorResult limits manifest world result = do
 terrainWorldToPayload :: Topo.World.TerrainWorld -> Either Text Value
 terrainWorldToPayload = Payload.terrainWorldToPayload
 
+terrainWorldToPayloadWithLimits :: RPCPayloadLimits -> Topo.World.TerrainWorld -> Either Text Value
+terrainWorldToPayloadWithLimits = Payload.terrainWorldToPayloadWithLimits
+
 terrainWorldToCompletePayload :: Topo.World.TerrainWorld -> Either Text Value
 terrainWorldToCompletePayload = Payload.terrainWorldToCompletePayload
+
+terrainWorldToCompletePayloadWithLimits :: RPCPayloadLimits -> Topo.World.TerrainWorld -> Either Text Value
+terrainWorldToCompletePayloadWithLimits = Payload.terrainWorldToCompletePayloadWithLimits
 
 decodeTerrainWritesValue :: Maybe Value -> Either Text TerrainWrites
 decodeTerrainWritesValue = Payload.decodeTerrainWritesValue

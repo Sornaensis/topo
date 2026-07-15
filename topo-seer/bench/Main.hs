@@ -6,6 +6,7 @@ import qualified Bench.AtlasCache
 import qualified Bench.AtlasOps
 import qualified Bench.FrameAlloc
 import qualified Bench.Pipeline
+import qualified Bench.PluginRPCPayload
 import qualified Bench.QueueDedup
 import qualified Bench.RiverGeometry
 import qualified Bench.TerrainCache
@@ -23,4 +24,5 @@ main = defaultMain
   , Bench.AtlasOps.benchmarks
   , Bench.QueueDedup.benchmarks
   , Bench.FrameAlloc.benchmarks
+  , Bench.PluginRPCPayload.benchmarks
   ]

@@ -66,6 +66,8 @@ module Topo.Plugin.RPC.Transport
   , defaultMaxFrameSizeBytes
   , sendMessage
   , sendMessageWithLimit
+  , sendLazyMessage
+  , sendLazyMessageWithLimit
   , recvMessage
   , recvMessageWithLimit
     -- * Errors
@@ -1405,16 +1407,23 @@ removeDirectoryIfExists path =
 defaultMaxFrameSizeBytes :: Int
 defaultMaxFrameSizeBytes = fromIntegral (rplMaxFrameSizeBytes defaultRPCPayloadLimits)
 
--- | Send a length-prefixed message over the transport.
---
--- Encodes the payload length as a 4-byte little-endian 'Word32',
--- followed by the raw payload bytes.
+-- | Send a strict length-prefixed message over the transport.
 sendMessage :: Transport -> BS.ByteString -> IO (Either TransportError ())
 sendMessage = sendMessageWithLimit defaultMaxFrameSizeBytes
 
--- | Send a length-prefixed message with an explicit payload size limit.
+-- | Strict compatibility wrapper around 'sendLazyMessageWithLimit'.
 sendMessageWithLimit :: Int -> Transport -> BS.ByteString -> IO (Either TransportError ())
-sendMessageWithLimit maxFrameBytes t payload
+sendMessageWithLimit maxFrameBytes t =
+  sendLazyMessageWithLimit maxFrameBytes t . BL.fromStrict
+
+-- | Send a chunked lazy message using the default frame limit.
+sendLazyMessage :: Transport -> BL.ByteString -> IO (Either TransportError ())
+sendLazyMessage = sendLazyMessageWithLimit defaultMaxFrameSizeBytes
+
+-- | Send a chunked lazy message with an explicit payload size limit. The full
+-- lazy spine is measured and validated before the frame header is written.
+sendLazyMessageWithLimit :: Int -> Transport -> BL.ByteString -> IO (Either TransportError ())
+sendLazyMessageWithLimit maxFrameBytes t payload
   | maxFrameBytes <= 0 = pure (Left (TransportFramingError "outgoing max frame size must be positive"))
   | toInteger maxFrameBytes > toInteger (maxBound :: Word32) =
       pure (Left (TransportFramingError "outgoing max frame size exceeds Word32"))
@@ -1425,12 +1434,12 @@ sendMessageWithLimit maxFrameBytes t payload
       pure (Left (frameTooLargeError "outgoing" payloadBytes (toInteger maxFrameBytes)))
   | otherwise = catch go handler
   where
-    payloadBytes = toInteger (BS.length payload)
+    payloadBytes = toInteger (BL.length payload)
     go = do
-      let len = fromIntegral (BS.length payload) :: Word32
+      let len = fromInteger payloadBytes :: Word32
           header = BL.toStrict (runPut (putWord32le len))
       BS.hPut (tWriteHandle t) header
-      BS.hPut (tWriteHandle t) payload
+      BL.hPut (tWriteHandle t) payload
       hFlush (tWriteHandle t)
       pure (Right ())
     handler :: IOException -> IO (Either TransportError ())

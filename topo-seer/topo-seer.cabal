@@ -344,6 +344,23 @@ test-suite topo-seer-test
     build-depends:
         unix
 
+benchmark topo-rpc-allocation-bench
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  other-modules:
+      Paths_topo_seer
+  hs-source-dirs:
+      bench-rpc
+  ghc-options: -O2 -Wall -rtsopts -with-rtsopts=-T
+  build-depends:
+      aeson
+    , base
+    , bytestring
+    , containers
+    , deepseq
+    , topo
+  default-language: Haskell2010
+
 benchmark topo-seer-bench
   type: exitcode-stdio-1.0
   main-is: Main.hs
@@ -352,6 +369,7 @@ benchmark topo-seer-bench
       Bench.AtlasOps
       Bench.FrameAlloc
       Bench.Pipeline
+      Bench.PluginRPCPayload
       Bench.QueueDedup
       Bench.RiverGeometry
       Bench.TerrainCache
@@ -365,6 +383,7 @@ benchmark topo-seer-bench
   build-depends:
       aeson
     , base
+    , bytestring
     , containers
     , deepseq
     , linear

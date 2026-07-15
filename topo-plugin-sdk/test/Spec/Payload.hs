@@ -3,6 +3,7 @@
 module Spec.Payload (spec) where
 
 import Data.Aeson (Value(..), (.=), object)
+import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Test.Hspec
 
@@ -16,11 +17,13 @@ import Topo.Overlay.Schema
   , emptyOverlayDeps
   )
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
+import Topo.Plugin.RPC.Transport (mkRPCPayloadLimits)
 import Topo.Plugin.SDK.Payload
 import Topo.Plugin.SDK.Types
 import Topo.Simulation (TerrainWrites, emptyTerrainWrites)
-import Topo.Types (WorldConfig(..))
-import Topo.World (TerrainWorld(..), emptyWorld, emptyWorldWithPlanet)
+import Topo.Types (ChunkId(..), WorldConfig(..))
+import Topo.World
+  ( TerrainWorld(..), emptyTerrainChunk, emptyWorld, emptyWorldWithPlanet, setTerrainChunk )
 
 spec :: Spec
 spec = describe "SDK payload helpers" $ do
@@ -54,6 +57,31 @@ spec = describe "SDK payload helpers" $ do
         twPlanet decoded `shouldBe` twPlanet world
         twSlice decoded `shouldBe` twSlice world
 
+  it "applies explicit terrain budgets to all SDK result constructors" $ do
+    let config = WorldConfig { wcChunkSize = 1 }
+        world = setTerrainChunk (ChunkId 0) (emptyTerrainChunk config)
+          (emptyWorld config defaultHexGridMeta)
+        overlay = emptyOverlay testSchema
+    lowLimits <- case mkRPCPayloadLimits 100 of
+      Left err -> expectationFailure (show err) >> fail "limits"
+      Right value -> pure value
+    exactLimits <- case mkRPCPayloadLimits 156 of
+      Left err -> expectationFailure (show err) >> fail "limits"
+      Right value -> pure value
+    zeroTerrainLimits <- case mkRPCPayloadLimits 1 of
+      Left err -> expectationFailure (show err) >> fail "limits"
+      Right value -> pure value
+    encodeTerrainPayloadWithLimits lowLimits world
+      `shouldSatisfy` either (\err -> showsContains err "decoded aggregate exceeds limit") (const False)
+    generatorResultFromTerrainWithLimits exactLimits world
+      `shouldSatisfy` either (const False) (const True)
+    generatorResultFromTerrainAndOverlayWithLimits exactLimits world overlay
+      `shouldSatisfy` either (const False) (const True)
+    encodeTerrainWritesPayloadWithLimits zeroTerrainLimits memptyTerrainWrites
+      `shouldSatisfy` either (const False) isObject
+    simulationResultWithTerrainWritesWithLimits zeroTerrainLimits overlay memptyTerrainWrites
+      `shouldSatisfy` either (const False) (maybe False isObject . strTerrainWrites)
+
   it "builds simulation result with encoded writes" $ do
     let overlay = emptyOverlay testSchema
     case simulationResultWithTerrainWrites overlay memptyTerrainWrites of
@@ -61,6 +89,9 @@ spec = describe "SDK payload helpers" $ do
       Right result -> do
         strOverlay result `shouldBe` encodeOverlayPayload overlay
         strTerrainWrites result `shouldSatisfy` maybe False isObject
+
+showsContains :: Show a => a -> String -> Bool
+showsContains actual expected = expected `isInfixOf` show actual
 
 isObject :: Value -> Bool
 isObject (Object _) = True

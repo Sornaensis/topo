@@ -41,6 +41,7 @@ module Topo.Plugin.RPC.Protocol
   , handshakeAuthProof
     -- * Encoding / decoding
   , encodeMessage
+  , encodeMessageLazy
   , decodeMessage
     -- * Log levels
   , PluginLogLevel(..)
@@ -588,9 +589,15 @@ instance ToJSON HealthStatus where
 -- Encoding / decoding
 ------------------------------------------------------------------------
 
--- | Encode an RPC message envelope to bytes (for transport).
+-- | Encode an RPC message envelope to strict bytes. This compatibility wrapper
+-- retains the historical API; normal transport sends use 'encodeMessageLazy'.
 encodeMessage :: RPCEnvelope -> BS.ByteString
-encodeMessage = BL.toStrict . Aeson.encode
+encodeMessage = BL.toStrict . encodeMessageLazy
+
+-- | Encode an RPC message as Aeson's chunked lazy output without copying the
+-- complete JSON body into a second strict buffer.
+encodeMessageLazy :: RPCEnvelope -> BL.ByteString
+encodeMessageLazy = Aeson.encode
 
 -- | Decode an RPC message envelope from bytes.
 decodeMessage :: BS.ByteString -> Either Text RPCEnvelope

@@ -81,6 +81,7 @@ import Topo.Plugin.RPC
   , sendExternalDataSourceGrantRevocation
   , sendHeartbeat
   , terrainWorldToPayload
+  , terrainWorldToPayloadWithLimits
   , encodeBase64Text
   )
 import Topo.Plugin.RPC.Manifest
@@ -114,6 +115,7 @@ import Topo.Plugin.RPC.Transport
   , recvMessageWithLimit
   , sendMessage
   , sendMessageWithLimit
+  , sendLazyMessageWithLimit
   )
 import Topo.Plugin.DataResource
 import Topo.Calendar (CalendarDate(..), WorldTime(..), simulationTickSeconds)
@@ -1577,6 +1579,10 @@ spec = describe "Plugin.RPC" $ do
           bs  = encodeMessage env
       decodeMessage bs `shouldBe` Right env
 
+    it "keeps lazy and strict envelope encodings byte-for-byte identical" $ do
+      let env = RPCEnvelope MsgProgress (Aeson.toJSON (PluginProgress "working" 0.5)) (Just 99)
+      BL.toStrict (encodeMessageLazy env) `shouldBe` encodeMessage env
+
     it "preserves request ids and accepts legacy envelopes without ids" $ do
       let correlated = RPCEnvelope MsgHealthCheck (object []) (Just 1234)
           legacyBytes = "{\"type\":\"health_check\",\"payload\":{}}"
@@ -2622,6 +2628,20 @@ spec = describe "Plugin.RPC" $ do
           Left (TransportFramingError msg) -> msg `shouldSatisfy` Text.isInfixOf "max size"
           other -> expectationFailure ("expected frame size error, got " <> show other)
 
+    it "frames chunked lazy payloads without changing their bytes" $
+      withConnectedTransports "frame-lazy-send" $ \host plugin -> do
+        sendLazyMessageWithLimit 5 host (BL.fromChunks ["12", "345"]) `shouldReturn` Right ()
+        recvMessage plugin `shouldReturn` Right "12345"
+
+    it "rejects a lazy oversized frame before writing its header" $
+      withConnectedTransports "frame-lazy-reject" $ \host plugin -> do
+        oversized <- sendLazyMessageWithLimit 4 host (BL.fromChunks ["12", "345"])
+        case oversized of
+          Left TransportFramingError{} -> pure ()
+          other -> expectationFailure ("expected lazy frame rejection, got " <> show other)
+        sendLazyMessageWithLimit 4 host "ok" `shouldReturn` Right ()
+        recvMessage plugin `shouldReturn` Right "ok"
+
     it "rejects non-Word32 explicit framing limits on wide platforms" $
       withConnectedTransports "frame-invalid-limit" $ \host _plugin ->
         if toInteger (maxBound :: Int) <= toInteger (maxBound :: Word32)
@@ -2651,6 +2671,41 @@ spec = describe "Plugin.RPC" $ do
       parseRPCPayloadLimitsEnvironment (Just "1024") `shouldSatisfy` isRight
       parseRPCPayloadLimitsEnvironment (Just "0") `shouldSatisfy` isLeft
       parseRPCPayloadLimitsEnvironment (Just "4294967296") `shouldSatisfy` isLeft
+
+    it "accepts the exact outgoing terrain budget and rejects one byte below it" $ do
+      let config = WorldConfig { wcChunkSize = 1 }
+          world = setTerrainChunk (ChunkId 0) (emptyTerrainChunk config)
+            (emptyWorld config defaultHexGridMeta)
+      exactLimits <- case mkRPCPayloadLimits 156 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      lowLimits <- case mkRPCPayloadLimits 155 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      terrainWorldToPayloadWithLimits exactLimits world `shouldSatisfy` either (const False) (const True)
+      case terrainWorldToPayloadWithLimits lowLimits world of
+        Left err -> err `shouldSatisfy` Text.isInfixOf "decoded aggregate exceeds limit"
+        Right _ -> expectationFailure "oversized outgoing terrain payload was accepted"
+
+    it "accepts the exact incoming terrain budget and rejects one byte below it" $ do
+      let config = WorldConfig { wcChunkSize = 1 }
+          baseWorld = emptyWorld config defaultHexGridMeta
+          world = setTerrainChunk (ChunkId 0) (emptyTerrainChunk config) baseWorld
+      payload <- case terrainWorldToPayload world of
+        Left err -> expectationFailure (Text.unpack err) >> fail "payload"
+        Right value -> pure value
+      exactLimits <- case mkRPCPayloadLimits 156 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      lowLimits <- case mkRPCPayloadLimits 155 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      case applyGeneratorTerrainValueWithLimits exactLimits baseWorld payload of
+        Left err -> expectationFailure (Text.unpack err)
+        Right _ -> pure ()
+      case applyGeneratorTerrainValueWithLimits lowLimits baseWorld payload of
+        Left err -> err `shouldSatisfy` Text.isInfixOf "decoded limit"
+        Right _ -> expectationFailure "oversized incoming terrain payload was accepted"
 
     it "validates malformed dimensions even for summary-only payloads" $ do
       limits <- case mkRPCPayloadLimits 1024 of

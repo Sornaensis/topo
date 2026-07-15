@@ -13,14 +13,19 @@ module Topo.Plugin.SDK.Payload
   , decodeTerrainPayload
   , decodeTerrainPayloadWithLimits
   , encodeTerrainPayload
+  , encodeTerrainPayloadWithLimits
   , decodeTerrainWritesPayload
   , decodeTerrainWritesPayloadWithLimits
   , encodeTerrainWritesPayload
+  , encodeTerrainWritesPayloadWithLimits
     -- * Typed result constructors
   , simulationResultFromOverlay
   , simulationResultWithTerrainWrites
+  , simulationResultWithTerrainWritesWithLimits
   , generatorResultFromTerrain
+  , generatorResultFromTerrainWithLimits
   , generatorResultFromTerrainAndOverlay
+  , generatorResultFromTerrainAndOverlayWithLimits
   ) where
 
 import Data.Aeson (Value(..))
@@ -39,6 +44,7 @@ import Topo.Plugin.RPC
   , decodeTerrainWritesValue
   , decodeTerrainWritesValueWithLimits
   , terrainWorldToPayload
+  , terrainWorldToPayloadWithLimits
   )
 import Topo.Simulation (TerrainWrites, applyTerrainWrites)
 import Topo.Types (WorldConfig(..))
@@ -98,6 +104,10 @@ decodeTerrainPayloadWithLimits limits payload =
 encodeTerrainPayload :: TerrainWorld -> Either Text Value
 encodeTerrainPayload = terrainWorldToPayload
 
+-- | Encode terrain while consuming an explicit aggregate binary budget.
+encodeTerrainPayloadWithLimits :: RPCPayloadLimits -> TerrainWorld -> Either Text Value
+encodeTerrainPayloadWithLimits = terrainWorldToPayloadWithLimits
+
 -- | Decode simulation terrain writes payload into structured writes.
 decodeTerrainWritesPayload :: Maybe Value -> Either Text TerrainWrites
 decodeTerrainWritesPayload = decodeTerrainWritesValue
@@ -122,6 +132,18 @@ encodeTerrainWritesPayload writes =
     defaultChunkSize = 64
     writesWorld = applyTerrainWrites writes baseWorld
 
+-- | Encode simulation terrain writes with an explicit aggregate binary budget.
+encodeTerrainWritesPayloadWithLimits
+  :: RPCPayloadLimits
+  -> TerrainWrites
+  -> Either Text Value
+encodeTerrainWritesPayloadWithLimits limits writes =
+  terrainWorldToPayloadWithLimits limits writesWorld
+  where
+    baseWorld = emptyWorld (WorldConfig { wcChunkSize = defaultChunkSize }) defaultHexGridMeta
+    defaultChunkSize = 64
+    writesWorld = applyTerrainWrites writes baseWorld
+
 -- | Build a simulation result from an updated overlay.
 simulationResultFromOverlay :: Overlay -> SimulationTickResult
 simulationResultFromOverlay overlay =
@@ -141,12 +163,36 @@ simulationResultWithTerrainWrites overlay writes = do
     , strTerrainWrites = Just encodedWrites
     }
 
+-- | Build a simulation result using the configured terrain binary budget.
+simulationResultWithTerrainWritesWithLimits
+  :: RPCPayloadLimits
+  -> Overlay
+  -> TerrainWrites
+  -> Either Text SimulationTickResult
+simulationResultWithTerrainWritesWithLimits limits overlay writes = do
+  encodedWrites <- encodeTerrainWritesPayloadWithLimits limits writes
+  Right defaultSimulationTickResult
+    { strOverlay = encodeOverlayPayload overlay
+    , strTerrainWrites = Just encodedWrites
+    }
+
 -- | Build a generator result from updated terrain payload.
 generatorResultFromTerrain
   :: TerrainWorld
   -> Either Text GeneratorTickResult
 generatorResultFromTerrain world = do
   terrainPayload <- encodeTerrainPayload world
+  Right defaultGeneratorTickResult
+    { gtrTerrain = terrainPayload
+    }
+
+-- | Build a generator result using the configured terrain binary budget.
+generatorResultFromTerrainWithLimits
+  :: RPCPayloadLimits
+  -> TerrainWorld
+  -> Either Text GeneratorTickResult
+generatorResultFromTerrainWithLimits limits world = do
+  terrainPayload <- encodeTerrainPayloadWithLimits limits world
   Right defaultGeneratorTickResult
     { gtrTerrain = terrainPayload
     }
@@ -158,6 +204,19 @@ generatorResultFromTerrainAndOverlay
   -> Either Text GeneratorTickResult
 generatorResultFromTerrainAndOverlay world overlay = do
   terrainPayload <- encodeTerrainPayload world
+  Right defaultGeneratorTickResult
+    { gtrTerrain = terrainPayload
+    , gtrOverlay = Just (encodeOverlayPayload overlay)
+    }
+
+-- | Build a generator result with overlay using the configured binary budget.
+generatorResultFromTerrainAndOverlayWithLimits
+  :: RPCPayloadLimits
+  -> TerrainWorld
+  -> Overlay
+  -> Either Text GeneratorTickResult
+generatorResultFromTerrainAndOverlayWithLimits limits world overlay = do
+  terrainPayload <- encodeTerrainPayloadWithLimits limits world
   Right defaultGeneratorTickResult
     { gtrTerrain = terrainPayload
     , gtrOverlay = Just (encodeOverlayPayload overlay)

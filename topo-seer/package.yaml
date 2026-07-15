@@ -251,6 +251,22 @@ executables:
       - topo-seer
 
 benchmarks:
+  topo-rpc-allocation-bench:
+    main: Main.hs
+    source-dirs: bench-rpc
+    ghc-options:
+      - -O2
+      - -Wall
+      - -rtsopts
+      - "-with-rtsopts=-T"
+    dependencies:
+      - aeson
+      - base
+      - bytestring
+      - containers
+      - deepseq
+      - topo
+
   topo-seer-bench:
     main: Main.hs
     source-dirs: bench
@@ -263,6 +279,7 @@ benchmarks:
     dependencies:
       - aeson
       - base
+      - bytestring
       - containers
       - deepseq
       - linear

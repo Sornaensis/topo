@@ -891,6 +891,25 @@ spec = describe "Plugin Integration" $ do
       let bytes = BS.pack ws
       in decodeBase64Text (encodeBase64Text bytes) == Right bytes
 
+    it "matches the canonical RFC 4648 base64 vectors" $ do
+      let vectors =
+            [ ("", "")
+            , ("f", "Zg==")
+            , ("fo", "Zm8=")
+            , ("foo", "Zm9v")
+            , ("foobar", "Zm9vYmFy")
+            ]
+      map (encodeBase64Text . fst) vectors `shouldBe` map snd vectors
+      map (decodeBase64Text . snd) vectors `shouldBe` map (Right . fst) vectors
+
+    it "rejects malformed and non-canonical base64 padding" $ do
+      map decodeBase64Text ["Zg=", "Zg===", "=m9v", "Zm=9", "Zh==", "Zm9="]
+        `shouldSatisfy` all (either (const True) (const False))
+
+    it "rejects non-ASCII base64 text without a character-list conversion" $
+      decodeBase64Text ("Zm9v" <> Text.singleton '\x03bb')
+        `shouldSatisfy` either (const True) (const False)
+
     it "decodes non-empty simulation terrain_writes into TerrainWrites" $ do
       let config = WorldConfig { wcChunkSize = 8 }
           updatedChunk = generateTerrainChunk config (const 0.77)
