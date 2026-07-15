@@ -15,6 +15,24 @@
     "insertAfter": "civilization",
     "requires": ["civilization"]
   },
+  "invocationScopes": {
+    "version": 1,
+    "generator": {
+      "input": {
+        "terrainSections": ["terrain", "climate", "vegetation"],
+        "chunks": { "type": "all" },
+        "dependencyOverlays": [],
+        "ownOverlay": false
+      },
+      "output": {
+        "terrainSections": ["terrain", "climate", "vegetation"],
+        "chunks": { "type": "all" },
+        "ownedOverlay": false,
+        "generatorMetadata": true
+      },
+      "budgets": { "terrainBytes": 67108864, "overlayBytes": 67108864, "outputBytes": 67108864 }
+    }
+  },
   "capabilities": ["readTerrain", "dataRead", "log"],
   "externalDataSourceRefs": [
     {

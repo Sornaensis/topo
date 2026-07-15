@@ -16,10 +16,12 @@ import Data.Char (toLower)
 import Data.Aeson (Value(..), (.=), object, encode, eitherDecode)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Either (isLeft, isRight)
+import qualified Data.IntSet as IntSet
 import Data.List (isInfixOf, isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -82,10 +84,12 @@ import Topo.Plugin.RPC
   , sendHeartbeat
   , terrainWorldToPayload
   , terrainWorldToPayloadWithLimits
+  , terrainWorldToScopedPayload
   , encodeBase64Text
   )
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
+import Topo.Plugin.RPC.Scope
 import Topo.Plugin.RPC.ExternalDataSource
 import Topo.Pipeline (PipelineStage(..))
 import qualified Topo.Plugin as PluginCore
@@ -379,6 +383,7 @@ instance Arbitrary RPCManifest where
       , rmUiHints      = defaultRPCUIHints
       , rmGenerator    = gen
       , rmSimulation   = sim
+      , rmInvocationScopes = Nothing
       , rmOverlay      = ov'
       , rmCapabilities = caps
       , rmParameters   = params
@@ -507,6 +512,44 @@ fullManifestBS = jsonBS $ object
           ]
       ]
   ]
+
+scopeTestBudgets :: RPCScopeBudgets
+scopeTestBudgets = RPCScopeBudgets 1000 2000 3000
+
+scopeTestContext :: RPCInvocationKind -> RPCInvocationContext
+scopeTestContext kind = RPCInvocationContext
+  { ricKind = kind
+  , ricWorldChunkIds = IntSet.fromList [1, 2, 3, 4]
+  , ricCallerChunkIds = Nothing
+  , ricAllowsCallerChunks = False
+  , ricDependencyOverlayNames = Set.fromList ["weather", "rivers"]
+  , ricOverlayChunkIds = Map.fromList
+      [ ("weather", IntSet.fromList [1, 2])
+      , ("rivers", IntSet.fromList [2, 4])
+      ]
+  , ricOwnedOverlayName = Just "civilization"
+  , ricOwnOverlayChunkIds = IntSet.fromList [2, 3]
+  , ricDataResourceDeclarations = Map.empty
+  , ricDataResourceRequest = Nothing
+  , ricAvailableBudgets = scopeTestBudgets
+  }
+
+scopeTestDeclaration :: RPCChunkSelector -> RPCInvocationScopeDecl
+scopeTestDeclaration selector = RPCInvocationScopeDecl
+  { risdInput = RPCScopeInput
+      { rsiTerrainSections = [TerrainElevation, TerrainClimate]
+      , rsiChunkSelector = selector
+      , rsiDependencyOverlays = ["weather"]
+      , rsiOwnOverlay = True
+      }
+  , risdOutput = RPCScopeOutput
+      { rsoTerrainSections = [TerrainClimate]
+      , rsoChunkSelector = selector
+      , rsoOwnedOverlay = True
+      , rsoGeneratorMetadata = False
+      }
+  , risdBudgets = RPCScopeBudgets 500 2500 100
+  }
 
 ------------------------------------------------------------------------
 -- Test suite
@@ -1308,6 +1351,210 @@ spec = describe "Plugin.RPC" $ do
       lowered `shouldNotSatisfy` isInfixOf "sqlite"
       schemaText `shouldSatisfy` isInfixOf "migrations, schemas, connection details, and consistency rules"
       schemaText `shouldSatisfy` isInfixOf "must not prescribe backend-specific migration tables or schema rules"
+
+  ------------------------------------
+  -- Invocation scope contract
+  ------------------------------------
+  describe "Invocation scope contract" $ do
+    it "round-trips typed versioned manifest declarations" $ do
+      let scopes = RPCInvocationScopes
+            { riscVersion = 1
+            , riscGenerator = Just (legacyGeneratorScope scopeTestBudgets)
+            , riscSimulation = Just (legacySimulationScope ["weather"] scopeTestBudgets)
+            }
+      Aeson.fromJSON (Aeson.toJSON scopes) `shouldBe` Aeson.Success scopes
+
+    it "rejects unknown terrain sections and selectors during JSON decoding" $ do
+      let inputWith section selector = object
+            [ "terrainSections" .= ([section] :: [Text])
+            , "chunks" .= selector
+            , "dependencyOverlays" .= ([] :: [Text])
+            , "ownOverlay" .= False
+            ]
+      (Aeson.fromJSON (inputWith "rivers" (object ["type" .= ("all" :: Text)])) :: Aeson.Result RPCScopeInput)
+        `shouldSatisfy` \case Aeson.Error _ -> True; _ -> False
+      (Aeson.fromJSON (inputWith "terrain" (object ["type" .= ("viewport" :: Text)])) :: Aeson.Result RPCScopeInput)
+        `shouldSatisfy` \case Aeson.Error _ -> True; _ -> False
+
+    it "validates duplicates, dependency subsets, and incompatible selectors" $ do
+      let invalid = scopeTestDeclaration (SelectOverlayUnion ["missing", "missing"])
+          invalidInput = (risdInput invalid)
+            { rsiTerrainSections = [TerrainElevation, TerrainElevation]
+            , rsiDependencyOverlays = ["missing", "missing"]
+            }
+          scopes = RPCInvocationScopes 1 Nothing (Just invalid { risdInput = invalidInput })
+          errors = validateInvocationScopeDeclarations 4 False (Just ["weather"]) True (Just scopes)
+          messages = map seMessage errors
+      messages `shouldSatisfy` any (Text.isInfixOf "duplicate value")
+      messages `shouldSatisfy` any (Text.isInfixOf "not a simulation dependency")
+      messages `shouldSatisfy` any (Text.isInfixOf "unavailable overlay")
+      let generatorCaller = RPCInvocationScopes 1
+            (Just (scopeTestDeclaration SelectCallerChunks)) Nothing
+      validateInvocationScopeDeclarations 4 True Nothing True (Just generatorCaller)
+        `shouldSatisfy` any (Text.isInfixOf "global generator" . seMessage)
+
+    it "retains protocol-v4 omission as the explicit legacy scope" $ do
+      let context = scopeTestContext InvocationSimulation
+          capabilities = [CapReadWorld, CapWriteWorld]
+          explicit = legacySimulationScope ["rivers", "weather"] scopeTestBudgets
+      resolveInvocationScope 4 Nothing capabilities context
+        `shouldBe` resolveInvocationScope 4 (Just explicit) capabilities context
+
+    it "requires explicit participation scopes for protocol v5" $ do
+      let v5Manifest = baseManifest
+            { rmRuntime = RPCManifestRuntime 5 5 Nothing Nothing
+            , rmInvocationScopes = Nothing
+            }
+      map manifestErrorMessage (validateManifest v5Manifest)
+        `shouldSatisfy` any (Text.isInfixOf "protocol 5 generator participation requires")
+      resolveInvocationScope 5 Nothing [CapReadTerrain] (scopeTestContext InvocationGenerator)
+        `shouldSatisfy` isLeft
+
+    it "intersects declarations, capabilities, exact chunks, and budgets deterministically" $ do
+      let selector = SelectOverlayIntersection ["weather", "$own"]
+          declaration = scopeTestDeclaration selector
+          context = scopeTestContext InvocationSimulation
+          resolved = resolveInvocationScope 5 (Just declaration) [CapReadTerrain, CapReadOverlay, CapWriteTerrain, CapWriteOverlay] context
+      case resolved of
+        Left err -> expectationFailure (show err)
+        Right scope -> do
+          risTerrainInputSections scope `shouldBe` Set.fromList [TerrainElevation, TerrainClimate]
+          risTerrainInputChunkIds scope `shouldBe` IntSet.singleton 2
+          risDependencyOverlayChunkIds scope `shouldBe` Map.singleton "weather" (IntSet.singleton 2)
+          risOwnOverlayReadChunkIds scope `shouldBe` IntSet.singleton 2
+          risTerrainOutputSections scope `shouldBe` Set.singleton TerrainClimate
+          risTerrainOutputChunkIds scope `shouldBe` IntSet.singleton 2
+          risOwnedOverlayIdentity scope `shouldBe` Just "civilization"
+          risBudgets scope `shouldBe` RPCScopeBudgets 500 2000 100
+          risScopeId scope `shouldBe` resolvedInvocationScopeDigest scope
+          resolveInvocationScope 5 (Just declaration) [CapReadTerrain, CapReadOverlay, CapWriteTerrain, CapWriteOverlay]
+            context { ricOverlayChunkIds = Map.fromList (reverse (Map.toList (ricOverlayChunkIds context))) }
+            `shouldBe` Right scope
+
+    it "does not let writeWorld bypass explicit sections, overlays, or chunk bounds" $ do
+      let declaration = (scopeTestDeclaration SelectCallerChunks)
+            { risdInput = (risdInput (scopeTestDeclaration SelectAllInvocationChunks))
+                { rsiDependencyOverlays = ["weather"] }
+            }
+          context = (scopeTestContext InvocationSimulation)
+            { ricCallerChunkIds = Just (IntSet.fromList [1, 2])
+            , ricAllowsCallerChunks = True
+            }
+      case resolveInvocationScope 5 (Just declaration) [CapWriteWorld] context of
+        Left err -> expectationFailure (show err)
+        Right scope -> do
+          risTerrainInputSections scope `shouldBe` Set.empty
+          risDependencyOverlayChunkIds scope `shouldBe` Map.empty
+          risTerrainOutputSections scope `shouldBe` Set.singleton TerrainClimate
+          risTerrainOutputChunkIds scope `shouldBe` IntSet.fromList [1, 2]
+          risOwnedOverlayIdentity scope `shouldBe` Just "civilization"
+
+    it "resolves data-resource calls to exactly one operation and QueryByHex location" $ do
+      let declaration = RPCDataResourceDeclaration
+            { rdrdName = "settlements"
+            , rdrdOperations = Set.fromList [DataList, DataQueryByHex]
+            , rdrdMaxPageSize = 100
+            }
+          request = RPCDataResourceRequest
+            { rdrrResource = "settlements"
+            , rdrrOperation = DataQueryByHex
+            , rdrrPageOffset = Just 0
+            , rdrrPageSize = Just 25
+            , rdrrQueryChunkId = Just 7
+            , rdrrQueryTileIndex = Just 11
+            }
+          context = (scopeTestContext InvocationDataResource)
+            { ricDataResourceDeclarations = Map.singleton "settlements" declaration
+            , ricDataResourceRequest = Just request
+            }
+      case resolveInvocationScope 5 Nothing [CapDataRead, CapReadWorld] context of
+        Left err -> expectationFailure (show err)
+        Right scope -> do
+          risTerrainInputSections scope `shouldBe` Set.empty
+          risDependencyOverlayChunkIds scope `shouldBe` Map.empty
+          risDataResource scope `shouldBe` Just ResolvedDataResourceScope
+            { rdrsResource = "settlements"
+            , rdrsOperation = DataQueryByHex
+            , rdrsPageOffset = Just 0
+            , rdrsPageSize = Just 25
+            , rdrsQueryChunkId = Just 7
+            , rdrsQueryTileIndex = Just 11
+            }
+      resolveInvocationScope 5 Nothing [CapDataRead]
+        context { ricDataResourceRequest = Just request { rdrrPageSize = Just 101 } }
+        `shouldSatisfy` isLeft
+
+    it "binds protocol-v5 wire references to stable inline descriptors" $ do
+      case resolveInvocationScope 5 (Just (legacyGeneratorScope scopeTestBudgets))
+          [CapReadTerrain] (scopeTestContext InvocationGenerator) of
+        Left err -> expectationFailure (show err)
+        Right scope -> do
+          let binding = RPCInvocationScopeBinding (risScopeId scope) (Just scope)
+          validateInvocationScopeBinding 5 (Just scope) (Just binding) `shouldBe` Right ()
+          validateInvocationScopeBinding 5 (Just scope) Nothing `shouldSatisfy` isLeft
+          validateInvocationScopeBinding 5 (Just scope) (Just binding { risbScopeId = "wrong" }) `shouldSatisfy` isLeft
+          validateInvocationScopeBinding 5 (Just scope)
+            (Just (RPCInvocationScopeBinding "untrusted-reference" Nothing)) `shouldSatisfy` isLeft
+
+    it "rejects selectors that would reveal unauthorized overlay occupancy" $ do
+      let dependencySelector = scopeTestDeclaration (SelectOverlayUnion ["weather"])
+          ownSelector = scopeTestDeclaration (SelectOverlayUnion ["$own"])
+          context = scopeTestContext InvocationSimulation
+      resolveInvocationScope 5 (Just dependencySelector) [CapReadTerrain] context
+        `shouldSatisfy` isLeft
+      resolveInvocationScope 5 (Just ownSelector) [CapWriteTerrain] context
+        `shouldSatisfy` isLeft
+
+    it "requires an explicit caller-scoped invocation fact" $ do
+      let declaration = scopeTestDeclaration SelectCallerChunks
+          contradictory = (scopeTestContext InvocationSimulation)
+            { ricCallerChunkIds = Just (IntSet.singleton 1)
+            , ricAllowsCallerChunks = False
+            }
+      resolveInvocationScope 5 (Just declaration) [CapReadTerrain] contradictory
+        `shouldSatisfy` isLeft
+
+    it "distinguishes absent and empty optional identities in stable digests" $ do
+      case resolveInvocationScope 5 (Just (scopeTestDeclaration SelectAllInvocationChunks))
+          [CapReadTerrain, CapWriteOverlay] (scopeTestContext InvocationSimulation) of
+        Left err -> expectationFailure (show err)
+        Right scope -> do
+          let absent = scope { risScopeId = "", risOwnedOverlayIdentity = Nothing }
+              empty = scope { risScopeId = "", risOwnedOverlayIdentity = Just "" }
+          resolvedInvocationScopeDigest absent `shouldNotBe` resolvedInvocationScopeDigest empty
+
+    it "has a stable UTF-8-framed digest for Unicode identities" $ do
+      let context = (scopeTestContext InvocationSimulation)
+            { ricOwnedOverlayName = Just "café/世界" }
+      case resolveInvocationScope 5 (Just (scopeTestDeclaration SelectAllInvocationChunks))
+          [CapReadTerrain, CapWriteOverlay] context of
+        Left err -> expectationFailure (show err)
+        Right scope -> risScopeId scope `shouldBe` "6cc4f9a264fe795d1eb1933cd27ea9dcd7c6f97ad82f45fa80fe1ee6e3cf51f2"
+
+    it "rejects mismatched data-resource map keys and declaration names" $ do
+      let declaration = RPCDataResourceDeclaration "admin" (Set.singleton DataList) 10
+          request = RPCDataResourceRequest "settlements" DataList Nothing Nothing Nothing Nothing
+          context = (scopeTestContext InvocationDataResource)
+            { ricDataResourceDeclarations = Map.singleton "settlements" declaration
+            , ricDataResourceRequest = Just request
+            }
+      resolveInvocationScope 5 Nothing [CapDataRead] context `shouldSatisfy` isLeft
+
+    it "omits every unselected terrain section and count without river leakage" $ do
+      let world = emptyWorld (WorldConfig { wcChunkSize = 2 }) defaultHexGridMeta
+      case terrainWorldToScopedPayload (Set.singleton TerrainClimate) IntSet.empty world of
+        Left err -> expectationFailure (Text.unpack err)
+        Right (Object payload) -> do
+          KM.member "climate" payload `shouldBe` True
+          KM.member "climate_count" payload `shouldBe` True
+          KM.member "terrain" payload `shouldBe` False
+          KM.member "chunk_count" payload `shouldBe` False
+          KM.member "vegetation" payload `shouldBe` False
+          KM.member "vegetation_count" payload `shouldBe` False
+          KM.member "rivers" payload `shouldBe` False
+          KM.member "river_count" payload `shouldBe` False
+        Right other -> expectationFailure ("expected object, got " <> show other)
+      terrainWorldToScopedPayload Set.empty IntSet.empty world `shouldBe` Right (object [])
 
   ------------------------------------
   -- Manifest validation
@@ -2529,6 +2776,7 @@ spec = describe "Plugin.RPC" $ do
             , igSeed    = 42
             , igConfig  = Map.fromList [("rate", Aeson.Number 1.5)]
             , igTerrain = object ["chunks" .= ([] :: [Value])]
+            , igInvocationScope = Nothing
             }
       Aeson.fromJSON (Aeson.toJSON ig) `shouldBe` Aeson.Success ig
 
@@ -2543,6 +2791,7 @@ spec = describe "Plugin.RPC" $ do
             , isTerrain    = Null
             , isOverlays   = Null
             , isOwnOverlay = Null
+            , isInvocationScope = Nothing
             }
       Aeson.fromJSON (Aeson.toJSON is) `shouldBe` Aeson.Success is
 
@@ -3342,6 +3591,7 @@ baseManifest = RPCManifest
   , rmUiHints      = defaultRPCUIHints
   , rmGenerator    = Just (RPCGeneratorDecl "biomes" [])
   , rmSimulation   = Nothing
+  , rmInvocationScopes = Nothing
   , rmOverlay      = Nothing
   , rmCapabilities = []
   , rmParameters   = []

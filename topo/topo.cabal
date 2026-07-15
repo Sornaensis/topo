@@ -109,6 +109,7 @@ library
       Topo.Plugin.RPC.ExternalDataSource
       Topo.Plugin.RPC.Manifest
       Topo.Plugin.RPC.Protocol
+      Topo.Plugin.RPC.Scope
       Topo.Plugin.RPC.Transport
       Topo.Command.Types
       Topo.Config

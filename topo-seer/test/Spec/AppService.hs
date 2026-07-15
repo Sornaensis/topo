@@ -1042,6 +1042,7 @@ diagnosticBaseManifest = RPCManifest
   , rmUiHints = defaultRPCUIHints
   , rmGenerator = Nothing
   , rmSimulation = Nothing
+  , rmInvocationScopes = Nothing
   , rmOverlay = Nothing
   , rmCapabilities = []
   , rmParameters = []

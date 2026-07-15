@@ -156,6 +156,7 @@ rpcPayloadSamples =
       , igSeed = 42
       , igConfig = Map.empty
       , igTerrain = object ["encoding" .= ("base64" :: Text)]
+      , igInvocationScope = Nothing
       })
   , ("InvokeSimulation", toJSON InvokeSimulation
       { isPayloadVersion = 1
@@ -167,6 +168,7 @@ rpcPayloadSamples =
       , isTerrain = Null
       , isOverlays = object []
       , isOwnOverlay = Null
+      , isInvocationScope = Nothing
       })
   , ("PluginProgress", toJSON (PluginProgress "working" 0.5))
   , ("PluginLog", toJSON (PluginLog PluginLogInfo "ready"))

@@ -58,6 +58,8 @@ module Topo.Plugin.RPC
     -- * Terrain payload helpers
   , terrainWorldToPayload
   , terrainWorldToPayloadWithLimits
+  , terrainWorldToScopedPayload
+  , terrainWorldToScopedPayloadWithLimits
   , terrainWorldToCompletePayload
   , terrainWorldToCompletePayloadWithLimits
   , decodeTerrainWritesValue
@@ -74,6 +76,7 @@ module Topo.Plugin.RPC
   , module Topo.Plugin.RPC.Manifest
   , module Topo.Plugin.RPC.Transport
   , module Topo.Plugin.RPC.Protocol
+  , module Topo.Plugin.RPC.Scope
   , module Topo.Plugin.RPC.DataService
   , module Topo.Plugin.RPC.ExternalDataSource
   ) where
@@ -102,8 +105,10 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (chr, ord)
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.IntSet as IntSet
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -136,6 +141,7 @@ import qualified Topo.World
 import Topo.Plugin.RPC.Manifest
 import qualified Topo.Plugin.RPC.Payload as Payload
 import Topo.Plugin.RPC.Protocol
+import Topo.Plugin.RPC.Scope
 import Topo.Plugin.RPC.Transport
 import Topo.Plugin.RPC.DataService
 import Topo.Plugin.RPC.ExternalDataSource
@@ -710,6 +716,7 @@ invokeGeneratorWithProgress conn seed terrainData onProgress onLog = do
           , igSeed    = seed
           , igConfig  = rpcParams conn
           , igTerrain = scopedTerrainData
+          , igInvocationScope = Nothing
           }
         , envRequestId = Nothing
         }
@@ -758,6 +765,7 @@ invokeSimulation conn ctx overlay onProgress onLog = do
                 , isTerrain    = terrainPayload
                 , isOverlays   = overlaysPayload
                 , isOwnOverlay = ownOverlayPayload
+                , isInvocationScope = Nothing
                 }
             , envRequestId = Nothing
             }
@@ -1413,6 +1421,21 @@ terrainWorldToPayload = Payload.terrainWorldToPayload
 
 terrainWorldToPayloadWithLimits :: RPCPayloadLimits -> Topo.World.TerrainWorld -> Either Text Value
 terrainWorldToPayloadWithLimits = Payload.terrainWorldToPayloadWithLimits
+
+terrainWorldToScopedPayload
+  :: Set.Set TerrainSection
+  -> IntSet.IntSet
+  -> Topo.World.TerrainWorld
+  -> Either Text Value
+terrainWorldToScopedPayload = Payload.terrainWorldToScopedPayload
+
+terrainWorldToScopedPayloadWithLimits
+  :: RPCPayloadLimits
+  -> Set.Set TerrainSection
+  -> IntSet.IntSet
+  -> Topo.World.TerrainWorld
+  -> Either Text Value
+terrainWorldToScopedPayloadWithLimits = Payload.terrainWorldToScopedPayloadWithLimits
 
 terrainWorldToCompletePayload :: Topo.World.TerrainWorld -> Either Text Value
 terrainWorldToCompletePayload = Payload.terrainWorldToCompletePayload

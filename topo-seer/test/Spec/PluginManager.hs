@@ -426,6 +426,7 @@ spec = describe "PluginManager" $ do
               { rsdDependencies = ["weather"]
               , rsdSchedule = defaultScheduleDecl
               }
+          , rmInvocationScopes = Nothing
           , rmOverlay = Just (RPCOverlayDecl "weather-consumer.toposchema")
           , rmCapabilities = []
           , rmParameters = []
@@ -2393,6 +2394,7 @@ simulationPlanManifest name deps capabilities = RPCManifest
       { rsdDependencies = deps
       , rsdSchedule = defaultScheduleDecl
       }
+  , rmInvocationScopes = Nothing
   , rmOverlay = Just (RPCOverlayDecl "test.toposchema")
   , rmCapabilities = capabilities
   , rmParameters = []

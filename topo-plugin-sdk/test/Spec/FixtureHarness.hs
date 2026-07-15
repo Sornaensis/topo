@@ -679,6 +679,7 @@ generatorInvoke = InvokeGenerator
   , igSeed = 123
   , igConfig = Map.empty
   , igTerrain = minimalTerrainPayload
+  , igInvocationScope = Nothing
   }
 
 simulationInvoke :: InvokeSimulation
@@ -692,6 +693,7 @@ simulationInvoke = InvokeSimulation
   , isTerrain = minimalTerrainPayload
   , isOverlays = object ["weather" .= object ["kind" .= ("clear" :: Text)]]
   , isOwnOverlay = object []
+  , isInvocationScope = Nothing
   }
 
 minimalTerrainPayload :: Value

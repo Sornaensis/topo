@@ -7,6 +7,8 @@
 module Topo.Plugin.RPC.Payload
   ( terrainWorldToPayload
   , terrainWorldToPayloadWithLimits
+  , terrainWorldToScopedPayload
+  , terrainWorldToScopedPayloadWithLimits
   , terrainWorldToCompletePayload
   , terrainWorldToCompletePayloadWithLimits
   , decodeTerrainWritesValue
@@ -26,6 +28,8 @@ import Data.Foldable (traverse_)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
 import qualified Data.Map.Strict as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -62,6 +66,7 @@ import Topo.Simulation
   , emptyTerrainWrites
   )
 import Topo.Planet (mkLatitudeMapping)
+import Topo.Plugin.RPC.Scope (TerrainSection(..))
 import Topo.Plugin.RPC.Transport
   ( RPCPayloadLimits
   , defaultRPCPayloadLimits
@@ -106,6 +111,60 @@ terrainWorldToPayloadWithBudget budget world = do
     , "climate" .= Object climateObj
     , "vegetation" .= Object vegetationObj
     ]
+
+-- | Encode exactly the selected terrain sections and chunk IDs. An empty
+-- section set produces an empty object; decode-required geometry metadata is
+-- included only when at least one section is granted. Counts for unselected
+-- sections are omitted entirely.
+terrainWorldToScopedPayload
+  :: Set TerrainSection
+  -> IntSet.IntSet
+  -> Topo.World.TerrainWorld
+  -> Either Text Value
+terrainWorldToScopedPayload =
+  terrainWorldToScopedPayloadWithLimits defaultRPCPayloadLimits
+
+-- | Scoped terrain encoding with one aggregate decoded-byte budget.
+terrainWorldToScopedPayloadWithLimits
+  :: RPCPayloadLimits
+  -> Set TerrainSection
+  -> IntSet.IntSet
+  -> Topo.World.TerrainWorld
+  -> Either Text Value
+terrainWorldToScopedPayloadWithLimits limits sections chunkIds world
+  | Set.null sections = Right (object [])
+  | otherwise = do
+      let config = Topo.World.twConfig world
+          initialBudget = Just (toInteger (rplMaxDecodedTerrainBytes limits))
+          selected chunks = IntMap.restrictKeys chunks chunkIds
+      (terrainFields, budget1) <-
+        if Set.member TerrainElevation sections
+          then do
+            let chunks = selected (Topo.World.twTerrain world)
+            (encoded, remaining) <- encodeChunkMap initialBudget "terrain" chunks (encodeTerrainChunk config)
+            Right (["chunk_count" .= IntMap.size chunks, "terrain" .= Object encoded], remaining)
+          else Right ([], initialBudget)
+      (climateFields, budget2) <-
+        if Set.member TerrainClimate sections
+          then do
+            let chunks = selected (Topo.World.twClimate world)
+            (encoded, remaining) <- encodeChunkMap budget1 "climate" chunks (encodeClimateChunk config)
+            Right (["climate_count" .= IntMap.size chunks, "climate" .= Object encoded], remaining)
+          else Right ([], budget1)
+      vegetationFields <-
+        if Set.member TerrainVegetation sections
+          then do
+            let chunks = selected (Topo.World.twVegetation world)
+            (encoded, _) <- encodeChunkMap budget2 "vegetation" chunks (encodeVegetationChunk config)
+            Right ["vegetation_count" .= IntMap.size chunks, "vegetation" .= Object encoded]
+          else Right []
+      Right $ object $
+        [ "chunk_size" .= Topo.Types.wcChunkSize config
+        , "hex_grid" .= Topo.World.twHexGrid world
+        , "planet" .= Topo.World.twPlanet world
+        , "slice" .= Topo.World.twSlice world
+        , "encoding" .= ("base64" :: Text)
+        ] <> terrainFields <> climateFields <> vegetationFields
 
 -- | Encode the complete Writ/full-world export payload.
 --

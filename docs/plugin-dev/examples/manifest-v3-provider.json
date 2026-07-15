@@ -22,6 +22,39 @@
     "phase_ticks": 0,
     "catch_up": "run_once_if_due"
   },
+  "invocationScopes": {
+    "version": 1,
+    "generator": {
+      "input": {
+        "terrainSections": ["terrain", "climate", "vegetation"],
+        "chunks": { "type": "all" },
+        "dependencyOverlays": [],
+        "ownOverlay": false
+      },
+      "output": {
+        "terrainSections": ["terrain", "climate", "vegetation"],
+        "chunks": { "type": "all" },
+        "ownedOverlay": true,
+        "generatorMetadata": true
+      },
+      "budgets": { "terrainBytes": 67108864, "overlayBytes": 67108864, "outputBytes": 67108864 }
+    },
+    "simulation": {
+      "input": {
+        "terrainSections": ["terrain", "climate", "vegetation"],
+        "chunks": { "type": "all" },
+        "dependencyOverlays": ["weather"],
+        "ownOverlay": true
+      },
+      "output": {
+        "terrainSections": ["terrain", "climate", "vegetation"],
+        "chunks": { "type": "all" },
+        "ownedOverlay": true,
+        "generatorMetadata": false
+      },
+      "budgets": { "terrainBytes": 67108864, "overlayBytes": 67108864, "outputBytes": 67108864 }
+    }
+  },
   "overlay": {
     "schemaFile": "civilization.toposchema"
   },

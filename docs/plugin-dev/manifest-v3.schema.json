@@ -13,6 +13,7 @@
     "ui": { "$ref": "#/$defs/uiHints" },
     "generator": { "$ref": "#/$defs/generator" },
     "simulation": { "$ref": "#/$defs/simulation" },
+    "invocationScopes": { "$ref": "#/$defs/invocationScopes" },
     "overlay": { "$ref": "#/$defs/overlay" },
     "capabilities": { "type": "array", "items": { "type": "string", "enum": ["log", "noise", "readTerrain", "writeTerrain", "readOverlay", "writeOverlay", "readWorld", "writeWorld", "dataRead", "dataWrite"] } },
     "config": { "$ref": "#/$defs/config" },
@@ -71,6 +72,72 @@
         "phase_ticks": { "type": "integer", "minimum": 0 },
         "catch_up": { "type": "string", "enum": ["run_once_if_due", "skip_missed"] }
       }
+    },
+    "invocationScopes": {
+      "type": "object",
+      "required": ["version"],
+      "properties": {
+        "version": { "const": 1 },
+        "generator": { "$ref": "#/$defs/invocationScope" },
+        "simulation": { "$ref": "#/$defs/invocationScope" }
+      }
+    },
+    "invocationScope": {
+      "type": "object",
+      "required": ["input", "output", "budgets"],
+      "properties": {
+        "input": {
+          "type": "object",
+          "required": ["terrainSections", "chunks", "dependencyOverlays", "ownOverlay"],
+          "properties": {
+            "terrainSections": { "type": "array", "items": { "type": "string", "enum": ["terrain", "climate", "vegetation"] }, "uniqueItems": true },
+            "chunks": { "$ref": "#/$defs/chunkSelector" },
+            "dependencyOverlays": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "ownOverlay": { "type": "boolean" }
+          }
+        },
+        "output": {
+          "type": "object",
+          "required": ["terrainSections", "chunks", "ownedOverlay", "generatorMetadata"],
+          "properties": {
+            "terrainSections": { "type": "array", "items": { "type": "string", "enum": ["terrain", "climate", "vegetation"] }, "uniqueItems": true },
+            "chunks": { "$ref": "#/$defs/chunkSelector" },
+            "ownedOverlay": { "type": "boolean" },
+            "generatorMetadata": { "type": "boolean" }
+          }
+        },
+        "budgets": {
+          "type": "object",
+          "required": ["terrainBytes", "overlayBytes", "outputBytes"],
+          "properties": {
+            "terrainBytes": { "type": "integer", "minimum": 0 },
+            "overlayBytes": { "type": "integer", "minimum": 0 },
+            "outputBytes": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "chunkSelector": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "all" } }
+        },
+        {
+          "type": "object",
+          "required": ["type", "overlays"],
+          "properties": {
+            "type": { "type": "string", "enum": ["overlay_union", "overlay_intersection"] },
+            "overlays": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "caller" } }
+        }
+      ]
     },
     "overlay": {
       "type": "object",

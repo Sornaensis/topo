@@ -45,6 +45,7 @@ module Topo.Overlay
   , emptyOverlayProvenance
   , emptyOverlay
   , overlayName
+  , overlayChunkIds
     -- * Overlay store
   , OverlayStore(..)
   , emptyOverlayStore
@@ -53,10 +54,13 @@ module Topo.Overlay
   , deleteOverlay
   , overlayNames
   , overlayCount
+  , overlayStoreChunkIds
   ) where
 
 import Data.Aeson (Value(..))
 import Data.IntMap.Strict (IntMap)
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IntSet
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -325,6 +329,12 @@ emptyOverlay schema = Overlay
 overlayName :: Overlay -> Text
 overlayName = osName . ovSchema
 
+-- | Exact chunk keys present in either sparse or dense overlay storage.
+overlayChunkIds :: Overlay -> IntSet
+overlayChunkIds overlay = case ovData overlay of
+  SparseData chunks -> IntMap.keysSet chunks
+  DenseData chunks -> IntMap.keysSet chunks
+
 ------------------------------------------------------------------------
 -- Overlay store
 ------------------------------------------------------------------------
@@ -358,3 +368,7 @@ overlayNames (OverlayStore m) = Map.keys m
 -- | Number of overlays in the store.
 overlayCount :: OverlayStore -> Int
 overlayCount (OverlayStore m) = Map.size m
+
+-- | Exact chunk-key sets for every named overlay, in stable name order.
+overlayStoreChunkIds :: OverlayStore -> Map Text IntSet
+overlayStoreChunkIds (OverlayStore overlays) = Map.map overlayChunkIds overlays

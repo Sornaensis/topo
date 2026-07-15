@@ -373,6 +373,7 @@ civManifest = RPCManifest
       { rsdDependencies = ["weather"]
       , rsdSchedule = defaultScheduleDecl
       }
+  , rmInvocationScopes = Nothing
   , rmOverlay      = Just RPCOverlayDecl
       { rodSchemaFile = "civilization.toposchema"
       }
@@ -408,6 +409,7 @@ genOnlyManifest = RPCManifest
       , rgdRequires    = ["erosion"]
       }
   , rmSimulation   = Nothing
+  , rmInvocationScopes = Nothing
   , rmOverlay      = Nothing
   , rmCapabilities   = [CapReadTerrain, CapLog]
   , rmParameters     = []
@@ -432,6 +434,7 @@ writerManifest = RPCManifest
       { rsdDependencies = []
       , rsdSchedule = defaultScheduleDecl
       }
+  , rmInvocationScopes = Nothing
   , rmOverlay      = Just RPCOverlayDecl
       { rodSchemaFile = "writer.toposchema"
       }

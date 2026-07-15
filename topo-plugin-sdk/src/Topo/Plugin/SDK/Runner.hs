@@ -175,6 +175,7 @@ generateManifest pd = RPCManifest
   , rmUiHints       = sdkUiHints pd
   , rmGenerator     = fmap toGenDecl (pdGenerator pd)
   , rmSimulation    = fmap toSimDecl (pdSimulation pd)
+  , rmInvocationScopes = Nothing
   , rmOverlay       = fmap (\f -> RPCOverlayDecl (Text.pack f)) (pdSchemaFile pd)
   , rmCapabilities  = sdkCapabilities pd
   , rmParameters    = map toRPCParamSpec (pdParams pd)

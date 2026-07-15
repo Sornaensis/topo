@@ -254,6 +254,7 @@ manifestFor name mGenerator = RPCManifest
   , rmUiHints = defaultRPCUIHints
   , rmGenerator = mGenerator
   , rmSimulation = Nothing
+  , rmInvocationScopes = Nothing
   , rmOverlay = Nothing
   , rmCapabilities = []
   , rmParameters = []

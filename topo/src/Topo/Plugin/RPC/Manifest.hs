@@ -38,6 +38,15 @@ module Topo.Plugin.RPC.Manifest
   , defaultRPCUIHints
   , RPCGeneratorDecl(..)
   , RPCSimulationDecl(..)
+  , RPCInvocationScopes(..)
+  , RPCInvocationScopeDecl(..)
+  , RPCScopeInput(..)
+  , RPCScopeOutput(..)
+  , RPCScopeBudgets(..)
+  , RPCChunkSelector(..)
+  , TerrainSection(..)
+  , legacyGeneratorScope
+  , legacySimulationScope
   , RPCOverlayDecl(..)
   , RPCStartPolicy(..)
   , RPCRestartMode(..)
@@ -124,6 +133,19 @@ import Topo.Plugin.DataResource
   , validateDataResource
   )
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
+import Topo.Plugin.RPC.Scope
+  ( RPCChunkSelector(..)
+  , RPCInvocationScopeDecl(..)
+  , RPCInvocationScopes(..)
+  , RPCScopeBudgets(..)
+  , RPCScopeInput(..)
+  , RPCScopeOutput(..)
+  , ScopeError(..)
+  , TerrainSection(..)
+  , legacyGeneratorScope
+  , legacySimulationScope
+  , validateInvocationScopeDeclarations
+  )
 import Topo.Simulation.Schedule
   ( SimulationCatchUpPolicy(..)
   , SimulationScheduleDecl(..)
@@ -1120,6 +1142,9 @@ data RPCManifest = RPCManifest
     -- ^ Generator pipeline declaration (if the plugin seeds data).
   , rmSimulation    :: !(Maybe RPCSimulationDecl)
     -- ^ Simulation DAG declaration (if the plugin ticks an overlay).
+  , rmInvocationScopes :: !(Maybe RPCInvocationScopes)
+    -- ^ Explicit invocation input/output maxima. Absence retains protocol-v4
+    -- compatibility but is invalid for protocol-v5 participation.
   , rmOverlay       :: !(Maybe RPCOverlayDecl)
     -- ^ Overlay schema reference (if the plugin owns an overlay).
   , rmCapabilities  :: ![RPCCapability]
@@ -1150,6 +1175,7 @@ instance FromJSON RPCManifest where
     ui     <- optionalPolicyField o ["ui"] defaultRPCUIHints
     gen    <- o .:? "generator"
     sim    <- o .:? "simulation"
+    invocationScopes <- o .:? "invocationScopes"
     ov     <- o .:? "overlay"
     caps   <- o .:? "capabilities"
     config <- o .:? "config"
@@ -1170,6 +1196,7 @@ instance FromJSON RPCManifest where
       , rmUiHints       = ui
       , rmGenerator     = gen
       , rmSimulation    = sim
+      , rmInvocationScopes = invocationScopes
       , rmOverlay       = ov
       , rmCapabilities  = maybe [] id caps
       , rmParameters    = maybe [] id params
@@ -1191,6 +1218,7 @@ instance ToJSON RPCManifest where
     [ "ui" .= rmUiHints rm | rmUiHints rm /= defaultRPCUIHints ] <>
     [ "generator"   .= g  | Just g  <- [rmGenerator rm] ] <>
     [ "simulation"  .= s  | Just s  <- [rmSimulation rm] ] <>
+    [ "invocationScopes" .= scopes | Just scopes <- [rmInvocationScopes rm] ] <>
     [ "overlay"     .= ov | Just ov <- [rmOverlay rm] ] <>
     [ "capabilities" .= rmCapabilities rm | not (null (rmCapabilities rm)) ] <>
     [ "config" .= object ["parameters" .= rmParameters rm]
@@ -1234,6 +1262,7 @@ manifestV3Schema = object
       , "ui" .= schemaRef "uiHints"
       , "generator" .= schemaRef "generator"
       , "simulation" .= schemaRef "simulation"
+      , "invocationScopes" .= schemaRef "invocationScopes"
       , "overlay" .= schemaRef "overlay"
       , "capabilities" .= arrayOf (enumSchema capabilityNames)
       , "config" .= schemaRef "config"
@@ -1291,6 +1320,72 @@ manifestV3Schema = object
               , "interval_ticks" .= integerMinimumSchema 1
               , "phase_ticks" .= integerMinimumSchema 0
               , "catch_up" .= enumSchema ["run_once_if_due", "skip_missed"]
+              ]
+          ]
+      , "invocationScopes" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["version"] :: [Text])
+          , "properties" .= object
+              [ "version" .= object ["const" .= (1 :: Int)]
+              , "generator" .= schemaRef "invocationScope"
+              , "simulation" .= schemaRef "invocationScope"
+              ]
+          ]
+      , "invocationScope" .= object
+          [ "type" .= ("object" :: Text)
+          , "required" .= (["input", "output", "budgets"] :: [Text])
+          , "properties" .= object
+              [ "input" .= object
+                  [ "type" .= ("object" :: Text)
+                  , "required" .= (["terrainSections", "chunks", "dependencyOverlays", "ownOverlay"] :: [Text])
+                  , "properties" .= object
+                      [ "terrainSections" .= uniqueArrayOf (enumSchema ["terrain", "climate", "vegetation"])
+                      , "chunks" .= schemaRef "chunkSelector"
+                      , "dependencyOverlays" .= uniqueArrayOf stringSchema
+                      , "ownOverlay" .= booleanSchema
+                      ]
+                  ]
+              , "output" .= object
+                  [ "type" .= ("object" :: Text)
+                  , "required" .= (["terrainSections", "chunks", "ownedOverlay", "generatorMetadata"] :: [Text])
+                  , "properties" .= object
+                      [ "terrainSections" .= uniqueArrayOf (enumSchema ["terrain", "climate", "vegetation"])
+                      , "chunks" .= schemaRef "chunkSelector"
+                      , "ownedOverlay" .= booleanSchema
+                      , "generatorMetadata" .= booleanSchema
+                      ]
+                  ]
+              , "budgets" .= object
+                  [ "type" .= ("object" :: Text)
+                  , "required" .= (["terrainBytes", "overlayBytes", "outputBytes"] :: [Text])
+                  , "properties" .= object
+                      [ "terrainBytes" .= integerMinimumSchema 0
+                      , "overlayBytes" .= integerMinimumSchema 0
+                      , "outputBytes" .= integerMinimumSchema 0
+                      ]
+                  ]
+              ]
+          ]
+      , "chunkSelector" .= object
+          [ "oneOf" .=
+              [ object
+                  [ "type" .= ("object" :: Text)
+                  , "required" .= (["type"] :: [Text])
+                  , "properties" .= object ["type" .= object ["const" .= ("all" :: Text)]]
+                  ]
+              , object
+                  [ "type" .= ("object" :: Text)
+                  , "required" .= (["type", "overlays"] :: [Text])
+                  , "properties" .= object
+                      [ "type" .= enumSchema ["overlay_union", "overlay_intersection"]
+                      , "overlays" .= nonEmptyUniqueArrayOf stringSchema
+                      ]
+                  ]
+              , object
+                  [ "type" .= ("object" :: Text)
+                  , "required" .= (["type"] :: [Text])
+                  , "properties" .= object ["type" .= object ["const" .= ("caller" :: Text)]]
+                  ]
               ]
           ]
       , "overlay" .= object
@@ -1510,6 +1605,7 @@ manifestV3ProviderExample = object
       , "phase_ticks" .= (0 :: Int)
       , "catch_up" .= ("run_once_if_due" :: Text)
       ]
+  , "invocationScopes" .= exampleInvocationScopes True
   , "overlay" .= object
       [ "schemaFile" .= ("civilization.toposchema" :: Text)
       ]
@@ -1665,6 +1761,7 @@ manifestV3ConsumerExample = object
       [ "insertAfter" .= ("civilization" :: Text)
       , "requires" .= (["civilization"] :: [Text])
       ]
+  , "invocationScopes" .= exampleInvocationScopes False
   , "capabilities" .= (["readTerrain", "dataRead", "log"] :: [Text])
   , "externalDataSourceRefs" .=
       [ object
@@ -1708,6 +1805,25 @@ manifestV3ConsumerExample = object
       ]
   ]
 
+exampleInvocationScopes :: Bool -> Value
+exampleInvocationScopes includeSimulation = object $
+  [ "version" .= (1 :: Int)
+  , "generator" .= generatorScope
+  ] <>
+  [ "simulation" .= legacySimulationScope ["weather"] exampleScopeBudgets
+  | includeSimulation
+  ]
+  where
+    generatorScope = (legacyGeneratorScope exampleScopeBudgets)
+      { risdOutput = (risdOutput (legacyGeneratorScope exampleScopeBudgets))
+          { rsoOwnedOverlay = includeSimulation }
+      }
+    exampleScopeBudgets = RPCScopeBudgets
+      { rsbTerrainBytes = 67108864
+      , rsbOverlayBytes = 67108864
+      , rsbOutputBytes = 67108864
+      }
+
 stringSchema :: Value
 stringSchema = object ["type" .= ("string" :: Text)]
 
@@ -1733,6 +1849,21 @@ arrayOf :: Value -> Value
 arrayOf itemSchema = object
   [ "type" .= ("array" :: Text)
   , "items" .= itemSchema
+  ]
+
+uniqueArrayOf :: Value -> Value
+uniqueArrayOf itemSchema = object
+  [ "type" .= ("array" :: Text)
+  , "items" .= itemSchema
+  , "uniqueItems" .= True
+  ]
+
+nonEmptyUniqueArrayOf :: Value -> Value
+nonEmptyUniqueArrayOf itemSchema = object
+  [ "type" .= ("array" :: Text)
+  , "items" .= itemSchema
+  , "minItems" .= (1 :: Int)
+  , "uniqueItems" .= True
   ]
 
 schemaRef :: Text -> Value
@@ -1895,6 +2026,12 @@ validateManifest rm = concat
   , validateUIHints "ui" (rmUiHints rm)
   , validateGenerator (rmGenerator rm)
   , validateSimulation (rmSimulation rm)
+  , map scopeManifestError (validateInvocationScopeDeclarations
+      (rmrProtocolMin (rmRuntime rm))
+      (maybe False (const True) (rmGenerator rm))
+      (rsdDependencies <$> rmSimulation rm)
+      (maybe False (const True) (rmOverlay rm))
+      (rmInvocationScopes rm))
   , validateOverlay (rmOverlay rm)
   , [ ManifestSimWithoutOverlay
     | Just _ <- [rmSimulation rm]
@@ -2116,6 +2253,9 @@ validateSimulation (Just sim) = concat
   , duplicateErrors "simulation.dependencies" (rsdDependencies sim)
   , validateSimulationSchedule (rsdSchedule sim)
   ]
+
+scopeManifestError :: ScopeError -> ManifestError
+scopeManifestError scopeError = ManifestInvalidField (sePath scopeError) (seMessage scopeError)
 
 validateSimulationSchedule :: SimulationScheduleDecl -> [ManifestError]
 validateSimulationSchedule schedule =

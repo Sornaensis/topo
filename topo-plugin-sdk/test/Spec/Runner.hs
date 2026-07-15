@@ -958,6 +958,7 @@ spec = describe "SDK runner pipe integration" $ do
                 , igSeed = 1
                 , igConfig = Map.singleton "retained" (String "yes")
                 , igTerrain = Null
+                , igInvocationScope = Nothing
                 }
             , envRequestId = Just 991
             }
@@ -982,6 +983,7 @@ spec = describe "SDK runner pipe integration" $ do
             , igSeed = 2
             , igConfig = Map.empty
             , igTerrain = Null
+            , igInvocationScope = Nothing
             }
         , envRequestId = Just 992
         }
@@ -1019,6 +1021,7 @@ spec = describe "SDK runner pipe integration" $ do
                 , igSeed = 2
                 , igConfig = Map.empty
                 , igTerrain = Null
+                , igInvocationScope = Nothing
                 }
             , envRequestId = Just 992
             }
@@ -1062,6 +1065,7 @@ spec = describe "SDK runner pipe integration" $ do
                 , igSeed = 3
                 , igConfig = Map.empty
                 , igTerrain = Null
+                , igInvocationScope = Nothing
                 }
             , envRequestId = Just 994
             }
@@ -1285,6 +1289,7 @@ generatorInvokeWithTerrain seed terrainPayload = RPCEnvelope
       , igSeed = seed
       , igConfig = Map.empty
       , igTerrain = terrainPayload
+      , igInvocationScope = Nothing
       }
   , envRequestId = Just seed
   }
@@ -1305,6 +1310,7 @@ simulationInvokeWithTerrain terrainPayload = RPCEnvelope
       , isTerrain = terrainPayload
       , isOverlays = object ["weather" .= object ["storage" .= ("sparse" :: Text), "chunks" .= ([] :: [Aeson.Value])]]
       , isOwnOverlay = object ["storage" .= ("sparse" :: Text), "chunks" .= ([] :: [Aeson.Value])]
+      , isInvocationScope = Nothing
       }
   , envRequestId = Just 100
   }

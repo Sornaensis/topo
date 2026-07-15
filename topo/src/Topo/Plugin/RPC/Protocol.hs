@@ -71,6 +71,7 @@ import Data.Word (Word64)
 import GHC.Generics (Generic)
 
 import Topo.Plugin.DataResource (DataResourceSchema)
+import Topo.Plugin.RPC.Scope (RPCInvocationScopeBinding)
 
 ------------------------------------------------------------------------
 -- Message type tags
@@ -219,6 +220,9 @@ data InvokeGenerator = InvokeGenerator
     -- ^ Plugin parameter values.
   , igTerrain :: !Value
     -- ^ Terrain chunk data (encoded by 'Topo.Export').
+  , igInvocationScope :: !(Maybe RPCInvocationScopeBinding)
+    -- ^ Optional resolved-scope reference/descriptor. Protocol-v4 peers ignore
+    -- this field; protocol-v5 invocations require a validated binding.
   } deriving (Eq, Show, Generic)
 
 instance FromJSON InvokeGenerator where
@@ -233,15 +237,17 @@ instance FromJSON InvokeGenerator where
           <*> o .: "seed"
           <*> o .: "config"
           <*> o .: "terrain"
+          <*> o .:? "invocation_scope"
 
 instance ToJSON InvokeGenerator where
-  toJSON ig = object
+  toJSON ig = object $
     [ "payload_version" .= igPayloadVersion ig
     , "stage_id" .= igStageId ig
     , "seed"     .= igSeed ig
     , "config"   .= igConfig ig
     , "terrain"  .= igTerrain ig
-    ]
+    ] <>
+    [ "invocation_scope" .= binding | Just binding <- [igInvocationScope ig] ]
 
 -- | Invoke a plugin's simulation tick.
 data InvokeSimulation = InvokeSimulation
@@ -263,6 +269,8 @@ data InvokeSimulation = InvokeSimulation
     -- ^ Read-only dependency overlay data.
   , isOwnOverlay :: !Value
     -- ^ Current state of the plugin's own overlay.
+  , isInvocationScope :: !(Maybe RPCInvocationScopeBinding)
+    -- ^ Optional resolved-scope reference/descriptor.
   } deriving (Eq, Show, Generic)
 
 instance FromJSON InvokeSimulation where
@@ -281,9 +289,10 @@ instance FromJSON InvokeSimulation where
           <*> o .: "terrain"
           <*> o .: "overlays"
           <*> o .: "own_overlay"
+          <*> o .:? "invocation_scope"
 
 instance ToJSON InvokeSimulation where
-  toJSON is' = object
+  toJSON is' = object $
     [ "payload_version" .= isPayloadVersion is'
     , "node_id"     .= isNodeId is'
     , "world_time"  .= isWorldTime is'
@@ -293,7 +302,8 @@ instance ToJSON InvokeSimulation where
     , "terrain"     .= isTerrain is'
     , "overlays"    .= isOverlays is'
     , "own_overlay" .= isOwnOverlay is'
-    ]
+    ] <>
+    [ "invocation_scope" .= binding | Just binding <- [isInvocationScope is'] ]
 
 ------------------------------------------------------------------------
 -- Plugin → Host messages

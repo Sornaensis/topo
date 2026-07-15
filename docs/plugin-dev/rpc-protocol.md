@@ -227,7 +227,8 @@ arrives.
   "stage_id": "plugin:civilization",
   "seed": 0,
   "config": { "growth_rate": 0.02 },
-  "terrain": { "encoding": "base64", "terrain": {} }
+  "terrain": { "encoding": "base64", "terrain": {} },
+  "invocation_scope": { "scopeId": "<sha256>", "descriptor": { "scopeId": "<sha256>" } }
 }
 ```
 
@@ -238,6 +239,7 @@ arrives.
 | `seed` | Deterministic generation seed supplied by the host path. |
 | `config` | Plugin parameter map keyed by manifest/SDK parameter name. |
 | `terrain` | Terrain input payload from `terrainWorldToPayload` when the manifest has `readTerrain` or `readWorld`; otherwise `null`. |
+| `invocation_scope` | Optional stable scope reference plus inline resolved descriptor. Protocol-4 decoders may ignore it; protocol 5 requires and validates it. |
 
 ### `generator_result`
 
@@ -267,7 +269,8 @@ meaningful for plugins that own an overlay, and applying it requires
   "config": {},
   "terrain": null,
   "overlays": {},
-  "own_overlay": null
+  "own_overlay": null,
+  "invocation_scope": { "scopeId": "<sha256>" }
 }
 ```
 
@@ -281,6 +284,7 @@ meaningful for plugins that own an overlay, and applying it requires
 | `terrain` | Terrain payload when the manifest has `readTerrain` or `readWorld`; otherwise `null`. |
 | `overlays` | Dependency overlays when the manifest has `readOverlay` or `readWorld`; otherwise `{}`. |
 | `own_overlay` | Current owned overlay when the manifest can read/write overlays; otherwise `null`. |
+| `invocation_scope` | Optional stable scope reference/descriptor with the same protocol-4 compatibility and protocol-5 binding rules as generator invocation. |
 
 Simulation plugins that return overlay updates must declare `writeOverlay` (or
 `writeWorld`). Plugins that return `terrain_writes` must also declare
@@ -386,13 +390,19 @@ to return the stored value.
 
 ## Terrain payload encoding
 
-The host sends capability-scoped terrain payloads with these stable keys:
+The legacy protocol-4 host sends capability-scoped terrain payloads with these
+stable keys:
 
 - summary counts: `chunk_count`, `climate_count`, `river_count`,
   `vegetation_count`;
 - world metadata: `chunk_size`, `hex_grid`, `planet`, `slice`;
 - `encoding`, currently always `base64`;
 - chunk maps: `terrain`, `climate`, and `vegetation`.
+
+The scoped encoder emits only selected `terrain`, `climate`, and `vegetation`
+maps and their corresponding count fields. It omits all unselected sections and
+counts (including `river_count`) and emits decode-required geometry metadata only
+when at least one terrain section is granted. An empty terrain grant is `{}`.
 
 Chunk maps are objects keyed by chunk ID. Each value is a base64 string produced
 from the binary `Topo.Export` chunk codec for that layer. Simulation terrain

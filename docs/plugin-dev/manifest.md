@@ -172,6 +172,37 @@ writer rather than a reader.
 the plugin directory. A simulation plugin that writes an overlay should declare
 both `simulation` and `overlay`.
 
+## Invocation scopes
+
+`invocationScopes` is an optional, versioned declaration of the maximum data a
+plugin intends to read and write. Version `1` supports only the terrain codecs
+`terrain`, `climate`, and `vegetation`; exact dependency-overlay names;
+explicit own-overlay and generator-metadata flags; aggregate terrain, overlay,
+and output byte budgets; and sound chunk selectors:
+
+- `{"type":"all"}` for every chunk supplied by the invocation;
+- `overlay_union` or `overlay_intersection` over simulation dependencies and
+  the special `$own` overlay;
+- `{"type":"caller"}` only when an invocation actually supplies exact caller
+  chunk IDs (not today's global generator or ordinary simulation calls).
+
+Generator `requires`/`insertAfter` and simulation `dependencies` remain ordering
+and availability declarations; they do not imply read intent. Dependency overlay
+scope names must be a subset of `simulation.dependencies`.
+
+Protocol-4 manifests may omit `invocationScopes` and retain the legacy broad
+behavior. A protocol-4-aware host may narrow a call when the declaration is
+present, but a plugin that requires enforceable least privilege must set
+`runtime.protocol.min` to at least `5`. Protocol 5 requires an explicit valid
+scope for each declared generator/simulation participation; omission never means
+"all". `legacyGeneratorScope` and `legacySimulationScope` construct explicit
+legacy-equivalent maxima for compatibility adapters. The pure resolver
+intersects the declaration with capabilities and exact invocation facts, so
+`writeWorld` never bypasses explicit section, overlay-name, or chunk bounds.
+
+Scope declarations and resolution are the contract layer. Host subset delivery,
+result enforcement, and SDK callback contexts are introduced separately.
+
 ## Parameters and UI hints
 
 `config.parameters` describes user-editable settings. Supported parameter
