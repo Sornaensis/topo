@@ -177,6 +177,13 @@ spec = describe "Topo.Plugin.DataResource" $ do
         , dpDefaultPageOffset = 5
         })
 
+    it "rejects non-positive and default-greater-than-max pagination" $ do
+      let decodePagination value = eitherDecode (encode value) :: Either String DataPagination
+      decodePagination (object ["defaultPageSize" .= (0 :: Int), "maxPageSize" .= (10 :: Int)])
+        `shouldSatisfy` isLeft
+      decodePagination (object ["defaultPageSize" .= (11 :: Int), "maxPageSize" .= (10 :: Int)])
+        `shouldSatisfy` isLeft
+
     prop "arbitrary DataPagination round-trips" $ \(pagination :: DataPagination) ->
       eitherDecode (encode pagination) === Right pagination
 

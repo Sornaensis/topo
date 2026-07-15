@@ -23,6 +23,7 @@ module Topo.Plugin.RPC
     RPCConnection(..)
   , RPCSession
   , newRPCConnection
+  , newRPCConnectionWithLimits
   , RPCFailureEvent(..)
   , RPCFailureSource(..)
   , awaitRPCFailureEvent
@@ -58,7 +59,9 @@ module Topo.Plugin.RPC
   , terrainWorldToPayload
   , terrainWorldToCompletePayload
   , decodeTerrainWritesValue
+  , decodeTerrainWritesValueWithLimits
   , applyGeneratorTerrainValue
+  , applyGeneratorTerrainValueWithLimits
   , encodeBase64Text
   , decodeBase64Text
     -- * Errors
@@ -87,7 +90,7 @@ import Control.Concurrent
   , tryTakeMVar
   )
 import Control.Exception (SomeException, mask, onException, try)
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, unless, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (asks)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
@@ -133,7 +136,8 @@ import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.Transport
 import Topo.Plugin.RPC.DataService
 import Topo.Plugin.RPC.ExternalDataSource
-import Topo.Plugin.DataResource (DataResourceSchema)
+import Topo.Plugin.DataResource (DataResourceSchema(..))
+import qualified Topo.Plugin.DataResource.Validation as DataValidation
 
 ------------------------------------------------------------------------
 -- Errors
@@ -268,6 +272,8 @@ data RPCConnection = RPCConnection
     -- ^ The underlying transport handle.
   , rpcParams           :: !(Map Text Value)
     -- ^ Current parameter values for this plugin.
+  , rpcPayloadLimits   :: !RPCPayloadLimits
+    -- ^ Symmetric framed and decoded payload limits for this session.
   , rpcProtocolVersion  :: !Int
     -- ^ Negotiated protocol version from handshake.
   , rpcDataDirectory    :: !(Maybe FilePath)
@@ -290,7 +296,16 @@ data RPCConnection = RPCConnection
 -- resources.  Call 'performHandshake' after creation to negotiate
 -- capabilities and receive data resource schemas.
 newRPCConnection :: RPCManifest -> Transport -> Map Text Value -> RPCConnection
-newRPCConnection manifest transport params = unsafePerformIO $ do
+newRPCConnection = newRPCConnectionWithLimits defaultRPCPayloadLimits
+
+-- | Create an embedded or production RPC connection with explicit limits.
+newRPCConnectionWithLimits
+  :: RPCPayloadLimits
+  -> RPCManifest
+  -> Transport
+  -> Map Text Value
+  -> RPCConnection
+newRPCConnectionWithLimits payloadLimits manifest transport params = unsafePerformIO $ do
   failureSlot <- newRPCFailureSlot
   session <- newRPCSession
   let sanitizedParams = sanitizeRPCManifestParams manifest params
@@ -298,6 +313,7 @@ newRPCConnection manifest transport params = unsafePerformIO $ do
     { rpcManifest        = manifest
     , rpcTransport       = transport
     , rpcParams          = sanitizedParams
+    , rpcPayloadLimits   = payloadLimits
     , rpcProtocolVersion = currentProtocolVersion
     , rpcDataDirectory   = Nothing
     , rpcResources       = []
@@ -305,7 +321,7 @@ newRPCConnection manifest transport params = unsafePerformIO $ do
     , rpcSession = session
     , rpcRuntimeFailure = failureSlot
     }
-{-# NOINLINE newRPCConnection #-}
+{-# NOINLINE newRPCConnectionWithLimits #-}
 
 ------------------------------------------------------------------------
 -- Internal helpers
@@ -361,7 +377,8 @@ rpcReceiverLoop conn = loop
     transport = rpcTransport conn
 
     loop = do
-      recvResult <- recvMessage transport
+      recvResult <- recvMessageWithLimit
+        (fromIntegral (rplMaxFrameSizeBytes (rpcPayloadLimits conn))) transport
       case recvResult of
         Left err -> do
           let rpcErr = RPCTransportError err
@@ -385,19 +402,50 @@ rpcReceiverLoop conn = loop
                 completeAllPending session rpcErr
                 closeTransport transport
 
-sendCorrelatedMessage :: RPCSession -> Transport -> RPCEnvelope -> IO (Either TransportError ())
-sendCorrelatedMessage session transport envelope =
+sendCorrelatedMessage
+  :: RPCPayloadLimits
+  -> RPCSession
+  -> Transport
+  -> RPCEnvelope
+  -> IO (Either TransportError ())
+sendCorrelatedMessage limits session transport envelope =
   modifyMVar (rpcsWriteLock session) $ \() -> do
-    result <- sendMessage transport (encodeMessage envelope)
-    pure ((), result)
+    let encoded = encodeMessage envelope
+        limit = toInteger (rplMaxFrameSizeBytes limits)
+    result <- sendMessageWithLimit (fromInteger limit) transport encoded
+    pure ((), either
+      (Left . contextualizeEnvelopeTransportError envelope (BS.length encoded) limit)
+      Right result)
+
+contextualizeEnvelopeTransportError
+  :: RPCEnvelope
+  -> Int
+  -> Integer
+  -> TransportError
+  -> TransportError
+contextualizeEnvelopeTransportError envelope actual limit err =
+  let context = "outgoing RPC type=" <> Text.pack (show (envType envelope))
+        <> maybe "" (\requestId -> ", request=" <> Text.pack (show requestId)) (envRequestId envelope)
+        <> ", actual=" <> Text.pack (show actual) <> " bytes"
+        <> ", limit=" <> Text.pack (show limit) <> " bytes: "
+  in case err of
+      TransportFramingError message -> TransportFramingError (context <> message)
+      TransportSendFailed message -> TransportSendFailed (context <> message)
+      _ -> err
+
+isLocalOutgoingFramingFailure :: TransportError -> Bool
+isLocalOutgoingFramingFailure TransportFramingError{} = True
+isLocalOutgoingFramingFailure _ = False
 
 sendOneWay :: RPCConnection -> RPCEnvelope -> IO (Either RPCError ())
 sendOneWay conn envelope = do
-  result <- sendCorrelatedMessage (rpcSession conn) (rpcTransport conn) envelope
+  result <- sendCorrelatedMessage
+    (rpcPayloadLimits conn) (rpcSession conn) (rpcTransport conn) envelope
   case result of
     Left err -> do
       let rpcErr = RPCTransportError err
-      recordRuntimeFailureIfNeeded conn RPCFailureTransport rpcErr
+      unless (isLocalOutgoingFramingFailure err) $
+        recordRuntimeFailureIfNeeded conn RPCFailureTransport rpcErr
       pure (Left rpcErr)
     Right () -> pure (Right ())
 
@@ -423,14 +471,17 @@ sendAndAwaitPendingResult fatalTimeout mTimeout timeoutMessage conn transport se
       when fatalTimeout (recordRuntimeFailure conn (RPCFailureRequest requestId) err)
       pure (Left err)
     Just value -> do
-      let source = case value of
-            Left RPCTransportError{} -> RPCFailureTransport
-            _ -> RPCFailureRequest requestId
-      recordResultFailure conn source value
+      case value of
+        Left (RPCTransportError err) | isLocalOutgoingFramingFailure err -> pure ()
+        _ -> do
+          let source = case value of
+                Left RPCTransportError{} -> RPCFailureTransport
+                _ -> RPCFailureRequest requestId
+          recordResultFailure conn source value
       pure value
   where
     sendThenWait = do
-      sendResult <- sendCorrelatedMessage session transport envelope
+      sendResult <- sendCorrelatedMessage (rpcPayloadLimits conn) session transport envelope
       case sendResult of
         Left err -> do
           _ <- removePending session requestId
@@ -1115,7 +1166,14 @@ queryResource conn qr = do
         MsgQueryResult -> decodeRPCPayload env
         other -> pure (Left (RPCProtocolError
           ("unexpected data query response: " <> Text.pack (show other))))
-      trackRuntimeResult conn decoded
+      validated <- case decoded of
+        Left err -> pure (Left err)
+        Right queryResult -> case findResourceSchema (qrResource qr) (rpcResources conn) of
+          Nothing -> pure (Right queryResult)
+          Just schema -> case DataValidation.validateQueryResult schema qr queryResult of
+            Nothing -> pure (Right queryResult)
+            Just failure -> pure (Left (RPCDataResourceError (drfCode failure) (drfMessage failure)))
+      trackRuntimeResult conn validated
 
 -- | Mutate a plugin's data resource.
 --
@@ -1141,6 +1199,10 @@ mutateResource conn mr = do
         other -> pure (Left (RPCProtocolError
           ("unexpected data mutation response: " <> Text.pack (show other))))
       trackRuntimeResult conn decoded
+
+findResourceSchema :: Text -> [DataResourceSchema] -> Maybe DataResourceSchema
+findResourceSchema resourceName = foldr (\schema found ->
+  if drsName schema == resourceName then Just schema else found) Nothing
 
 ------------------------------------------------------------------------
 -- Pipeline / DAG integration
@@ -1175,7 +1237,7 @@ rpcGeneratorStage conn =
             case result of
               Left err -> throwError (PluginInvariantError ("rpc generator failed: " <> rpcErrorText err))
               Right generatorResult ->
-                case applyGeneratorResult manifest world generatorResult of
+                case applyGeneratorResult (rpcPayloadLimits conn) manifest world generatorResult of
                   Left mergeErr ->
                     throwError (PluginInvariantError ("rpc generator merge failed: " <> mergeErr))
                   Right mergedWorld -> do
@@ -1213,7 +1275,8 @@ rpcSimNode conn =
                 Right sr -> do
                   let decodedOverlay = preserveHostProvenance overlay
                         <$> overlayFromJSON (ovSchema overlay) (srOverlay sr)
-                      decodedWrites = Payload.decodeTerrainWritesValue (srTerrainWrites sr)
+                      decodedWrites = Payload.decodeTerrainWritesValueWithLimits
+                        (rpcPayloadLimits conn) (srTerrainWrites sr)
                   pure $ case (decodedOverlay, decodedWrites) of
                     (Right nextOverlay, Right writes) -> Right (nextOverlay, writes)
                     (Left overlayErr, _) -> Left overlayErr
@@ -1327,12 +1390,13 @@ rpcErrorText rpcError =
     RPCTimeout message -> "timeout: " <> message
 
 applyGeneratorResult
-  :: RPCManifest
+  :: RPCPayloadLimits
+  -> RPCManifest
   -> Topo.World.TerrainWorld
   -> GeneratorResult
   -> Either Text Topo.World.TerrainWorld
-applyGeneratorResult manifest world result = do
-  worldWithTerrain <- Payload.applyGeneratorTerrainValue world (grTerrain result)
+applyGeneratorResult limits manifest world result = do
+  worldWithTerrain <- Payload.applyGeneratorTerrainValueWithLimits limits world (grTerrain result)
   applyGeneratorOverlayPayload manifest worldWithTerrain (grOverlay result)
 
 terrainWorldToPayload :: Topo.World.TerrainWorld -> Either Text Value
@@ -1344,8 +1408,18 @@ terrainWorldToCompletePayload = Payload.terrainWorldToCompletePayload
 decodeTerrainWritesValue :: Maybe Value -> Either Text TerrainWrites
 decodeTerrainWritesValue = Payload.decodeTerrainWritesValue
 
+decodeTerrainWritesValueWithLimits :: RPCPayloadLimits -> Maybe Value -> Either Text TerrainWrites
+decodeTerrainWritesValueWithLimits = Payload.decodeTerrainWritesValueWithLimits
+
 applyGeneratorTerrainValue :: Topo.World.TerrainWorld -> Value -> Either Text Topo.World.TerrainWorld
 applyGeneratorTerrainValue = Payload.applyGeneratorTerrainValue
+
+applyGeneratorTerrainValueWithLimits
+  :: RPCPayloadLimits
+  -> Topo.World.TerrainWorld
+  -> Value
+  -> Either Text Topo.World.TerrainWorld
+applyGeneratorTerrainValueWithLimits = Payload.applyGeneratorTerrainValueWithLimits
 
 encodeBase64Text :: BS.ByteString -> Text
 encodeBase64Text = Payload.encodeBase64Text

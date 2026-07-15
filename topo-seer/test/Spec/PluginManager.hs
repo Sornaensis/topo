@@ -250,6 +250,7 @@ import Topo.Plugin.RPC.Transport
   , pluginEndpointEnv
   , pluginEndpointKindEnv
   , pluginIdEnv
+  , pluginMaxFrameSizeEnv
   , pluginProtocolEnv
   , pluginSessionEnv
   , pluginStdioCompatibilityEnv
@@ -5128,6 +5129,7 @@ verifyLaunchEnvironment = do
   authToken <- requireEnv pluginAuthTokenEnv
   worldId <- requireEnv pluginWorldIdEnv
   dataRoot <- requireEnv pluginDataRootEnv
+  maxFrameSize <- requireEnv pluginMaxFrameSizeEnv
   stdioCompat <- lookupEnv pluginStdioCompatibilityEnv
   pluginId `shouldEqualOrDie` envContractPluginName
   protocol `shouldEqualOrDie` show currentProtocolVersion
@@ -5137,6 +5139,7 @@ verifyLaunchEnvironment = do
   authToken `shouldNotBeEmptyOrDie` pluginAuthTokenEnv
   worldId `shouldEqualOrDie` "unsaved"
   dataRoot `shouldNotBeEmptyOrDie` pluginDataRootEnv
+  maxFrameSize `shouldEqualOrDie` show (64 * 1024 * 1024 :: Int)
   stdioCompat `shouldBeUnsetOrDie` pluginStdioCompatibilityEnv
   mapM_ verifyParentSecretUnset sensitiveParentEnvKeys
   dataRootExists <- doesDirectoryExist dataRoot

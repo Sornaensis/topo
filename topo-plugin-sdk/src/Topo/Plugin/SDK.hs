@@ -97,7 +97,9 @@ module Topo.Plugin.SDK
   , decodeOwnOverlay
   , decodeDependencyOverlay
   , decodeTerrainPayload
+  , decodeTerrainPayloadWithLimits
   , decodeTerrainWritesPayload
+  , decodeTerrainWritesPayloadWithLimits
   , encodeOverlayPayload
   , encodeTerrainPayload
   , encodeTerrainWritesPayload
@@ -112,6 +114,14 @@ module Topo.Plugin.SDK
     -- * Entry point
   , runPlugin
   , runPluginWithManifestCommand
+  , runPluginSession
+  , runPluginSessionWithLimits
+  , SDKSessionError(..)
+  , RPCPayloadLimits
+  , mkRPCPayloadLimits
+  , defaultRPCPayloadLimits
+  , rplMaxFrameSizeBytes
+  , rplMaxDecodedTerrainBytes
     -- * Manifest utilities
   , pluginManifestFileName
   , Capability(..)
@@ -154,11 +164,21 @@ import Topo.Plugin.SDK.Payload
 import Topo.Plugin.SDK.Runner
   ( runPlugin
   , runPluginWithManifestCommand
+  , runPluginSession
+  , runPluginSessionWithLimits
+  , SDKSessionError(..)
   , pluginManifestFileName
   , generateManifest
   , writeManifest
   , writePluginManifest
   , writePluginManifestToDirectory
+  )
+import Topo.Plugin.RPC.Transport
+  ( RPCPayloadLimits
+  , mkRPCPayloadLimits
+  , defaultRPCPayloadLimits
+  , rplMaxFrameSizeBytes
+  , rplMaxDecodedTerrainBytes
   )
 import Topo.Plugin.DataResource
   ( DataResourceSchema(..)

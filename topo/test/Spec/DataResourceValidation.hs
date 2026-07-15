@@ -45,6 +45,16 @@ spec = describe "Topo.Plugin.DataResource.Validation" $ do
     fmap drfCode (validateQueryResult validationSchema request result)
       `shouldBe` Just SchemaValidationFailed
 
+  it "bounds plugin query result counts by effective schema pagination" $ do
+    let validRecord = record [("id", String "alpha"), ("name", String "Alpha")]
+        request = QueryResource "items" QueryAll Nothing Nothing
+        tooMany = QueryResult "items" (replicate 21 validRecord) (Just 21)
+        invalidTotal = QueryResult "items" [validRecord] (Just 0)
+    fmap drfCode (validateQueryResult validationSchema request tooMany)
+      `shouldBe` Just SchemaValidationFailed
+    fmap drfCode (validateQueryResult validationSchema request invalidTotal)
+      `shouldBe` Just SchemaValidationFailed
+
 validationSchema :: DataResourceSchema
 validationSchema = DataResourceSchema
   { drsSchemaVersion = currentDataResourceSchemaVersion

@@ -4,10 +4,11 @@
 module Spec.Runner (spec) where
 
 import Control.Concurrent (MVar, forkFinally, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (bracket, finally)
+import Control.Exception (SomeException, bracket, finally)
 import Data.Aeson (Value(..), (.:), (.=), object)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes (parseMaybe)
+import Data.IORef (atomicModifyIORef', newIORef)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -93,6 +94,7 @@ import Topo.Plugin.RPC.Transport
   , TransportServer(..)
   , closeTransport
   , defaultTransportConfig
+  , mkRPCPayloadLimits
   , endpointKindText
   , openPluginServer
   , pluginAuthTokenEnv
@@ -107,6 +109,7 @@ import Topo.Plugin.SDK.Runner
   , pluginManifestFileName
   , runPlugin
   , runPluginSession
+  , runPluginSessionWithLimits
   , runPluginWithManifestCommand
   , writePluginManifestToDirectory
   )
@@ -928,6 +931,155 @@ spec = describe "SDK runner pipe integration" $ do
           expectDataResourceError env RecordNotFound
       shutdownAndWait host done
 
+  it "surfaces an oversized outgoing result immediately with request context" $
+    withTransportPair $ \host plugin -> do
+      limits <- case mkRPCPayloadLimits 300 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      invocationCount <- newIORef (0 :: Int)
+      let oversizedPlugin = generatorPlugin
+            { pdGenerator = fmap (\definition -> definition
+                { gdRun = \ctx -> do
+                    callIndex <- atomicModifyIORef' invocationCount (\n -> (n + 1, n))
+                    if callIndex == 0
+                      then pure (Right defaultGeneratorTickResult
+                        { gtrMetadata = Just (String (Text.replicate 1000 "x"))
+                        })
+                      else if Map.lookup "retained" (pcParams ctx) == Just (String "yes")
+                        then pure (Right defaultGeneratorTickResult)
+                        else pure (Left "runner parameter state was rolled back")
+                }) (pdGenerator generatorPlugin)
+            }
+          request = RPCEnvelope
+            { envType = MsgInvokeGenerator
+            , envPayload = Aeson.toJSON InvokeGenerator
+                { igPayloadVersion = 1
+                , igStageId = "plugin:test-generator"
+                , igSeed = 1
+                , igConfig = Map.singleton "retained" (String "yes")
+                , igTerrain = Null
+                }
+            , envRequestId = Just 991
+            }
+      outcome <- newEmptyMVar
+      _ <- forkFinally
+        (runPluginSessionWithLimits limits oversizedPlugin plugin Map.empty)
+        (putMVar outcome)
+      sendEnvelope host request
+      response <- recvEnvelope host
+      envType response `shouldBe` MsgError
+      envRequestId response `shouldBe` Just 991
+      case Aeson.fromJSON (envPayload response) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) -> do
+          peCode pluginErr `shouldBe` 15
+          peMessage pluginErr `shouldSatisfy` Text.isInfixOf "type=MsgGeneratorResult"
+          peMessage pluginErr `shouldSatisfy` Text.isInfixOf "limit=300"
+      sendEnvelope host request
+        { envPayload = Aeson.toJSON InvokeGenerator
+            { igPayloadVersion = 1
+            , igStageId = "plugin:test-generator"
+            , igSeed = 2
+            , igConfig = Map.empty
+            , igTerrain = Null
+            }
+        , envRequestId = Just 992
+        }
+      resumed <- recvEnvelope host
+      envType resumed `shouldBe` MsgGeneratorResult
+      envRequestId resumed `shouldBe` Just 992
+      sendEnvelope host RPCEnvelope
+        { envType = MsgShutdown
+        , envPayload = object []
+        , envRequestId = Nothing
+        }
+      finished <- timeout 2000000 (takeMVar outcome)
+      case finished of
+        Just (Right ()) -> pure ()
+        Just (Left err) -> expectationFailure ("session failed after reporting oversize: " <> show err)
+        Nothing -> expectationFailure "session did not stop after shutdown"
+
+  it "aborts a callback request after an oversized correlated log" $
+    withTransportPair $ \host plugin -> do
+      limits <- case mkRPCPayloadLimits 300 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      let oversizedLogPlugin = generatorPlugin
+            { pdGenerator = fmap (\definition -> definition
+                { gdRun = \ctx -> do
+                    pcLog ctx (Text.replicate 1000 "x")
+                    pure (Right defaultGeneratorTickResult)
+                }) (pdGenerator generatorPlugin)
+            }
+          request = RPCEnvelope
+            { envType = MsgInvokeGenerator
+            , envPayload = Aeson.toJSON InvokeGenerator
+                { igPayloadVersion = 1
+                , igStageId = "plugin:test-generator"
+                , igSeed = 2
+                , igConfig = Map.empty
+                , igTerrain = Null
+                }
+            , envRequestId = Just 992
+            }
+      outcome <- newEmptyMVar
+      _ <- forkFinally
+        (runPluginSessionWithLimits limits oversizedLogPlugin plugin Map.empty)
+        (putMVar outcome)
+      sendEnvelope host request
+      rejected <- recvEnvelope host
+      envType rejected `shouldBe` MsgError
+      envRequestId rejected `shouldBe` Just 992
+      case Aeson.fromJSON (envPayload rejected) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) ->
+          peMessage pluginErr `shouldSatisfy` Text.isInfixOf "type=MsgLog"
+      sendEnvelope host RPCEnvelope
+        { envType = MsgHeartbeat
+        , envPayload = Aeson.toJSON (Heartbeat "ping")
+        , envRequestId = Just 993
+        }
+      heartbeat <- recvEnvelope host
+      envType heartbeat `shouldBe` MsgHeartbeat
+      envRequestId heartbeat `shouldBe` Just 993
+      stopSessionAndCheck host outcome
+
+  it "compacts an oversized correlated plugin error without closing the session" $
+    withTransportPair $ \host plugin -> do
+      limits <- case mkRPCPayloadLimits 300 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      let oversizedErrorPlugin = generatorPlugin
+            { pdGenerator = fmap (\definition -> definition
+                { gdRun = \_ -> pure (Left (Text.replicate 1000 "x"))
+                }) (pdGenerator generatorPlugin)
+            }
+          request = RPCEnvelope
+            { envType = MsgInvokeGenerator
+            , envPayload = Aeson.toJSON InvokeGenerator
+                { igPayloadVersion = 1
+                , igStageId = "plugin:test-generator"
+                , igSeed = 3
+                , igConfig = Map.empty
+                , igTerrain = Null
+                }
+            , envRequestId = Just 994
+            }
+      outcome <- newEmptyMVar
+      _ <- forkFinally
+        (runPluginSessionWithLimits limits oversizedErrorPlugin plugin Map.empty)
+        (putMVar outcome)
+      sendEnvelope host request
+      rejected <- recvEnvelope host
+      envType rejected `shouldBe` MsgError
+      envRequestId rejected `shouldBe` Just 994
+      case Aeson.fromJSON (envPayload rejected) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) -> do
+          peCode pluginErr `shouldBe` 15
+          peMessage pluginErr `shouldSatisfy` Text.isInfixOf "type=MsgError"
+      stopSessionAndCheck host outcome
+
 withTempDir :: String -> (FilePath -> IO a) -> IO a
 withTempDir label action = bracket setup cleanup action
   where
@@ -1036,6 +1188,19 @@ startSession plugin transport = do
   done <- newEmptyMVar
   _ <- forkFinally (runPluginSession plugin transport Map.empty) (\_ -> putMVar done ())
   pure done
+
+stopSessionAndCheck :: Transport -> MVar (Either SomeException ()) -> IO ()
+stopSessionAndCheck host outcome = do
+  sendEnvelope host RPCEnvelope
+    { envType = MsgShutdown
+    , envPayload = object []
+    , envRequestId = Nothing
+    }
+  finished <- timeout 2000000 (takeMVar outcome)
+  case finished of
+    Just (Right ()) -> pure ()
+    Just (Left err) -> expectationFailure ("session failed after request rejection: " <> show err)
+    Nothing -> expectationFailure "session did not stop after shutdown"
 
 sendEnvelope :: Transport -> RPCEnvelope -> IO ()
 sendEnvelope transport envelope = do

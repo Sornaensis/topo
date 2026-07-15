@@ -39,6 +39,7 @@ accidental/malicious local clients.
 | `TOPO_PLUGIN_AUTH_TOKEN` | `pluginAuthTokenEnv` | Opaque launch token. |
 | `TOPO_PLUGIN_WORLD_ID` | `pluginWorldIdEnv` | Active world identifier or sentinel; advisory launch metadata for plugin authors/diagnostics, not a confinement boundary. |
 | `TOPO_PLUGIN_DATA_ROOT` | `pluginDataRootEnv` | Writable plugin data root selected and created by the host; advisory metadata and save-bundling source, not a sandbox or confinement boundary. |
+| `TOPO_PLUGIN_MAX_FRAME_SIZE_BYTES` | `pluginMaxFrameSizeEnv` | Positive, Word32-safe JSON frame limit selected by the host and injected into the plugin launch. |
 
 `endpointKindText` emits `unix` or `named-pipe`; `parseEndpointKind` also accepts
 legacy spellings such as `unix_socket`, `named_pipe`, and `pipe`.
@@ -57,10 +58,14 @@ The length prefix is a little-endian `Word32` containing the byte count of the
 payload that follows. The payload is a UTF-8 JSON `RPCEnvelope` encoded by
 `Topo.Plugin.RPC.Protocol.encodeMessage`.
 
-`sendMessage`/`recvMessage` use the default maximum frame size;
+`sendMessage`/`recvMessage` use the default 64 MiB maximum frame size;
 `sendMessageWithLimit`/`recvMessageWithLimit` allow tests and callers to enforce
-custom limits. Oversized, truncated, malformed, unsupported, or closed transports
-return `TransportError` values instead of protocol-level `RPCError`s.
+custom limits. `RPCPayloadLimits` validates positive Word32-safe frame and decoded
+budgets; its default decoded terrain budget is 48 MiB (floor 3/4 of the frame).
+Production host and SDK processes parse the dedicated launch variable and use the
+same value in both directions. Oversized, truncated, malformed, unsupported, or
+closed transports return `TransportError` values instead of protocol-level
+`RPCError`s.
 
 ## Key types and functions
 
@@ -68,6 +73,7 @@ return `TransportError` values instead of protocol-level `RPCError`s.
 | --- | --- |
 | `Transport` | Read/write handles plus plugin name for diagnostics. |
 | `TransportConfig` | Pipe/socket directory and connection timeout. |
+| `RPCPayloadLimits` | Validated framed JSON and decoded terrain limits. |
 | `TransportEndpointKind` | `TransportEndpointUnixSocket` or `TransportEndpointNamedPipe`. |
 | `TransportEndpoint` | Kind plus address. |
 | `TransportServer` | Host-side endpoint plus accept/close actions. |

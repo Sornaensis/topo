@@ -27,7 +27,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (UTCTime)
-import Data.Word (Word64)
+import Data.Word (Word32, Word64)
 import System.Directory (doesFileExist, doesPathExist, getCurrentDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Info (os)
@@ -62,6 +62,7 @@ import Topo.Plugin.RPC
   , RPCError(..)
   , RPCFailureEvent(..)
   , RPCFailureSource(..)
+  , applyGeneratorTerrainValueWithLimits
   , awaitRPCFailureEvent
   , checkHealth
   , claimRPCFailureEvent
@@ -69,6 +70,7 @@ import Topo.Plugin.RPC
   , invokeSimulation
   , mutateResource
   , newRPCConnection
+  , newRPCConnectionWithLimits
   , performHandshakeWithAuth
   , peekRPCFailureEvent
   , queryResource
@@ -79,6 +81,7 @@ import Topo.Plugin.RPC
   , sendExternalDataSourceGrantRevocation
   , sendHeartbeat
   , terrainWorldToPayload
+  , encodeBase64Text
   )
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
@@ -95,7 +98,12 @@ import Topo.Plugin.RPC.Transport
   , closeTransport
   , connectPluginEndpoint
   , connectPluginFromEnvironment
+  , defaultRPCPayloadLimits
   , defaultTransportConfig
+  , mkRPCPayloadLimits
+  , parseRPCPayloadLimitsEnvironment
+  , rplMaxDecodedTerrainBytes
+  , rplMaxFrameSizeBytes
   , endpointKindText
   , openPluginServer
   , pluginEndpointEnv
@@ -2614,6 +2622,17 @@ spec = describe "Plugin.RPC" $ do
           Left (TransportFramingError msg) -> msg `shouldSatisfy` Text.isInfixOf "max size"
           other -> expectationFailure ("expected frame size error, got " <> show other)
 
+    it "rejects non-Word32 explicit framing limits on wide platforms" $
+      withConnectedTransports "frame-invalid-limit" $ \host _plugin ->
+        if toInteger (maxBound :: Int) <= toInteger (maxBound :: Word32)
+          then pure ()
+          else do
+            let invalidLimit = fromInteger (toInteger (maxBound :: Word32) + 1)
+            result <- sendMessageWithLimit invalidLimit host ""
+            case result of
+              Left (TransportFramingError msg) -> msg `shouldSatisfy` Text.isInfixOf "exceeds Word32"
+              other -> expectationFailure ("expected invalid limit error, got " <> show other)
+
     it "rejects oversized incoming frames before reading the payload" $
       withConnectedTransports "frame-recv-limit" $ \host plugin -> do
         shouldReturnWithin "plugin send oversized payload" (sendMessage plugin "12345") (Right ())
@@ -2621,6 +2640,77 @@ spec = describe "Plugin.RPC" $ do
         case result of
           Left (TransportFramingError msg) -> msg `shouldSatisfy` Text.isInfixOf "max size"
           other -> expectationFailure ("expected frame size error, got " <> show other)
+
+    it "validates configurable Word32-safe frame and decoded limits" $ do
+      rplMaxFrameSizeBytes defaultRPCPayloadLimits `shouldBe` 64 * 1024 * 1024
+      rplMaxDecodedTerrainBytes defaultRPCPayloadLimits `shouldBe` 48 * 1024 * 1024
+      case mkRPCPayloadLimits 1 of
+        Left err -> expectationFailure (Text.unpack err)
+        Right oneByteLimits -> rplMaxDecodedTerrainBytes oneByteLimits `shouldBe` 0
+      parseRPCPayloadLimitsEnvironment (Just "1") `shouldSatisfy` isRight
+      parseRPCPayloadLimitsEnvironment (Just "1024") `shouldSatisfy` isRight
+      parseRPCPayloadLimitsEnvironment (Just "0") `shouldSatisfy` isLeft
+      parseRPCPayloadLimitsEnvironment (Just "4294967296") `shouldSatisfy` isLeft
+
+    it "validates malformed dimensions even for summary-only payloads" $ do
+      limits <- case mkRPCPayloadLimits 1024 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      let world = emptyWorld (WorldConfig 1) defaultHexGridMeta
+      case applyGeneratorTerrainValueWithLimits limits world (object ["chunk_size" .= (0 :: Int)]) of
+        Left _ -> pure ()
+        Right _ -> expectationFailure "summary-only invalid chunk_size was accepted"
+
+    it "rejects summary counts when the corresponding chunk map is missing" $ do
+      let world = emptyWorld (WorldConfig 1) defaultHexGridMeta
+      case applyGeneratorTerrainValueWithLimits defaultRPCPayloadLimits world
+        (object ["chunk_count" .= (1 :: Int)]) of
+        Left err -> err `shouldSatisfy` Text.isInfixOf "chunk_count mismatch"
+        Right _ -> expectationFailure "missing terrain map count mismatch was accepted"
+
+    it "rejects excessive terrain chunk maps before base64 decode" $ do
+      limits <- case mkRPCPayloadLimits 1024 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      let world = emptyWorld (WorldConfig 1) defaultHexGridMeta
+          payload = object
+            [ "encoding" .= ("base64" :: Text)
+            , "chunk_size" .= (100 :: Int)
+            , "chunk_count" .= (1 :: Int)
+            , "terrain" .= object ["0" .= ("" :: Text)]
+            ]
+      case applyGeneratorTerrainValueWithLimits limits world payload of
+        Left err -> err `shouldSatisfy` Text.isInfixOf "before base64 decode"
+        Right _ -> expectationFailure "expected excessive map to fail structurally"
+
+    it "rejects fixed terrain section trailing bytes before vector decode" $ do
+      limits <- case mkRPCPayloadLimits 4096 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      let world = emptyWorld (WorldConfig 1) defaultHexGridMeta
+          payload = object
+            [ "encoding" .= ("base64" :: Text)
+            , "chunk_size" .= (1 :: Int)
+            , "chunk_count" .= (1 :: Int)
+            , "terrain" .= object ["0" .= encodeBase64Text (BS.replicate 118 0)]
+            ]
+      case applyGeneratorTerrainValueWithLimits limits world payload of
+        Left err -> err `shouldSatisfy` Text.isInfixOf "expected=117 bytes"
+        Right _ -> expectationFailure "expected trailing terrain bytes to fail"
+
+    it "applies explicit connection limits to outgoing host RPC immediately" $
+      withConnectedTransports "connection-limit" $ \host _plugin -> do
+        limits <- case mkRPCPayloadLimits 20 of
+          Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+          Right value -> pure value
+        let conn = newRPCConnectionWithLimits limits baseManifest host Map.empty
+        result <- sendHeartbeat conn
+        case result of
+          Left (RPCTransportError (TransportFramingError msg)) -> do
+            msg `shouldSatisfy` Text.isInfixOf "outgoing RPC type=MsgHeartbeat"
+            msg `shouldSatisfy` Text.isInfixOf "limit=20"
+          other -> expectationFailure ("expected immediate configured send failure, got " <> show other)
+        peekRPCFailureEvent conn `shouldReturn` Nothing
 
     it "rejects implicit stdio fallback without the test/development flag" $
       withCleanPluginTransportEnvironment $ do

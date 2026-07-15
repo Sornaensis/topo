@@ -58,6 +58,7 @@ they must not invent a fixed pipe/socket name.
 | `TOPO_PLUGIN_AUTH_TOKEN` | Opaque launch token for the session. |
 | `TOPO_PLUGIN_WORLD_ID` | Active world identifier or a host sentinel; advisory metadata for plugin authors/diagnostics, not a confinement boundary. |
 | `TOPO_PLUGIN_DATA_ROOT` | Writable plugin data root selected and created by the host; advisory convenience metadata and the host's save-bundling source, not a sandbox or confinement boundary. |
+| `TOPO_PLUGIN_MAX_FRAME_SIZE_BYTES` | Positive, Word32-safe JSON payload limit selected by the host; the SDK validates and applies it symmetrically. |
 
 `TOPO_PLUGIN_STDIO_COMPAT=1` is only an explicit test/development compatibility
 mode and is stripped from production plugin launches. Production launch uses
@@ -82,9 +83,13 @@ Every frame is a little-endian length prefix followed by a UTF-8 JSON payload:
 └──────────────────┴──────────────────┘
 ```
 
-The length is a `Word32` byte count for the JSON payload only. The transport
-rejects truncated frames, oversized frames when a limit is supplied, and closed
-or unsupported endpoints.
+The length is a `Word32` byte count for the JSON payload only. The default limit
+is 64 MiB. Production launches use `TOPO_PLUGIN_MAX_FRAME_SIZE_BYTES`; missing
+means the default, while malformed, zero, negative, or non-Word32 values fail
+startup. The host and SDK apply the selected value to every send and receive.
+The decoded binary terrain aggregate is separately bounded to at most floor 3/4
+of the frame (48 MiB by default). The transport rejects truncated or oversized
+frames and closed or unsupported endpoints.
 
 ## Envelope format
 
@@ -392,7 +397,19 @@ The host sends capability-scoped terrain payloads with these stable keys:
 Chunk maps are objects keyed by chunk ID. Each value is a base64 string produced
 from the binary `Topo.Export` chunk codec for that layer. Simulation terrain
 writes use the same `encoding`, `chunk_size`, `terrain`, `climate`, and
-`vegetation` shape and may omit layers that did not change.
+`vegetation` shape and may omit layers that did not change. Receivers validate
+checked `chunk_size * chunk_size`, summary/map counts, aggregate decoded size,
+base64 shape, exact binary section lengths, river segment-count arithmetic, and
+trailing bytes before allocating decoded vectors.
+
+Haskell embedded hosts construct frame limits with `mkRPCPayloadLimits`, which
+derives the decoded terrain budget, and use `newRPCConnectionWithLimits`. Embedded
+SDK harnesses use `runPluginSessionWithLimits`; legacy entry points retain the
+64 MiB default. A locally oversized correlated response is replaced with a
+compact `error` carrying its message type, request ID, actual encoded bytes, and
+limit, and that callback/request is aborted without emitting a second response.
+If even the compact error or an underlying transport write fails, a structured
+`SDKSessionError` surfaces and the session transport closes.
 
 ## Backend-neutral external data-source payloads
 

@@ -210,7 +210,8 @@ encodeTerrainChunk config chunk = do
     putVectorFloat n (tcPlateVelY chunk)
 
 decodeTerrainChunk :: WorldConfig -> BS.ByteString -> Either ExportError TerrainChunk
-decodeTerrainChunk config bytes =
+decodeTerrainChunk config bytes = do
+  validateFixedChunkLength "terrain" 113 config bytes
   decodeWith (getTerrainChunk config) bytes
 
 encodeClimateChunk :: WorldConfig -> ClimateChunk -> Either ExportError BS.ByteString
@@ -234,7 +235,8 @@ encodeClimateChunk config chunk = do
     putVectorFloat n (ccPrecipSeasonality chunk)
 
 decodeClimateChunk :: WorldConfig -> BS.ByteString -> Either ExportError ClimateChunk
-decodeClimateChunk config bytes =
+decodeClimateChunk config bytes = do
+  validateFixedChunkLength "climate" 28 config bytes
   decodeWith (getClimateChunk config) bytes
 
 encodeWeatherChunk :: WorldConfig -> WeatherChunk -> Either ExportError BS.ByteString
@@ -272,7 +274,8 @@ encodeWeatherChunk config chunk = do
     putVectorFloat n (wcCloudWaterHigh chunk)
 
 decodeWeatherChunk :: WorldConfig -> BS.ByteString -> Either ExportError WeatherChunk
-decodeWeatherChunk config bytes =
+decodeWeatherChunk config bytes = do
+  validateFixedChunkLength "weather" 56 config bytes
   decodeWith (getWeatherChunk config) bytes
 
 encodeRiverChunk :: WorldConfig -> RiverChunk -> Either ExportError BS.ByteString
@@ -308,8 +311,18 @@ encodeRiverChunk config chunk = do
     putVectorWord16 segCount (rcSegOrder chunk)
 
 decodeRiverChunk :: WorldConfig -> BS.ByteString -> Either ExportError RiverChunk
-decodeRiverChunk config bytes =
-  decodeWith (getRiverChunk config) bytes
+decodeRiverChunk config bytes = do
+  tileCount <- checkedChunkTileCount config
+  let segmentCountOffset = 4 + 34 * tileCount
+      minimumLength = segmentCountOffset + 4
+      actual = toInteger (BS.length bytes)
+  if actual < minimumLength
+    then structuralLengthError "river" minimumLength actual
+    else do
+      segmentCount <- readWord32At "river segment count" segmentCountOffset bytes
+      let expected = 12 + 38 * tileCount + 8 * toInteger segmentCount
+      validateExactChunkLength "river" expected bytes
+      decodeWith (getRiverChunk config) bytes
 
 encodeGroundwaterChunk :: WorldConfig -> GroundwaterChunk -> Either ExportError BS.ByteString
 encodeGroundwaterChunk config chunk = do
@@ -332,8 +345,14 @@ encodeGroundwaterChunk config chunk = do
       putVectorFloat n (gwRootZoneMoisture chunk)
 
 decodeGroundwaterChunk :: WorldConfig -> BS.ByteString -> Either ExportError GroundwaterChunk
-decodeGroundwaterChunk config bytes =
-  decodeWith (getGroundwaterChunk config) bytes
+decodeGroundwaterChunk config bytes = do
+  tileCount <- checkedChunkTileCount config
+  let legacyLength = 4 + 16 * tileCount
+      extendedLength = 4 + 28 * tileCount
+      actual = toInteger (BS.length bytes)
+  if actual == legacyLength || actual == extendedLength
+    then decodeWith (getGroundwaterChunk config) bytes
+    else structuralLengthErrorAlternatives "groundwater" [legacyLength, extendedLength] actual
 
 encodeVolcanismChunk :: WorldConfig -> VolcanismChunk -> Either ExportError BS.ByteString
 encodeVolcanismChunk config chunk = do
@@ -358,7 +377,8 @@ encodeVolcanismChunk config chunk = do
     putVectorFloat n (vcDepositPotential chunk)
 
 decodeVolcanismChunk :: WorldConfig -> BS.ByteString -> Either ExportError VolcanismChunk
-decodeVolcanismChunk config bytes =
+decodeVolcanismChunk config bytes = do
+  validateFixedChunkLength "volcanism" 26 config bytes
   decodeWith (getVolcanismChunk config) bytes
 
 encodeGlacierChunk :: WorldConfig -> GlacierChunk -> Either ExportError BS.ByteString
@@ -380,7 +400,8 @@ encodeGlacierChunk config chunk = do
     putVectorFloat n (glDepositPotential chunk)
 
 decodeGlacierChunk :: WorldConfig -> BS.ByteString -> Either ExportError GlacierChunk
-decodeGlacierChunk config bytes =
+decodeGlacierChunk config bytes = do
+  validateFixedChunkLength "glacier" 24 config bytes
   decodeWith (getGlacierChunk config) bytes
 
 -- | Encode a 'VegetationChunk' to binary (cover, albedo, density).
@@ -398,7 +419,8 @@ encodeVegetationChunk config chunk = do
 
 -- | Decode a 'VegetationChunk' from binary (cover, albedo, density).
 decodeVegetationChunk :: WorldConfig -> BS.ByteString -> Either ExportError VegetationChunk
-decodeVegetationChunk config bytes =
+decodeVegetationChunk config bytes = do
+  validateFixedChunkLength "vegetation" 12 config bytes
   decodeWith (getVegetationChunk config) bytes
 
 -- | Encode a 'WaterBodyChunk' to binary.
@@ -423,7 +445,8 @@ encodeWaterBodyChunk config chunk = do
 
 -- | Decode a 'WaterBodyChunk' from binary.
 decodeWaterBodyChunk :: WorldConfig -> BS.ByteString -> Either ExportError WaterBodyChunk
-decodeWaterBodyChunk config bytes =
+decodeWaterBodyChunk config bytes = do
+  validateFixedChunkLength "water body" 14 config bytes
   decodeWith (getWaterBodyChunkBin config) bytes
 
 exportTerrainChunks :: TerrainWorld -> Either ExportError [(ChunkId, BS.ByteString)]
@@ -594,11 +617,56 @@ encodeEntry config encoder (key, chunk) = do
   bytes <- encoder config chunk
   pure (ChunkId key, bytes)
 
+tshow :: Show a => a -> Text
+tshow = Text.pack . show
+
+checkedChunkTileCount :: WorldConfig -> Either ExportError Integer
+checkedChunkTileCount config =
+  let chunkSize = toInteger (wcChunkSize config)
+      tileCount = chunkSize * chunkSize
+  in if chunkSize <= 0
+      then Left (ExportDecodeError "decode: chunk_size must be positive")
+      else if tileCount > toInteger (maxBound :: Int)
+        then Left (ExportDecodeError "decode: chunk_size squared exceeds platform Int")
+        else Right tileCount
+
+validateFixedChunkLength :: Text -> Integer -> WorldConfig -> BS.ByteString -> Either ExportError ()
+validateFixedChunkLength label bytesPerTile config bytes = do
+  tileCount <- checkedChunkTileCount config
+  validateExactChunkLength label (4 + bytesPerTile * tileCount) bytes
+
+validateExactChunkLength :: Text -> Integer -> BS.ByteString -> Either ExportError ()
+validateExactChunkLength label expected bytes =
+  let actual = toInteger (BS.length bytes)
+  in if actual == expected then Right () else structuralLengthError label expected actual
+
+structuralLengthError :: Text -> Integer -> Integer -> Either ExportError a
+structuralLengthError label expected actual = Left (ExportDecodeError
+  ("decode: " <> label <> " chunk length mismatch: expected " <> tshow expected
+    <> " bytes, actual " <> tshow actual <> " bytes"))
+
+structuralLengthErrorAlternatives :: Text -> [Integer] -> Integer -> Either ExportError a
+structuralLengthErrorAlternatives label expected actual = Left (ExportDecodeError
+  ("decode: " <> label <> " chunk length mismatch: expected one of ["
+    <> Text.intercalate ", " (map tshow expected) <> "] bytes, actual "
+    <> tshow actual <> " bytes"))
+
+readWord32At :: Text -> Integer -> BS.ByteString -> Either ExportError Word32
+readWord32At label offset bytes
+  | offset > toInteger (maxBound :: Int) = Left (ExportDecodeError (label <> " offset exceeds platform Int"))
+  | otherwise =
+      case runGetOrFail getWord32le (BL.fromStrict (BS.drop (fromInteger offset) bytes)) of
+        Left (_, _, err) -> Left (ExportDecodeError (label <> ": " <> Text.pack err))
+        Right (_, _, value) -> Right value
+
 decodeWith :: Get a -> BS.ByteString -> Either ExportError a
 decodeWith getter bytes =
   case runGetOrFail getter (BL.fromStrict bytes) of
     Left (_, _, err) -> Left (ExportDecodeError (Text.pack err))
-    Right (_, _, chunk) -> Right chunk
+    Right (remaining, _, chunk)
+      | BL.null remaining -> Right chunk
+      | otherwise -> Left (ExportDecodeError
+          ("decode: trailing bytes: " <> tshow (BL.length remaining)))
 
 getTerrainChunk :: WorldConfig -> Get TerrainChunk
 getTerrainChunk config = do

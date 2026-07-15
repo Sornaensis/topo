@@ -313,8 +313,26 @@ validateQueryResult schema request result = firstFailure
       then Nothing
       else Just (DataResourceFailure SchemaValidationFailed
         (renderDataRecordValidationError (DRVResourceMismatch (qrResource request) (qrsResource result))))
+  , if recordCount <= effectivePageSize
+      then Nothing
+      else Just (DataResourceFailure SchemaValidationFailed
+        ("query result record count " <> Text.pack (show recordCount)
+          <> " exceeds page limit " <> Text.pack (show effectivePageSize)))
+  , case qrsTotalCount result of
+      Just totalCount | totalCount < 0 -> Just (DataResourceFailure SchemaValidationFailed
+        "query result total_count must be greater than or equal to 0")
+      Just totalCount | totalCount < recordCount -> Just (DataResourceFailure SchemaValidationFailed
+        ("query result total_count " <> Text.pack (show totalCount)
+          <> " is less than returned record count " <> Text.pack (show recordCount)))
+      _ -> Nothing
   , validationFailure (concatMap (validateDataRecordComplete schema) (qrsRecords result))
   ]
+  where
+    recordCount = length (qrsRecords result)
+    effectivePageSize = maybe
+      (dpDefaultPageSize (drsPagination schema))
+      id
+      (qrPageSize request)
 
 validateMutateResult :: DataResourceSchema -> MutateResource -> MutateResult -> Maybe DataResourceFailure
 validateMutateResult schema request result

@@ -27,6 +27,8 @@ module Topo.Plugin.SDK.Runner
     runPlugin
   , runPluginWithManifestCommand
   , runPluginSession
+  , runPluginSessionWithLimits
+  , SDKSessionError(..)
     -- * Manifest generation
   , pluginManifestFileName
   , generateManifest
@@ -35,12 +37,13 @@ module Topo.Plugin.SDK.Runner
   , writePluginManifestToDirectory
   ) where
 
-import Control.Exception (SomeException, catch)
+import Control.Exception (Exception, SomeException, catch, finally, fromException, onException, throwIO)
 import Data.Aeson (Value(..), (.=), object)
 import Data.List (nub)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Map.Strict (Map)
@@ -97,22 +100,31 @@ import Topo.Plugin.RPC.ExternalDataSource
   )
 import Topo.Plugin.RPC.Transport
   ( Transport(..)
-  , sendMessage
-  , recvMessage
+  , TransportError(..)
+  , RPCPayloadLimits
+  , defaultRPCPayloadLimits
+  , rplMaxFrameSizeBytes
+  , sendMessageWithLimit
+  , recvMessageWithLimit
   , closeTransport
   , connectPluginFromEnvironment
   , pluginAuthTokenEnv
   , pluginSessionEnv
+  , readRPCPayloadLimitsFromEnvironment
   )
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
+import Topo.Plugin.DataResource.Validation
+  ( validateQueryResourceRequest
+  , validateQueryResult
+  )
 import Topo.Plugin.RPC.DataService
-  ( DataMutation(..), DataQuery(..), DataResourceErrorCode(..)
+  ( DataMutation(..), DataResourceErrorCode(..)
   , DataResourceFailure(..), QueryResource(..), QueryResult(..), DataRecord(..)
   , MutateResource(..), MutateResult(..)
   , dataResourceErrorCodeText, dataResourceErrorRPCCode, dataResourceFailureFromText
   )
-import Topo.Plugin.SDK.Payload (decodeTerrainPayload)
+import Topo.Plugin.SDK.Payload (decodeTerrainPayloadWithLimits)
 import Topo.Simulation.Schedule (defaultScheduleDecl)
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld, emptyWorld)
@@ -259,6 +271,16 @@ writePluginManifestToDirectory pluginDir pd = do
 -- Entry point
 ------------------------------------------------------------------------
 
+-- | Fatal SDK transport failure. Send errors carry the known envelope type,
+-- request id, actual encoded size, configured limit, and transport cause.
+data SDKSessionError
+  = SDKReceiveFailure !TransportError
+  | SDKSendFailure !RPCMessageType !(Maybe Word64) !Int !Integer !TransportError
+  | SDKRequestPayloadRejected !RPCMessageType !Word64 !Int !Integer
+  deriving (Show)
+
+instance Exception SDKSessionError
+
 -- | Run a plugin.
 --
 -- This is the standard host-launched entry point for a plugin executable.
@@ -291,19 +313,25 @@ runPlugin pd = do
 
   -- Connect via the host-created endpoint; stdio requires explicit
   -- test/development compatibility opt-in.
-  transportResult <- connectPluginFromEnvironment (pdName pd) stdin stdout
-  case transportResult of
+  limitsResult <- readRPCPayloadLimitsFromEnvironment
+  case limitsResult of
     Left err -> do
-      TextIO.hPutStrLn stderr ("SDK: transport error: " <> Text.pack (show err))
-      pure ()
-    Right transport -> do
-      -- Build default param map
-      let defaultParams = Map.fromList
-            [ (paramName p, paramDefault p)
-            | p <- pdParams pd
-            ]
-      runPluginSession pd transport defaultParams
-      closeTransport transport
+      TextIO.hPutStrLn stderr ("SDK: invalid RPC payload limits: " <> err)
+      exitFailure
+    Right limits -> do
+      transportResult <- connectPluginFromEnvironment (pdName pd) stdin stdout
+      case transportResult of
+        Left err -> do
+          TextIO.hPutStrLn stderr ("SDK: transport error: " <> Text.pack (show err))
+          exitFailure
+        Right transport -> do
+          -- Build default param map
+          let defaultParams = Map.fromList
+                [ (paramName p, paramDefault p)
+                | p <- pdParams pd
+                ]
+          runPluginSessionWithLimits limits pd transport defaultParams
+            `finally` closeTransport transport
 
 -- | Entry point wrapper that supports an explicit manifest-only install action.
 --
@@ -338,9 +366,19 @@ runPluginWithManifestCommand pd = do
 -- Intended for in-process integration tests and hosts that manage
 -- transport lifecycle externally.
 runPluginSession :: PluginDef -> Transport -> Map Text Value -> IO ()
-runPluginSession pd transport params = do
+runPluginSession = runPluginSessionWithLimits defaultRPCPayloadLimits
+
+-- | Run an embedded SDK session with explicit symmetric payload limits.
+runPluginSessionWithLimits
+  :: RPCPayloadLimits
+  -> PluginDef
+  -> Transport
+  -> Map Text Value
+  -> IO ()
+runPluginSessionWithLimits limits pd transport params = do
   resetExternalOperationCache pd
-  messageLoop pd transport params Nothing
+  messageLoop limits pd transport params Nothing
+    `onException` closeTransport transport
 
 type ExternalOperationKey = (RPCExternalDataSourceOperation, Text)
 
@@ -423,275 +461,268 @@ scrubLaunchAuthEnvironment = do
   unsetEnv pluginSessionEnv
   unsetEnv pluginAuthTokenEnv
 
--- | Main message loop.  Reads RPC envelopes and dispatches them.
-messageLoop :: PluginDef -> Transport -> Map Text Value -> Maybe FilePath -> IO ()
-messageLoop pd transport params worldPath = do
-  result <- recvMessage transport
-  case result of
-    Left _err -> do
-      -- Transport error (EOF, broken pipe) — shut down
-      pure ()
+-- | Main message loop. Reads RPC envelopes with the same limit used for every
+-- response. Any receive or send failure aborts the session deterministically.
+messageLoop :: RPCPayloadLimits -> PluginDef -> Transport -> Map Text Value -> Maybe FilePath -> IO ()
+messageLoop limits pd transport params worldPath = do
+  result <- recvMessageWithLimit (fromIntegral (rplMaxFrameSizeBytes limits)) transport
+  nextState <- case result of
+    Left err -> throwIO (SDKReceiveFailure err)
     Right bs -> case decodeMessage bs of
-      Left _decodeErr -> do
-        -- Bad message — send error response and continue
-        sendErrorResponse transport Nothing 1 "Failed to decode RPC message"
-        messageLoop pd transport params worldPath
-      Right envelope -> case envType envelope of
+      Left decodeErr -> do
+        sendErrorResponse limits transport Nothing 1 ("Failed to decode RPC message: " <> decodeErr)
+        next params worldPath
+      Right envelope -> dispatch envelope `catch` handleSDKRequestFailure
+  case nextState of
+    Nothing -> pure ()
+    Just (nextParams, nextWorldPath) ->
+      messageLoop limits pd transport nextParams nextWorldPath
+  where
+    next nextParams nextWorldPath = pure (Just (nextParams, nextWorldPath))
 
-        MsgShutdown -> do
-          -- Clean exit
-          pure ()
+    handleSDKRequestFailure :: SDKSessionError -> IO (Maybe (Map Text Value, Maybe FilePath))
+    handleSDKRequestFailure err = case err of
+      SDKRequestPayloadRejected _ _ _ _ -> next params worldPath
+      _ -> throwIO err
 
-        MsgHandshake -> do
-          case Aeson.fromJSON (envPayload envelope) of
-            Aeson.Error _ -> do
-              sendErrorResponse transport (envRequestId envelope) 8 "Invalid handshake payload"
-              messageLoop pd transport params worldPath
-            Aeson.Success (hs :: Handshake) -> do
-              mAuthProof <- consumeLaunchAuthProofFromEnvironment (hsAuthChallenge hs)
-              let newWorldPath = fmap Text.unpack (hsWorldPath hs)
-                  ack = HandshakeAck
-                    { haProtocolVersion = currentProtocolVersion
-                    , haDataDirectory   = fmap Text.pack (pdDataDirectory pd)
-                    , haResources       = map drdSchema (pdDataResources pd)
-                    , haSessionId       = fst <$> mAuthProof
-                    , haAuthProof       = snd <$> mAuthProof
-                    }
-                  ackEnvelope = RPCEnvelope
-                    { envType    = MsgHandshakeAck
-                    , envPayload = Aeson.toJSON ack
-                    , envRequestId = envRequestId envelope
-                    }
-              _ <- sendMessage transport (encodeMessage ackEnvelope)
-              messageLoop pd transport params newWorldPath
+    preserveStateOnRejected nextParams nextWorld action = catch action $ \err -> case err of
+      SDKRequestPayloadRejected _ _ _ _ -> next nextParams nextWorld
+      _ -> throwIO err
 
-        MsgWorldChanged -> do
-          case Aeson.fromJSON (envPayload envelope) of
-            Aeson.Error _ ->
-              messageLoop pd transport params worldPath
-            Aeson.Success (wc :: WorldChanged) -> do
-              let newWorldPath = fmap Text.unpack (wchWorldPath wc)
-              messageLoop pd transport params newWorldPath
+    dispatch :: RPCEnvelope -> IO (Maybe (Map Text Value, Maybe FilePath))
+    dispatch envelope = case envType envelope of
+      MsgShutdown -> pure Nothing
 
-        MsgQueryResource -> do
-          case Aeson.fromJSON (envPayload envelope) of
-            Aeson.Error err -> do
-              sendDataResourceErrorResponse transport (envRequestId envelope) SchemaValidationFailed ("Invalid query payload: " <> Text.pack err)
-              messageLoop pd transport params worldPath
-            Aeson.Success (qr :: QueryResource) -> do
-              let resourceName = qrResource qr
-              case findHandler resourceName (pdDataResources pd) of
-                Nothing -> do
-                  sendDataResourceErrorResponse transport (envRequestId envelope) ResourceNotFound ("Unknown resource: " <> resourceName)
-                  messageLoop pd transport params worldPath
-                Just drd -> case querySupportError (drdSchema drd) qr of
-                  Just errMsg -> do
-                    sendDataResourceErrorResponse transport (envRequestId envelope) QueryUnsupported errMsg
-                    messageLoop pd transport params worldPath
-                  Nothing -> case dhQuery (drdHandler drd) of
-                    Nothing -> do
-                      sendDataResourceErrorResponse transport (envRequestId envelope) OperationNotSupported ("Resource '" <> resourceName <> "' does not support queries")
-                      messageLoop pd transport params worldPath
-                    Just handler -> do
-                      let ctx = makeDataContext params worldPath transport (envRequestId envelope)
-                      runResult <- catch
-                        (handler ctx (qrQuery qr))
-                        (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
-                      case runResult of
-                        Left errMsg ->
-                          sendDataResourceFailureResponse transport (envRequestId envelope) (dataResourceFailureFromText errMsg)
-                        Right result -> do
-                          let resEnv = RPCEnvelope
-                                { envType    = MsgQueryResult
-                                , envPayload = Aeson.toJSON result
-                                , envRequestId = envRequestId envelope
-                                }
-                          _ <- sendMessage transport (encodeMessage resEnv)
-                          pure ()
-                      messageLoop pd transport params worldPath
-
-        MsgMutateResource -> do
-          case Aeson.fromJSON (envPayload envelope) of
-            Aeson.Error err -> do
-              sendDataResourceErrorResponse transport (envRequestId envelope) SchemaValidationFailed ("Invalid mutate payload: " <> Text.pack err)
-              messageLoop pd transport params worldPath
-            Aeson.Success (mr :: MutateResource) -> do
-              let resourceName = mrResource mr
-              case findHandler resourceName (pdDataResources pd) of
-                Nothing -> do
-                  sendDataResourceErrorResponse transport (envRequestId envelope) ResourceNotFound ("Unknown resource: " <> resourceName)
-                  messageLoop pd transport params worldPath
-                Just drd -> case mutationSupportError (drdSchema drd) (mrMutation mr) of
-                  Just errMsg -> do
-                    sendDataResourceErrorResponse transport (envRequestId envelope) OperationNotSupported errMsg
-                    messageLoop pd transport params worldPath
-                  Nothing -> case dhMutate (drdHandler drd) of
-                    Nothing -> do
-                      sendDataResourceErrorResponse transport (envRequestId envelope) OperationNotSupported ("Resource '" <> resourceName <> "' does not support mutations")
-                      messageLoop pd transport params worldPath
-                    Just handler -> do
-                      let ctx = makeDataContext params worldPath transport (envRequestId envelope)
-                      runResult <- catch
-                        (handler ctx (mrMutation mr))
-                        (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
-                      case runResult of
-                        Left errMsg ->
-                          sendDataResourceFailureResponse transport (envRequestId envelope) (dataResourceFailureFromText errMsg)
-                        Right result -> do
-                          let resEnv = RPCEnvelope
-                                { envType    = MsgMutateResult
-                                , envPayload = Aeson.toJSON result
-                                , envRequestId = envRequestId envelope
-                                }
-                          _ <- sendMessage transport (encodeMessage resEnv)
-                          pure ()
-                      messageLoop pd transport params worldPath
-
-        MsgInvokeGenerator -> do
-          case pdGenerator pd of
-            Nothing -> do
-              sendErrorResponse transport (envRequestId envelope) 2 "Plugin has no generator"
-              messageLoop pd transport params worldPath
-            Just gd -> do
-              case Aeson.fromJSON (envPayload envelope) of
-                Aeson.Error _ -> do
-                  sendErrorResponse transport (envRequestId envelope) 6 "Invalid invoke_generator payload"
-                  messageLoop pd transport params worldPath
-                Aeson.Success (ig :: InvokeGenerator) -> do
-                  let mergedParams = Map.union (igConfig ig) params
-                  case makeTerrainContext
-                    mergedParams
-                    (igTerrain ig)
-                    Nothing
-                    Map.empty
-                    (igSeed ig)
-                    worldPath
-                    (sendLogMessage transport (envRequestId envelope))
-                    (sendProgress transport (envRequestId envelope)) of
-                    Left err -> do
-                      sendErrorResponse transport (envRequestId envelope) 6 ("Invalid terrain payload: " <> err)
-                      messageLoop pd transport mergedParams worldPath
-                    Right ctx -> do
-                      runResult <- catch
-                        (gdRun gd ctx)
-                        (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
-                      case runResult of
-                        Left errMsg ->
-                          sendErrorResponse transport (envRequestId envelope) 3 errMsg
-                        Right generatorResult ->
-                          sendGeneratorResult transport (envRequestId envelope) generatorResult
-                      messageLoop pd transport mergedParams worldPath
-
-        MsgInvokeSimulation -> do
-          case pdSimulation pd of
-            Nothing -> do
-              sendErrorResponse transport (envRequestId envelope) 4 "Plugin has no simulation"
-              messageLoop pd transport params worldPath
-            Just sd -> do
-              case Aeson.fromJSON (envPayload envelope) of
-                Aeson.Error _ -> do
-                  sendErrorResponse transport (envRequestId envelope) 7 "Invalid invoke_simulation payload"
-                  messageLoop pd transport params worldPath
-                Aeson.Success (is' :: InvokeSimulation) -> do
-                  let mergedParams = Map.union (isConfig is') params
-                  case makeTerrainContext
-                    mergedParams
-                    (isTerrain is')
-                    (Just (isOwnOverlay is'))
-                    (valueObjectToMap (isOverlays is'))
-                    0
-                    worldPath
-                    (sendLogMessage transport (envRequestId envelope))
-                    (sendProgress transport (envRequestId envelope)) of
-                    Left err -> do
-                      sendErrorResponse transport (envRequestId envelope) 7 ("Invalid terrain payload: " <> err)
-                      messageLoop pd transport mergedParams worldPath
-                    Right ctx -> do
-                      runResult <- catch
-                        (sdTick sd ctx)
-                        (\e -> pure (Left (Text.pack (show (e :: SomeException)))))
-                      case runResult of
-                        Left errMsg ->
-                          sendErrorResponse transport (envRequestId envelope) 5 errMsg
-                        Right simulationResult ->
-                          sendSimulationResult transport (envRequestId envelope) simulationResult
-                      messageLoop pd transport mergedParams worldPath
-
-        MsgHeartbeat -> do
-          let hbEnvelope = RPCEnvelope
-                { envType = MsgHeartbeat
-                , envPayload = Aeson.toJSON (Heartbeat { hbStatus = "ok" })
-                , envRequestId = envRequestId envelope
+      MsgHandshake -> case Aeson.fromJSON (envPayload envelope) of
+        Aeson.Error err -> do
+          sendErrorResponse limits transport (envRequestId envelope) 8
+            ("Invalid handshake payload: " <> Text.pack err)
+          next params worldPath
+        Aeson.Success (hs :: Handshake) -> do
+          mAuthProof <- consumeLaunchAuthProofFromEnvironment (hsAuthChallenge hs)
+          let newWorldPath = fmap Text.unpack (hsWorldPath hs)
+              ack = HandshakeAck
+                { haProtocolVersion = currentProtocolVersion
+                , haDataDirectory = fmap Text.pack (pdDataDirectory pd)
+                , haResources = map drdSchema (pdDataResources pd)
+                , haSessionId = fst <$> mAuthProof
+                , haAuthProof = snd <$> mAuthProof
                 }
-          _ <- sendMessage transport (encodeMessage hbEnvelope)
-          messageLoop pd transport params worldPath
+          sendSDKEnvelope limits transport RPCEnvelope
+            { envType = MsgHandshakeAck
+            , envPayload = Aeson.toJSON ack
+            , envRequestId = envRequestId envelope
+            }
+          next params newWorldPath
 
-        MsgHealthCheck -> do
-          let healthEnvelope = RPCEnvelope
-                { envType = MsgHealthStatus
-                , envPayload = Aeson.toJSON (HealthStatus
-                    { hstHealthy = True
-                    , hstMessage = "ok"
-                    })
-                , envRequestId = envRequestId envelope
-                }
-          _ <- sendMessage transport (encodeMessage healthEnvelope)
-          messageLoop pd transport params worldPath
+      MsgWorldChanged -> case Aeson.fromJSON (envPayload envelope) of
+        Aeson.Error _ -> next params worldPath
+        Aeson.Success (wc :: WorldChanged) ->
+          next params (fmap Text.unpack (wchWorldPath wc))
 
-        MsgExternalDataSourceStatusRequest -> do
-          case Aeson.fromJSON (envPayload envelope) of
-            Aeson.Error err -> do
-              sendErrorResponseIfCorrelated transport envelope 10 ("Invalid external data-source status payload: " <> Text.pack err)
-              messageLoop pd transport params worldPath
-            Aeson.Success (request :: RPCExternalDataSourceStatusRequest) -> do
-              let statusEnvelope = RPCEnvelope
-                    { envType = MsgExternalDataSourceStatus
-                    , envPayload = Aeson.toJSON (externalDataSourceStatusReportFromManifest (generateManifest pd) request)
-                    , envRequestId = envRequestId envelope
-                    }
-              sendResponseIfCorrelated transport envelope statusEnvelope
-              messageLoop pd transport params worldPath
-
-        MsgExternalDataSourceGrant -> do
-          case Aeson.fromJSON (envPayload envelope) of
-            Aeson.Error err -> do
-              sendErrorResponseIfCorrelated transport envelope 11 ("Invalid external data-source grant payload: " <> Text.pack err)
-              messageLoop pd transport params worldPath
-            Aeson.Success (grant :: RPCExternalDataSourceGrantMessage) -> do
-              cachedResult <- case envRequestId envelope of
-                Nothing -> pure Nothing
-                Just _ -> lookupExternalOperationResult pd ExternalDataSourceGrantOperation (redsgmOperationId grant)
-              case cachedResult of
-                Just result -> sendCachedExternalDataSourceOperationResult transport envelope result
+      MsgQueryResource -> case Aeson.fromJSON (envPayload envelope) of
+        Aeson.Error err -> do
+          sendDataResourceErrorResponse limits transport (envRequestId envelope)
+            SchemaValidationFailed ("Invalid query payload: " <> Text.pack err)
+          next params worldPath
+        Aeson.Success (qr :: QueryResource) ->
+          case findHandler (qrResource qr) (pdDataResources pd) of
+            Nothing -> do
+              sendDataResourceErrorResponse limits transport (envRequestId envelope)
+                ResourceNotFound ("Unknown resource: " <> qrResource qr)
+              next params worldPath
+            Just drd -> case validateQueryResourceRequest (drdSchema drd) qr of
+              Just failure -> do
+                sendDataResourceFailureResponse limits transport (envRequestId envelope) failure
+                next params worldPath
+              Nothing -> case dhQuery (drdHandler drd) of
                 Nothing -> do
-                  handlerResult <- runExternalDataSourceGrantHandler pd grant
-                  operationResult <- case handlerResult of
-                    Left err -> sendExternalDataSourceGrantFailure transport envelope pd grant err
-                    Right () -> sendExternalDataSourceGrantSuccess transport envelope pd grant
-                  mapM_ (cacheExternalOperationResult pd) operationResult
-              messageLoop pd transport params worldPath
+                  sendDataResourceErrorResponse limits transport (envRequestId envelope)
+                    OperationNotSupported ("Resource '" <> qrResource qr <> "' does not support queries")
+                  next params worldPath
+                Just handler -> do
+                  let ctx = makeDataContext limits params worldPath transport (envRequestId envelope)
+                  runResult <- catchPluginResult (handler ctx (qrQuery qr))
+                  case runResult of
+                    Left errMsg -> sendDataResourceFailureResponse limits transport
+                      (envRequestId envelope) (dataResourceFailureFromText errMsg)
+                    Right queryResult -> case validateQueryResult (drdSchema drd) qr queryResult of
+                      Just failure -> sendDataResourceFailureResponse limits transport
+                        (envRequestId envelope) failure
+                      Nothing -> sendSDKEnvelope limits transport RPCEnvelope
+                        { envType = MsgQueryResult
+                        , envPayload = Aeson.toJSON queryResult
+                        , envRequestId = envRequestId envelope
+                        }
+                  next params worldPath
 
-        MsgExternalDataSourceRevoke -> do
-          case Aeson.fromJSON (envPayload envelope) of
-            Aeson.Error err -> do
-              sendErrorResponseIfCorrelated transport envelope 12 ("Invalid external data-source revocation payload: " <> Text.pack err)
-              messageLoop pd transport params worldPath
-            Aeson.Success (revocation :: RPCExternalDataSourceGrantRevocation) -> do
-              cachedResult <- case envRequestId envelope of
-                Nothing -> pure Nothing
-                Just _ -> lookupExternalOperationResult pd ExternalDataSourceRevokeOperation (redsrvOperationId revocation)
-              case cachedResult of
-                Just result -> sendCachedExternalDataSourceOperationResult transport envelope result
+      MsgMutateResource -> case Aeson.fromJSON (envPayload envelope) of
+        Aeson.Error err -> do
+          sendDataResourceErrorResponse limits transport (envRequestId envelope)
+            SchemaValidationFailed ("Invalid mutate payload: " <> Text.pack err)
+          next params worldPath
+        Aeson.Success (mr :: MutateResource) ->
+          case findHandler (mrResource mr) (pdDataResources pd) of
+            Nothing -> do
+              sendDataResourceErrorResponse limits transport (envRequestId envelope)
+                ResourceNotFound ("Unknown resource: " <> mrResource mr)
+              next params worldPath
+            Just drd -> case mutationSupportError (drdSchema drd) (mrMutation mr) of
+              Just errMsg -> do
+                sendDataResourceErrorResponse limits transport (envRequestId envelope)
+                  OperationNotSupported errMsg
+                next params worldPath
+              Nothing -> case dhMutate (drdHandler drd) of
                 Nothing -> do
-                  handlerResult <- runExternalDataSourceRevocationHandler pd revocation
-                  operationResult <- case handlerResult of
-                    Left err -> sendExternalDataSourceRevocationFailure transport envelope pd revocation err
-                    Right () -> sendExternalDataSourceRevocationSuccess transport envelope pd revocation
-                  mapM_ (cacheExternalOperationResult pd) operationResult
-              messageLoop pd transport params worldPath
+                  sendDataResourceErrorResponse limits transport (envRequestId envelope)
+                    OperationNotSupported ("Resource '" <> mrResource mr <> "' does not support mutations")
+                  next params worldPath
+                Just handler -> do
+                  let ctx = makeDataContext limits params worldPath transport (envRequestId envelope)
+                  runResult <- catchPluginResult (handler ctx (mrMutation mr))
+                  case runResult of
+                    Left errMsg -> sendDataResourceFailureResponse limits transport
+                      (envRequestId envelope) (dataResourceFailureFromText errMsg)
+                    Right mutationResult -> sendSDKEnvelope limits transport RPCEnvelope
+                      { envType = MsgMutateResult
+                      , envPayload = Aeson.toJSON mutationResult
+                      , envRequestId = envRequestId envelope
+                      }
+                  next params worldPath
 
-        -- Ignore unknown message types
-        _ -> messageLoop pd transport params worldPath
+      MsgInvokeGenerator -> case pdGenerator pd of
+        Nothing -> do
+          sendErrorResponse limits transport (envRequestId envelope) 2 "Plugin has no generator"
+          next params worldPath
+        Just gd -> case Aeson.fromJSON (envPayload envelope) of
+          Aeson.Error err -> do
+            sendErrorResponse limits transport (envRequestId envelope) 6
+              ("Invalid invoke_generator payload: " <> Text.pack err)
+            next params worldPath
+          Aeson.Success (ig :: InvokeGenerator) -> do
+            let mergedParams = Map.union (igConfig ig) params
+            preserveStateOnRejected mergedParams worldPath $
+              case makeTerrainContext limits mergedParams (igTerrain ig) Nothing Map.empty
+                (igSeed ig) worldPath
+                (sendLogMessage limits transport (envRequestId envelope))
+                (sendProgress limits transport (envRequestId envelope)) of
+                Left err -> do
+                  sendErrorResponse limits transport (envRequestId envelope) 6
+                    ("Invalid terrain payload: " <> err)
+                  next mergedParams worldPath
+                Right ctx -> do
+                  runResult <- catchPluginResult (gdRun gd ctx)
+                  case runResult of
+                    Left errMsg -> sendErrorResponse limits transport (envRequestId envelope) 3 errMsg
+                    Right generatorResult -> sendGeneratorResult limits transport
+                      (envRequestId envelope) generatorResult
+                  next mergedParams worldPath
+
+      MsgInvokeSimulation -> case pdSimulation pd of
+        Nothing -> do
+          sendErrorResponse limits transport (envRequestId envelope) 4 "Plugin has no simulation"
+          next params worldPath
+        Just sd -> case Aeson.fromJSON (envPayload envelope) of
+          Aeson.Error err -> do
+            sendErrorResponse limits transport (envRequestId envelope) 7
+              ("Invalid invoke_simulation payload: " <> Text.pack err)
+            next params worldPath
+          Aeson.Success (is' :: InvokeSimulation) -> do
+            let mergedParams = Map.union (isConfig is') params
+            preserveStateOnRejected mergedParams worldPath $
+              case makeTerrainContext limits mergedParams (isTerrain is') (Just (isOwnOverlay is'))
+                (valueObjectToMap (isOverlays is')) 0 worldPath
+                (sendLogMessage limits transport (envRequestId envelope))
+                (sendProgress limits transport (envRequestId envelope)) of
+                Left err -> do
+                  sendErrorResponse limits transport (envRequestId envelope) 7
+                    ("Invalid terrain payload: " <> err)
+                  next mergedParams worldPath
+                Right ctx -> do
+                  runResult <- catchPluginResult (sdTick sd ctx)
+                  case runResult of
+                    Left errMsg -> sendErrorResponse limits transport (envRequestId envelope) 5 errMsg
+                    Right simulationResult -> sendSimulationResult limits transport
+                      (envRequestId envelope) simulationResult
+                  next mergedParams worldPath
+
+      MsgHeartbeat -> do
+        sendSDKEnvelope limits transport RPCEnvelope
+          { envType = MsgHeartbeat
+          , envPayload = Aeson.toJSON (Heartbeat { hbStatus = "ok" })
+          , envRequestId = envRequestId envelope
+          }
+        next params worldPath
+
+      MsgHealthCheck -> do
+        sendSDKEnvelope limits transport RPCEnvelope
+          { envType = MsgHealthStatus
+          , envPayload = Aeson.toJSON (HealthStatus True "ok")
+          , envRequestId = envRequestId envelope
+          }
+        next params worldPath
+
+      MsgExternalDataSourceStatusRequest -> case Aeson.fromJSON (envPayload envelope) of
+        Aeson.Error err -> do
+          sendErrorResponseIfCorrelated limits transport envelope 10
+            ("Invalid external data-source status payload: " <> Text.pack err)
+          next params worldPath
+        Aeson.Success (request :: RPCExternalDataSourceStatusRequest) -> do
+          sendResponseIfCorrelated limits transport envelope RPCEnvelope
+            { envType = MsgExternalDataSourceStatus
+            , envPayload = Aeson.toJSON
+                (externalDataSourceStatusReportFromManifest (generateManifest pd) request)
+            , envRequestId = envRequestId envelope
+            }
+          next params worldPath
+
+      MsgExternalDataSourceGrant -> case Aeson.fromJSON (envPayload envelope) of
+        Aeson.Error err -> do
+          sendErrorResponseIfCorrelated limits transport envelope 11
+            ("Invalid external data-source grant payload: " <> Text.pack err)
+          next params worldPath
+        Aeson.Success (grant :: RPCExternalDataSourceGrantMessage) -> do
+          cachedResult <- case envRequestId envelope of
+            Nothing -> pure Nothing
+            Just _ -> lookupExternalOperationResult pd ExternalDataSourceGrantOperation
+              (redsgmOperationId grant)
+          case cachedResult of
+            Just value -> sendCachedExternalDataSourceOperationResult limits transport envelope value
+            Nothing -> do
+              handlerResult <- runExternalDataSourceGrantHandler pd grant
+              operationResult <- case handlerResult of
+                Left err -> sendExternalDataSourceGrantFailure limits transport envelope pd grant err
+                Right () -> sendExternalDataSourceGrantSuccess limits transport envelope pd grant
+              mapM_ (cacheExternalOperationResult pd) operationResult
+          next params worldPath
+
+      MsgExternalDataSourceRevoke -> case Aeson.fromJSON (envPayload envelope) of
+        Aeson.Error err -> do
+          sendErrorResponseIfCorrelated limits transport envelope 12
+            ("Invalid external data-source revocation payload: " <> Text.pack err)
+          next params worldPath
+        Aeson.Success (revocation :: RPCExternalDataSourceGrantRevocation) -> do
+          cachedResult <- case envRequestId envelope of
+            Nothing -> pure Nothing
+            Just _ -> lookupExternalOperationResult pd ExternalDataSourceRevokeOperation
+              (redsrvOperationId revocation)
+          case cachedResult of
+            Just value -> sendCachedExternalDataSourceOperationResult limits transport envelope value
+            Nothing -> do
+              handlerResult <- runExternalDataSourceRevocationHandler pd revocation
+              operationResult <- case handlerResult of
+                Left err -> sendExternalDataSourceRevocationFailure limits transport envelope pd revocation err
+                Right () -> sendExternalDataSourceRevocationSuccess limits transport envelope pd revocation
+              mapM_ (cacheExternalOperationResult pd) operationResult
+          next params worldPath
+
+      _ -> next params worldPath
+
+catchPluginResult :: IO (Either Text a) -> IO (Either Text a)
+catchPluginResult action = catch action $ \err ->
+  case fromException err :: Maybe SDKSessionError of
+    Just transportFailure -> throwIO transportFailure
+    Nothing -> pure (Left (Text.pack (show (err :: SomeException))))
 
 ------------------------------------------------------------------------
 -- External data-source callbacks
@@ -717,12 +748,12 @@ runExternalDataSourceRevocationHandler pd revocation =
 -- External data-source ACK helpers
 ------------------------------------------------------------------------
 
-sendExternalDataSourceGrantSuccess :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantMessage -> IO (Maybe RPCExternalDataSourceOperationResult)
-sendExternalDataSourceGrantSuccess transport request pd grant =
+sendExternalDataSourceGrantSuccess :: RPCPayloadLimits -> Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantMessage -> IO (Maybe RPCExternalDataSourceOperationResult)
+sendExternalDataSourceGrantSuccess limits transport request pd grant =
   case (envRequestId request, redsgmOperationId grant) of
     (Nothing, _) -> pure Nothing
     (Just requestId, Nothing) -> do
-      sendErrorResponse transport (Just requestId) 11 "External data-source grant payload is missing operationId"
+      sendErrorResponse limits transport (Just requestId) 11 "External data-source grant payload is missing operationId"
       pure Nothing
     (Just requestId, Just operationId) -> do
       let result = RPCExternalDataSourceOperationResult
@@ -740,15 +771,15 @@ sendExternalDataSourceGrantSuccess transport request pd grant =
             , redsoError = Nothing
             , redsoDiagnostics = Nothing
             }
-      sendExternalDataSourceOperationResult transport (Just requestId) result
+      sendExternalDataSourceOperationResult limits transport (Just requestId) result
       pure (Just result)
 
-sendExternalDataSourceGrantFailure :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantMessage -> Text -> IO (Maybe RPCExternalDataSourceOperationResult)
-sendExternalDataSourceGrantFailure transport request pd grant err =
+sendExternalDataSourceGrantFailure :: RPCPayloadLimits -> Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantMessage -> Text -> IO (Maybe RPCExternalDataSourceOperationResult)
+sendExternalDataSourceGrantFailure limits transport request pd grant err =
   case (envRequestId request, redsgmOperationId grant) of
     (Nothing, _) -> pure Nothing
     (Just requestId, Nothing) -> do
-      sendErrorResponse transport (Just requestId) 13 err
+      sendErrorResponse limits transport (Just requestId) 13 err
       pure Nothing
     (Just requestId, Just operationId) -> do
       let result = RPCExternalDataSourceOperationResult
@@ -766,15 +797,15 @@ sendExternalDataSourceGrantFailure transport request pd grant err =
             , redsoError = Just err
             , redsoDiagnostics = Nothing
             }
-      sendExternalDataSourceOperationResult transport (Just requestId) result
+      sendExternalDataSourceOperationResult limits transport (Just requestId) result
       pure (Just result)
 
-sendExternalDataSourceRevocationSuccess :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantRevocation -> IO (Maybe RPCExternalDataSourceOperationResult)
-sendExternalDataSourceRevocationSuccess transport request pd revocation =
+sendExternalDataSourceRevocationSuccess :: RPCPayloadLimits -> Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantRevocation -> IO (Maybe RPCExternalDataSourceOperationResult)
+sendExternalDataSourceRevocationSuccess limits transport request pd revocation =
   case (envRequestId request, redsrvOperationId revocation) of
     (Nothing, _) -> pure Nothing
     (Just requestId, Nothing) -> do
-      sendErrorResponse transport (Just requestId) 12 "External data-source revocation payload is missing operationId"
+      sendErrorResponse limits transport (Just requestId) 12 "External data-source revocation payload is missing operationId"
       pure Nothing
     (Just requestId, Just operationId) -> do
       let result = RPCExternalDataSourceOperationResult
@@ -792,15 +823,15 @@ sendExternalDataSourceRevocationSuccess transport request pd revocation =
             , redsoError = Nothing
             , redsoDiagnostics = Nothing
             }
-      sendExternalDataSourceOperationResult transport (Just requestId) result
+      sendExternalDataSourceOperationResult limits transport (Just requestId) result
       pure (Just result)
 
-sendExternalDataSourceRevocationFailure :: Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantRevocation -> Text -> IO (Maybe RPCExternalDataSourceOperationResult)
-sendExternalDataSourceRevocationFailure transport request pd revocation err =
+sendExternalDataSourceRevocationFailure :: RPCPayloadLimits -> Transport -> RPCEnvelope -> PluginDef -> RPCExternalDataSourceGrantRevocation -> Text -> IO (Maybe RPCExternalDataSourceOperationResult)
+sendExternalDataSourceRevocationFailure limits transport request pd revocation err =
   case (envRequestId request, redsrvOperationId revocation) of
     (Nothing, _) -> pure Nothing
     (Just requestId, Nothing) -> do
-      sendErrorResponse transport (Just requestId) 14 err
+      sendErrorResponse limits transport (Just requestId) 14 err
       pure Nothing
     (Just requestId, Just operationId) -> do
       let result = RPCExternalDataSourceOperationResult
@@ -818,7 +849,7 @@ sendExternalDataSourceRevocationFailure transport request pd revocation err =
             , redsoError = Just err
             , redsoDiagnostics = Nothing
             }
-      sendExternalDataSourceOperationResult transport (Just requestId) result
+      sendExternalDataSourceOperationResult limits transport (Just requestId) result
       pure (Just result)
 
 externalGrantConsumerId :: PluginDef -> RPCExternalDataSourceGrantMessage -> Text
@@ -831,102 +862,127 @@ externalRevocationConsumerId pd revocation = case redsrvConsumerId revocation of
   Just consumerId -> consumerId
   Nothing -> pdName pd
 
-sendCachedExternalDataSourceOperationResult :: Transport -> RPCEnvelope -> RPCExternalDataSourceOperationResult -> IO ()
-sendCachedExternalDataSourceOperationResult transport request result =
+sendCachedExternalDataSourceOperationResult :: RPCPayloadLimits -> Transport -> RPCEnvelope -> RPCExternalDataSourceOperationResult -> IO ()
+sendCachedExternalDataSourceOperationResult limits transport request result =
   case envRequestId request of
     Nothing -> pure ()
-    Just requestId -> sendExternalDataSourceOperationResult transport (Just requestId) result
+    Just requestId -> sendExternalDataSourceOperationResult limits transport (Just requestId) result
 
-sendExternalDataSourceOperationResult :: Transport -> Maybe Word64 -> RPCExternalDataSourceOperationResult -> IO ()
-sendExternalDataSourceOperationResult transport requestId result = do
-  let envelope = RPCEnvelope
-        { envType = MsgExternalDataSourceOperationResult
-        , envPayload = Aeson.toJSON result
-        , envRequestId = requestId
-        }
-  _ <- sendMessage transport (encodeMessage envelope)
-  pure ()
+sendExternalDataSourceOperationResult :: RPCPayloadLimits -> Transport -> Maybe Word64 -> RPCExternalDataSourceOperationResult -> IO ()
+sendExternalDataSourceOperationResult limits transport requestId result =
+  sendSDKEnvelope limits transport RPCEnvelope
+    { envType = MsgExternalDataSourceOperationResult
+    , envPayload = Aeson.toJSON result
+    , envRequestId = requestId
+    }
 
 ------------------------------------------------------------------------
 -- Response helpers
 ------------------------------------------------------------------------
 
-sendResponseIfCorrelated :: Transport -> RPCEnvelope -> RPCEnvelope -> IO ()
-sendResponseIfCorrelated transport request response =
-  case envRequestId request of
-    Nothing -> pure ()
-    Just _ -> do
-      _ <- sendMessage transport (encodeMessage response)
-      pure ()
+-- All SDK writes pass through this function. An oversized response fails before
+-- any bytes are written and the typed exception terminates the session.
+sendSDKEnvelope :: RPCPayloadLimits -> Transport -> RPCEnvelope -> IO ()
+sendSDKEnvelope limits transport envelope = do
+  let encoded = encodeMessage envelope
+      actual = BS.length encoded
+      limitInt = fromIntegral (rplMaxFrameSizeBytes limits)
+      limit = toInteger limitInt
+  result <- sendMessageWithLimit limitInt transport encoded
+  case result of
+    Right () -> pure ()
+    Left (TransportFramingError _)
+      | Just requestId <- envRequestId envelope -> do
+          let message = "outgoing RPC payload exceeds configured limit: type="
+                <> Text.pack (show (envType envelope))
+                <> ", actual=" <> Text.pack (show actual)
+                <> " bytes, limit=" <> Text.pack (show limit) <> " bytes"
+              compactError = RPCEnvelope
+                { envType = MsgError
+                , envPayload = object
+                    [ "code" .= (15 :: Int)
+                    , "message" .= message
+                    ]
+                , envRequestId = Just requestId
+                }
+              compactBytes = encodeMessage compactError
+          compactResult <- sendMessageWithLimit limitInt transport compactBytes
+          case compactResult of
+            Right () -> throwIO
+              (SDKRequestPayloadRejected (envType envelope) requestId actual limit)
+            Left compactErr -> throwIO
+              (SDKSendFailure MsgError (Just requestId) (BS.length compactBytes) limit compactErr)
+    Left err -> throwIO (SDKSendFailure (envType envelope) (envRequestId envelope) actual limit err)
 
-sendErrorResponseIfCorrelated :: Transport -> RPCEnvelope -> Int -> Text -> IO ()
-sendErrorResponseIfCorrelated transport request code msg =
+sendResponseIfCorrelated :: RPCPayloadLimits -> Transport -> RPCEnvelope -> RPCEnvelope -> IO ()
+sendResponseIfCorrelated limits transport request response =
   case envRequestId request of
     Nothing -> pure ()
-    Just requestId -> sendErrorResponse transport (Just requestId) code msg
+    Just _ -> sendSDKEnvelope limits transport response
+
+sendErrorResponseIfCorrelated :: RPCPayloadLimits -> Transport -> RPCEnvelope -> Int -> Text -> IO ()
+sendErrorResponseIfCorrelated limits transport request code msg =
+  case envRequestId request of
+    Nothing -> pure ()
+    Just requestId -> sendErrorResponse limits transport (Just requestId) code msg
 
 -- | Send an error response.
-sendErrorResponse :: Transport -> Maybe Word64 -> Int -> Text -> IO ()
-sendErrorResponse transport requestId code msg =
-  sendErrorResponseWithDataResourceCode transport requestId code msg Nothing
+sendErrorResponse :: RPCPayloadLimits -> Transport -> Maybe Word64 -> Int -> Text -> IO ()
+sendErrorResponse limits transport requestId code msg =
+  sendErrorResponseWithDataResourceCode limits transport requestId code msg Nothing
 
-sendDataResourceErrorResponse :: Transport -> Maybe Word64 -> DataResourceErrorCode -> Text -> IO ()
-sendDataResourceErrorResponse transport requestId code msg =
-  sendDataResourceFailureResponse transport requestId (DataResourceFailure code msg)
+sendDataResourceErrorResponse :: RPCPayloadLimits -> Transport -> Maybe Word64 -> DataResourceErrorCode -> Text -> IO ()
+sendDataResourceErrorResponse limits transport requestId code msg =
+  sendDataResourceFailureResponse limits transport requestId (DataResourceFailure code msg)
 
-sendDataResourceFailureResponse :: Transport -> Maybe Word64 -> DataResourceFailure -> IO ()
-sendDataResourceFailureResponse transport requestId failure =
+sendDataResourceFailureResponse :: RPCPayloadLimits -> Transport -> Maybe Word64 -> DataResourceFailure -> IO ()
+sendDataResourceFailureResponse limits transport requestId failure =
   sendErrorResponseWithDataResourceCode
+    limits
     transport
     requestId
     (dataResourceErrorRPCCode (drfCode failure))
     (drfMessage failure)
     (Just (drfCode failure))
 
-sendErrorResponseWithDataResourceCode :: Transport -> Maybe Word64 -> Int -> Text -> Maybe DataResourceErrorCode -> IO ()
-sendErrorResponseWithDataResourceCode transport requestId code msg mDataResourceCode = do
-  let envelope = RPCEnvelope
-        { envType = MsgError
-        , envPayload = object $
-            [ "code"    .= code
-            , "message" .= msg
-            ] <>
-            [ "data_resource_error" .= dataResourceErrorCodeText dataCode
-            | Just dataCode <- [mDataResourceCode]
-            ]
-        , envRequestId = requestId
-        }
-  _ <- sendMessage transport (encodeMessage envelope)
-  pure ()
+sendErrorResponseWithDataResourceCode :: RPCPayloadLimits -> Transport -> Maybe Word64 -> Int -> Text -> Maybe DataResourceErrorCode -> IO ()
+sendErrorResponseWithDataResourceCode limits transport requestId code msg mDataResourceCode =
+  sendSDKEnvelope limits transport RPCEnvelope
+    { envType = MsgError
+    , envPayload = object $
+        [ "code" .= code
+        , "message" .= msg
+        ] <>
+        [ "data_resource_error" .= dataResourceErrorCodeText dataCode
+        | Just dataCode <- [mDataResourceCode]
+        ]
+    , envRequestId = requestId
+    }
 
 -- | Send a generator result payload.
-sendGeneratorResult :: Transport -> Maybe Word64 -> GeneratorTickResult -> IO ()
-sendGeneratorResult transport requestId result = do
-  let envelope = RPCEnvelope
-        { envType = MsgGeneratorResult
-        , envPayload = Aeson.toJSON GeneratorResult
-            { grTerrain  = gtrTerrain result
-            , grOverlay  = gtrOverlay result
-            , grMetadata = gtrMetadata result
-            }
-        , envRequestId = requestId
+sendGeneratorResult :: RPCPayloadLimits -> Transport -> Maybe Word64 -> GeneratorTickResult -> IO ()
+sendGeneratorResult limits transport requestId result =
+  sendSDKEnvelope limits transport RPCEnvelope
+    { envType = MsgGeneratorResult
+    , envPayload = Aeson.toJSON GeneratorResult
+        { grTerrain = gtrTerrain result
+        , grOverlay = gtrOverlay result
+        , grMetadata = gtrMetadata result
         }
-  _ <- sendMessage transport (encodeMessage envelope)
-  pure ()
+    , envRequestId = requestId
+    }
 
 -- | Send a simulation result payload.
-sendSimulationResult :: Transport -> Maybe Word64 -> SimulationTickResult -> IO ()
-sendSimulationResult transport requestId result = do
-  let envelope = RPCEnvelope
-        { envType = MsgSimulationResult
-        , envPayload = Aeson.toJSON SimulationResult
-            { srOverlay       = strOverlay result
-            , srTerrainWrites = strTerrainWrites result
-            }
-        , envRequestId = requestId
+sendSimulationResult :: RPCPayloadLimits -> Transport -> Maybe Word64 -> SimulationTickResult -> IO ()
+sendSimulationResult limits transport requestId result =
+  sendSDKEnvelope limits transport RPCEnvelope
+    { envType = MsgSimulationResult
+    , envPayload = Aeson.toJSON SimulationResult
+        { srOverlay = strOverlay result
+        , srTerrainWrites = strTerrainWrites result
         }
-  _ <- sendMessage transport (encodeMessage envelope)
-  pure ()
+    , envRequestId = requestId
+    }
 
 valueObjectToMap :: Value -> Map Text Value
 valueObjectToMap (Object keyMap) =
@@ -937,7 +993,8 @@ valueObjectToMap (Object keyMap) =
 valueObjectToMap _ = Map.empty
 
 makeTerrainContext
-  :: Map Text Value
+  :: RPCPayloadLimits
+  -> Map Text Value
   -> Value
   -> Maybe Value
   -> Map Text Value
@@ -946,8 +1003,8 @@ makeTerrainContext
   -> (Text -> IO ())
   -> (Text -> Double -> IO ())
   -> Either Text PluginContext
-makeTerrainContext params terrainPayload ownOverlay overlays seed worldPath logFn progressFn = do
-  world <- decodeTerrainPayload terrainPayload
+makeTerrainContext limits params terrainPayload ownOverlay overlays seed worldPath logFn progressFn = do
+  world <- decodeTerrainPayloadWithLimits limits terrainPayload
   Right PluginContext
     { pcWorld = world
     , pcParams = params
@@ -961,33 +1018,29 @@ makeTerrainContext params terrainPayload ownOverlay overlays seed worldPath logF
     }
 
 -- | Send a log message to the host.
-sendLogMessage :: Transport -> Maybe Word64 -> Text -> IO ()
-sendLogMessage transport requestId msg = do
-  let envelope = RPCEnvelope
-        { envType = MsgLog
-        , envPayload = object
-            [ "level"   .= ("info" :: Text)
-            , "message" .= msg
-            ]
-        , envRequestId = requestId
-        }
-  _ <- sendMessage transport (encodeMessage envelope)
-  pure ()
+sendLogMessage :: RPCPayloadLimits -> Transport -> Maybe Word64 -> Text -> IO ()
+sendLogMessage limits transport requestId msg =
+  sendSDKEnvelope limits transport RPCEnvelope
+    { envType = MsgLog
+    , envPayload = object
+        [ "level" .= ("info" :: Text)
+        , "message" .= msg
+        ]
+    , envRequestId = requestId
+    }
 
 -- | Send progress to the host.
 --
 -- SDK progress fractions are absolute for the current invocation. Finite
 -- values are clamped to [0,1]; non-finite values are mapped defensively before
 -- JSON encoding so plugins never emit invalid JSON numbers.
-sendProgress :: Transport -> Maybe Word64 -> Text -> Double -> IO ()
-sendProgress transport requestId msg fraction = do
-  let envelope = RPCEnvelope
-        { envType = MsgProgress
-        , envPayload = Aeson.toJSON (PluginProgress msg (sanitizeProgressFraction fraction))
-        , envRequestId = requestId
-        }
-  _ <- sendMessage transport (encodeMessage envelope)
-  pure ()
+sendProgress :: RPCPayloadLimits -> Transport -> Maybe Word64 -> Text -> Double -> IO ()
+sendProgress limits transport requestId msg fraction =
+  sendSDKEnvelope limits transport RPCEnvelope
+    { envType = MsgProgress
+    , envPayload = Aeson.toJSON (PluginProgress msg (sanitizeProgressFraction fraction))
+    , envRequestId = requestId
+    }
 
 sanitizeProgressFraction :: Double -> Double
 sanitizeProgressFraction fraction
@@ -1008,28 +1061,6 @@ findHandler name = foldr go Nothing
     go drd acc
       | drsName (drdSchema drd) == name = Just drd
       | otherwise = acc
-
-querySupportError :: DataResourceSchema -> QueryResource -> Maybe Text
-querySupportError schema qr
-  | hasPageRequest qr && not (doPage ops) =
-      Just ("Resource '" <> name <> "' does not support paged queries")
-  | otherwise = case qrQuery qr of
-      QueryAll
-        | doList ops -> Nothing
-        | otherwise -> Just ("Resource '" <> name <> "' does not support list queries")
-      QueryByKey _
-        | doGet ops -> Nothing
-        | otherwise -> Just ("Resource '" <> name <> "' does not support get queries")
-      QueryByHex _ _
-        | doQueryByHex ops -> Nothing
-        | otherwise -> Just ("Resource '" <> name <> "' does not support hex queries")
-      QueryByField _ _
-        | doQueryByField ops -> Nothing
-        | otherwise -> Just ("Resource '" <> name <> "' does not support field queries")
-  where
-    ops = drsOperations schema
-    name = drsName schema
-    hasPageRequest request = qrPageSize request /= Nothing || qrPageOffset request /= Nothing
 
 mutationSupportError :: DataResourceSchema -> DataMutation -> Maybe Text
 mutationSupportError schema mutation = case mutation of
@@ -1054,16 +1085,16 @@ mutationSupportError schema mutation = case mutation of
 --
 -- Data service handlers don't receive a terrain payload, so the
 -- context uses a stub world and empty terrain.
-makeDataContext :: Map Text Value -> Maybe FilePath -> Transport -> Maybe Word64 -> PluginContext
-makeDataContext params worldPath transport requestId = PluginContext
+makeDataContext :: RPCPayloadLimits -> Map Text Value -> Maybe FilePath -> Transport -> Maybe Word64 -> PluginContext
+makeDataContext limits params worldPath transport requestId = PluginContext
   { pcWorld      = stubWorld
   , pcParams     = params
   , pcTerrain    = Object mempty
   , pcOwnOverlay = Nothing
   , pcOverlays   = Map.empty
   , pcSeed       = 0
-  , pcLog        = sendLogMessage transport requestId
-  , pcProgress   = sendProgress transport requestId
+  , pcLog        = sendLogMessage limits transport requestId
+  , pcProgress   = sendProgress limits transport requestId
   , pcWorldPath  = worldPath
   }
 

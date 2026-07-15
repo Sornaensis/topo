@@ -113,6 +113,10 @@ import Topo.Plugin.RPC.Transport
   , pluginProtocolEnv
   , pluginSessionEnv
   , pluginWorldIdEnv
+  , pluginMaxFrameSizeEnv
+  , RPCPayloadLimits
+  , rplMaxFrameSizeBytes
+  , readRPCPayloadLimitsFromEnvironment
   )
 
 #if !defined(mingw32_HOST_OS) && !defined(linux_HOST_OS)
@@ -299,6 +303,7 @@ data LaunchPluginResult = LaunchPluginResult
   , lprOwnedProcess :: !OwnedPluginProcess
   , lprSessionId :: !Text
   , lprAuthToken :: !Text
+  , lprPayloadLimits :: !RPCPayloadLimits
   }
 
 launchPluginTransport
@@ -317,7 +322,21 @@ launchPluginTransportViaEndpoint
   -> Text
   -> Int
   -> IO (Either (Text, Maybe OwnedPluginProcess) LaunchPluginResult)
-launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTimeoutMillis = mask $ \restore -> do
+launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTimeoutMillis = do
+  limitsResult <- readRPCPayloadLimitsFromEnvironment
+  case limitsResult of
+    Left err -> pure (Left ("invalid RPC payload limits: " <> err, Nothing))
+    Right limits -> launchPluginTransportViaEndpointWithLimits
+      limits executablePath workingDir pluginName startupTimeoutMillis
+
+launchPluginTransportViaEndpointWithLimits
+  :: RPCPayloadLimits
+  -> FilePath
+  -> FilePath
+  -> Text
+  -> Int
+  -> IO (Either (Text, Maybe OwnedPluginProcess) LaunchPluginResult)
+launchPluginTransportViaEndpointWithLimits limits executablePath workingDir pluginName startupTimeoutMillis = mask $ \restore -> do
   listenerFailure <- startupFailureInjected "listener"
   serverResult <- if listenerFailure
     then pure (Left (TransportConnectionFailed "forced listener creation failure"))
@@ -342,7 +361,7 @@ launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTim
               if processFailure
                 then throwIO (userError "forced process creation failure")
                 else pure ()
-              launchEnvironment <- endpointEnvironment (tsEndpoint server) pluginName workingDir
+              launchEnvironment <- endpointEnvironment limits (tsEndpoint server) pluginName workingDir
               processHandle <- createContainedPluginProcess
                 preparedContainment
                 executablePath
@@ -404,16 +423,18 @@ finishOwnedLaunch _restore server launchEnvironment ownershipResult =
               , lprOwnedProcess = ownedProcess
               , lprSessionId = leSessionId launchEnvironment
               , lprAuthToken = leAuthToken launchEnvironment
+              , lprPayloadLimits = lePayloadLimits launchEnvironment
               })
 
 data LaunchEnvironment = LaunchEnvironment
   { leVariables :: ![(String, String)]
   , leSessionId :: !Text
   , leAuthToken :: !Text
+  , lePayloadLimits :: !RPCPayloadLimits
   }
 
-endpointEnvironment :: TransportEndpoint -> Text -> FilePath -> IO LaunchEnvironment
-endpointEnvironment endpoint pluginName workingDir = do
+endpointEnvironment :: RPCPayloadLimits -> TransportEndpoint -> Text -> FilePath -> IO LaunchEnvironment
+endpointEnvironment limits endpoint pluginName workingDir = do
   inherited <- getEnvironment
   launchSession <- Text.pack <$> freshLaunchSecret "session"
   authToken <- Text.pack <$> freshLaunchSecret "auth"
@@ -429,6 +450,7 @@ endpointEnvironment endpoint pluginName workingDir = do
         , (pluginAuthTokenEnv, Text.unpack authToken)
         , (pluginWorldIdEnv, unsavedWorldId)
         , (pluginDataRootEnv, dataRoot)
+        , (pluginMaxFrameSizeEnv, show (rplMaxFrameSizeBytes limits))
         ]
       -- Do not inherit the developer shell wholesale: it routinely contains
       -- cloud, VCS, database, proxy, and tool tokens.  Plugins get only the
@@ -441,6 +463,7 @@ endpointEnvironment endpoint pluginName workingDir = do
     { leVariables = launchVars <> preserved
     , leSessionId = launchSession
     , leAuthToken = authToken
+    , lePayloadLimits = limits
     }
 
 isAllowedInheritedRuntimeEnvKey :: String -> Bool

@@ -11,8 +11,10 @@ module Topo.Plugin.SDK.Payload
   , encodeOverlayPayload
     -- * Terrain payloads
   , decodeTerrainPayload
+  , decodeTerrainPayloadWithLimits
   , encodeTerrainPayload
   , decodeTerrainWritesPayload
+  , decodeTerrainWritesPayloadWithLimits
   , encodeTerrainWritesPayload
     -- * Typed result constructors
   , simulationResultFromOverlay
@@ -31,8 +33,11 @@ import Topo.Overlay (Overlay)
 import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON)
 import Topo.Overlay.Schema (OverlaySchema)
 import Topo.Plugin.RPC
-  ( applyGeneratorTerrainValue
+  ( RPCPayloadLimits
+  , applyGeneratorTerrainValue
+  , applyGeneratorTerrainValueWithLimits
   , decodeTerrainWritesValue
+  , decodeTerrainWritesValueWithLimits
   , terrainWorldToPayload
   )
 import Topo.Simulation (TerrainWrites, applyTerrainWrites)
@@ -81,6 +86,14 @@ decodeTerrainPayload payload =
     baseWorld = emptyWorld (WorldConfig { wcChunkSize = defaultChunkSize }) defaultHexGridMeta
     defaultChunkSize = 64
 
+-- | Decode host terrain with an explicit aggregate decoded-byte budget.
+decodeTerrainPayloadWithLimits :: RPCPayloadLimits -> Value -> Either Text TerrainWorld
+decodeTerrainPayloadWithLimits limits payload =
+  applyGeneratorTerrainValueWithLimits limits baseWorld payload
+  where
+    baseWorld = emptyWorld (WorldConfig { wcChunkSize = defaultChunkSize }) defaultHexGridMeta
+    defaultChunkSize = 64
+
 -- | Encode a terrain world into protocol terrain payload shape.
 encodeTerrainPayload :: TerrainWorld -> Either Text Value
 encodeTerrainPayload = terrainWorldToPayload
@@ -88,6 +101,14 @@ encodeTerrainPayload = terrainWorldToPayload
 -- | Decode simulation terrain writes payload into structured writes.
 decodeTerrainWritesPayload :: Maybe Value -> Either Text TerrainWrites
 decodeTerrainWritesPayload = decodeTerrainWritesValue
+
+-- | Decode simulation terrain writes with an explicit aggregate decoded-byte
+-- budget.
+decodeTerrainWritesPayloadWithLimits
+  :: RPCPayloadLimits
+  -> Maybe Value
+  -> Either Text TerrainWrites
+decodeTerrainWritesPayloadWithLimits = decodeTerrainWritesValueWithLimits
 
 -- | Encode structured terrain writes into protocol payload shape.
 --

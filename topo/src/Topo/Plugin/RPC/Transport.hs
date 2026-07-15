@@ -49,6 +49,14 @@ module Topo.Plugin.RPC.Transport
   , pluginAuthTokenEnv
   , pluginWorldIdEnv
   , pluginDataRootEnv
+  , pluginMaxFrameSizeEnv
+  , RPCPayloadLimits
+  , mkRPCPayloadLimits
+  , defaultRPCPayloadLimits
+  , rplMaxFrameSizeBytes
+  , rplMaxDecodedTerrainBytes
+  , parseRPCPayloadLimitsEnvironment
+  , readRPCPayloadLimitsFromEnvironment
   , openPluginServer
   , connectPluginEndpoint
   , connectPluginFromEnvironment
@@ -91,6 +99,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word32, Word64)
 import Numeric (showHex)
+import Text.Read (readMaybe)
 import System.Directory
   ( createDirectory
   , createDirectoryIfMissing
@@ -181,7 +190,37 @@ data TransportConfig = TransportConfig
     -- ^ Connection timeout in milliseconds (0 = no timeout).
   } deriving (Eq, Show)
 
--- | Sensible defaults: system pipe directory, no timeout.
+-- | Positive, Word32-safe limits for framed JSON and decoded binary payloads.
+-- The constructor is intentionally hidden so every value is validated.
+data RPCPayloadLimits = RPCPayloadLimits
+  { rplMaxFrameSizeBytes :: !Word32
+  , rplMaxDecodedTerrainBytes :: !Word32
+  } deriving (Eq, Show)
+
+-- | Construct limits with the decoded terrain budget derived as
+-- @floor(3 * frame / 4)@. A one-byte frame therefore has a valid zero-byte
+-- decoded budget even though the frame itself must always be positive.
+mkRPCPayloadLimits :: Integer -> Either Text RPCPayloadLimits
+mkRPCPayloadLimits frameBytes
+  | frameBytes <= 0 = Left "RPC max frame size must be positive"
+  | frameBytes > word32Max = Left "RPC max frame size exceeds Word32"
+  | frameBytes > intMax = Left "RPC max frame size exceeds platform Int"
+  | otherwise = Right RPCPayloadLimits
+      { rplMaxFrameSizeBytes = fromInteger frameBytes
+      , rplMaxDecodedTerrainBytes = fromInteger ((frameBytes * 3) `div` 4)
+      }
+  where
+    word32Max = toInteger (maxBound :: Word32)
+    intMax = toInteger (maxBound :: Int)
+
+-- | Default limits: a 64 MiB frame and 48 MiB decoded terrain budget.
+defaultRPCPayloadLimits :: RPCPayloadLimits
+defaultRPCPayloadLimits = RPCPayloadLimits
+  { rplMaxFrameSizeBytes = 64 * 1024 * 1024
+  , rplMaxDecodedTerrainBytes = 48 * 1024 * 1024
+  }
+
+-- | Sensible defaults: system pipe directory and no timeout.
 defaultTransportConfig :: TransportConfig
 defaultTransportConfig = TransportConfig
   { tcPipeDir = ""
@@ -275,6 +314,24 @@ pluginWorldIdEnv = "TOPO_PLUGIN_WORLD_ID"
 -- but it is not a sandbox or filesystem confinement boundary.
 pluginDataRootEnv :: String
 pluginDataRootEnv = "TOPO_PLUGIN_DATA_ROOT"
+
+-- | Dedicated host-to-plugin frame-size launch contract.
+pluginMaxFrameSizeEnv :: String
+pluginMaxFrameSizeEnv = "TOPO_PLUGIN_MAX_FRAME_SIZE_BYTES"
+
+-- | Parse the dedicated launch environment value. Missing means the backwards-
+-- compatible default; malformed, non-positive, and non-Word32 values fail.
+parseRPCPayloadLimitsEnvironment :: Maybe String -> Either Text RPCPayloadLimits
+parseRPCPayloadLimitsEnvironment Nothing = Right defaultRPCPayloadLimits
+parseRPCPayloadLimitsEnvironment (Just raw) =
+  case readMaybe raw :: Maybe Integer of
+    Nothing -> Left (Text.pack pluginMaxFrameSizeEnv <> " must be a positive Word32 byte count")
+    Just frameBytes -> mkRPCPayloadLimits frameBytes
+
+-- | Read and validate RPC limits from the process environment.
+readRPCPayloadLimitsFromEnvironment :: IO (Either Text RPCPayloadLimits)
+readRPCPayloadLimitsFromEnvironment =
+  parseRPCPayloadLimitsEnvironment <$> lookupEnv pluginMaxFrameSizeEnv
 
 endpointKindText :: TransportEndpointKind -> Text
 endpointKindText TransportEndpointUnixSocket = "unix"
@@ -1346,7 +1403,7 @@ removeDirectoryIfExists path =
 --
 -- The frame header is always 4 bytes; this limit applies to the JSON payload.
 defaultMaxFrameSizeBytes :: Int
-defaultMaxFrameSizeBytes = 64 * 1024 * 1024
+defaultMaxFrameSizeBytes = fromIntegral (rplMaxFrameSizeBytes defaultRPCPayloadLimits)
 
 -- | Send a length-prefixed message over the transport.
 --
@@ -1358,10 +1415,17 @@ sendMessage = sendMessageWithLimit defaultMaxFrameSizeBytes
 -- | Send a length-prefixed message with an explicit payload size limit.
 sendMessageWithLimit :: Int -> Transport -> BS.ByteString -> IO (Either TransportError ())
 sendMessageWithLimit maxFrameBytes t payload
-  | maxFrameBytes <= 0 = pure (Left (TransportFramingError "max frame size must be positive"))
-  | BS.length payload > maxFrameBytes = pure (Left (frameTooLargeError (BS.length payload) maxFrameBytes))
+  | maxFrameBytes <= 0 = pure (Left (TransportFramingError "outgoing max frame size must be positive"))
+  | toInteger maxFrameBytes > toInteger (maxBound :: Word32) =
+      pure (Left (TransportFramingError "outgoing max frame size exceeds Word32"))
+  | payloadBytes > toInteger (maxBound :: Word32) =
+      pure (Left (TransportFramingError
+        ("outgoing frame length " <> Text.pack (show payloadBytes) <> " bytes exceeds Word32")))
+  | payloadBytes > toInteger maxFrameBytes =
+      pure (Left (frameTooLargeError "outgoing" payloadBytes (toInteger maxFrameBytes)))
   | otherwise = catch go handler
   where
+    payloadBytes = toInteger (BS.length payload)
     go = do
       let len = fromIntegral (BS.length payload) :: Word32
           header = BL.toStrict (runPut (putWord32le len))
@@ -1382,7 +1446,9 @@ recvMessage = recvMessageWithLimit defaultMaxFrameSizeBytes
 -- | Receive a length-prefixed message with an explicit payload size limit.
 recvMessageWithLimit :: Int -> Transport -> IO (Either TransportError BS.ByteString)
 recvMessageWithLimit maxFrameBytes t
-  | maxFrameBytes <= 0 = pure (Left (TransportFramingError "max frame size must be positive"))
+  | maxFrameBytes <= 0 = pure (Left (TransportFramingError "incoming max frame size must be positive"))
+  | toInteger maxFrameBytes > toInteger (maxBound :: Word32) =
+      pure (Left (TransportFramingError "incoming max frame size exceeds Word32"))
   | otherwise = catch go handler
   where
     go = do
@@ -1393,10 +1459,15 @@ recvMessageWithLimit maxFrameBytes t
           Left (_, _, err) ->
             pure (Left (TransportFramingError (Text.pack err)))
           Right (_, _, len) -> do
-            let payloadLen = fromIntegral len :: Int
-            if payloadLen > maxFrameBytes
-              then pure (Left (frameTooLargeError payloadLen maxFrameBytes))
+            let payloadLenInteger = toInteger len
+            if payloadLenInteger > toInteger maxFrameBytes
+              then pure (Left (frameTooLargeError "incoming" payloadLenInteger (toInteger maxFrameBytes)))
+              else if payloadLenInteger > toInteger (maxBound :: Int)
+                then pure (Left (TransportFramingError
+                  ("incoming frame length " <> Text.pack (show payloadLenInteger)
+                    <> " bytes exceeds platform Int")))
               else do
+                let payloadLen = fromInteger payloadLenInteger
                 payload <- BS.hGet (tReadHandle t) payloadLen
                 if BS.length payload < payloadLen
                   then pure (Left (TransportRecvFailed
@@ -1408,7 +1479,7 @@ recvMessageWithLimit maxFrameBytes t
     handler :: IOException -> IO (Either TransportError BS.ByteString)
     handler e = pure (Left (TransportRecvFailed (Text.pack (show e))))
 
-frameTooLargeError :: Int -> Int -> TransportError
-frameTooLargeError actual maxFrameBytes = TransportFramingError
-  ("frame exceeds max size: " <> Text.pack (show actual)
-   <> " bytes > " <> Text.pack (show maxFrameBytes) <> " bytes")
+frameTooLargeError :: Text -> Integer -> Integer -> TransportError
+frameTooLargeError direction actual maxFrameBytes = TransportFramingError
+  (direction <> " frame exceeds max size: actual=" <> Text.pack (show actual)
+   <> " bytes, limit=" <> Text.pack (show maxFrameBytes) <> " bytes")

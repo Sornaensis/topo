@@ -34,14 +34,19 @@ A normal host session follows this order:
 2. Launch the plugin process with a host-created endpoint from
    `Topo.Plugin.RPC.Transport`.
 3. Accept/connect the transport.
-4. Build `RPCConnection` with `newRPCConnection`.
+4. Build `RPCConnection` with `newRPCConnection` (default limits) or
+   `newRPCConnectionWithLimits` (explicit embedded limits).
 5. Call `performHandshake` before using data resources or runtime callbacks.
 6. Insert `rpcGeneratorStage` and/or `rpcSimNode` into the pipeline/simulation
    integration points.
 7. Use `rpcShutdown` and `closeTransport` during orderly shutdown.
 
 `newRPCConnection` starts with `currentProtocolVersion`, no runtime resources,
-default request timeout from `rmStartPolicy`, and an empty runtime-failure slot.
+default request timeout from `rmStartPolicy`, the default 64 MiB/48 MiB payload
+limits, and an empty runtime-failure slot. `newRPCConnectionWithLimits` preserves
+the same behavior while allowing embedded hosts to use an explicitly constructed
+`RPCPayloadLimits`. Production sessions receive the host-selected frame limit
+from the process launcher.
 `performHandshake` updates `rpcProtocolVersion`, `rpcDataDirectory`, and
 `rpcResources` after a successful `handshake_ack`.
 
@@ -52,6 +57,7 @@ default request timeout from `rmStartPolicy`, and an empty runtime-failure slot.
 | `rpcManifest` | Parsed manifest used for names, capabilities, timeouts, and integration decisions. |
 | `rpcTransport` | Connected transport handle. |
 | `rpcParams` | Current plugin parameter map sent on generator/simulation calls. |
+| `rpcPayloadLimits` | Symmetric frame and decoded terrain budgets used by every send, receive, and terrain decode. |
 | `rpcProtocolVersion` | Negotiated protocol version, currently expected to be `4`. |
 | `rpcDataDirectory` | Resolved plugin data directory returned by handshake. |
 | `rpcResources` | Data-resource schemas returned by handshake. |
@@ -136,7 +142,10 @@ derived from manifest capabilities:
 
 Both reader and writer paths decode returned overlay JSON against the
 plugin-owned overlay schema. Writer paths also decode `terrain_writes` through
-`decodeTerrainWritesValue` before applying writes.
+the connection-limited decoder before applying writes. Terrain decoding checks
+chunk dimensions and arithmetic, map cardinality, aggregate decoded bytes,
+base64 lengths/padding, exact section lengths (including river segment data),
+and trailing bytes before allocating chunk vectors.
 
 ## Error mapping
 

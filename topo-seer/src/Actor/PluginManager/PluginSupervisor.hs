@@ -125,6 +125,7 @@ import Topo.Plugin.RPC
   , externalDataSourceStatusBlocksStartup
   , externalDataSourceStatusDegradesStartup
   , newRPCConnection
+  , newRPCConnectionWithLimits
   , peekRPCFailureEvent
   , rpcShutdown
   , sameRPCConnection
@@ -699,7 +700,8 @@ connectLoadedPluginOnce executablePath lp = mask $ \restore -> do
         , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
         }
     Right launch -> do
-      let initialConnection = newRPCConnection (lpManifest lp) (lprTransport launch) (lpParams lp)
+      let initialConnection = newRPCConnectionWithLimits (lprPayloadLimits launch)
+            (lpManifest lp) (lprTransport launch) (lpParams lp)
           runtime = newOwnedPluginRuntime generation (Just initialConnection) (lprOwnedProcess launch)
       connectResult <- try @SomeException
         (restore (connectLaunchedPlugin lp policy startupTimeoutMicros runtime launch))

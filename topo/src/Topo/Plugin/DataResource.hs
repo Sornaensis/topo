@@ -413,11 +413,19 @@ instance FromJSON DataPagination where
       case mCamel of
         Just v  -> pure v
         Nothing -> o .:? "default_page_offset" >>= pure . maybe (dpDefaultPageOffset defaultDataPagination) id
-    pure DataPagination
-      { dpDefaultPageSize = defaultPageSize
-      , dpMaxPageSize = maxPageSize
-      , dpDefaultPageOffset = defaultPageOffset
-      }
+    if defaultPageSize <= 0
+      then fail "defaultPageSize must be greater than 0"
+      else if maxPageSize <= 0
+        then fail "maxPageSize must be greater than 0"
+        else if defaultPageSize > maxPageSize
+          then fail "defaultPageSize must be less than or equal to maxPageSize"
+          else if defaultPageOffset < 0
+            then fail "defaultPageOffset must be greater than or equal to 0"
+            else pure DataPagination
+              { dpDefaultPageSize = defaultPageSize
+              , dpMaxPageSize = maxPageSize
+              , dpDefaultPageOffset = defaultPageOffset
+              }
 
 -- | Schema for a plugin-declared data resource.
 --
@@ -523,6 +531,10 @@ data DataResourceError
   | DREDuplicateConstructor !Text !Text
   -- ^ Duplicate constructor name within an ADT.
   --   Carries (field name, constructor name).
+  | DREInvalidDefaultPageSize !Int
+  | DREInvalidMaxPageSize !Int
+  | DREDefaultPageSizeExceedsMax !Int !Int
+  | DREInvalidDefaultPageOffset !Int
   deriving (Eq, Show)
 
 -- | Validate a data resource schema, returning all detected errors.
@@ -547,6 +559,20 @@ validateDataResource drs = concat
     ]
   , duplicateFieldErrors
   , concatMap validateFieldType (drsFields drs)
+  , let pagination = drsPagination drs
+    in [ DREInvalidDefaultPageSize (dpDefaultPageSize pagination)
+       | dpDefaultPageSize pagination <= 0
+       ]
+      <> [ DREInvalidMaxPageSize (dpMaxPageSize pagination)
+         | dpMaxPageSize pagination <= 0
+         ]
+      <> [ DREDefaultPageSizeExceedsMax
+             (dpDefaultPageSize pagination) (dpMaxPageSize pagination)
+         | dpDefaultPageSize pagination > dpMaxPageSize pagination
+         ]
+      <> [ DREInvalidDefaultPageOffset (dpDefaultPageOffset pagination)
+         | dpDefaultPageOffset pagination < 0
+         ]
   ]
   where
     fieldNames = map dfName (drsFields drs)

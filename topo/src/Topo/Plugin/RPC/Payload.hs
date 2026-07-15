@@ -8,15 +8,20 @@ module Topo.Plugin.RPC.Payload
   ( terrainWorldToPayload
   , terrainWorldToCompletePayload
   , decodeTerrainWritesValue
+  , decodeTerrainWritesValueWithLimits
   , terrainWritesValueEmpty
   , applyGeneratorTerrainValue
+  , applyGeneratorTerrainValueWithLimits
   , encodeBase64Text
   , decodeBase64Text
   ) where
 
+import Control.Monad (foldM, unless, when)
 import Data.Bits ((.&.), (.|.), shiftL, shiftR)
 import qualified Data.ByteString as BS
+import Data.Foldable (traverse_)
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.IntSet as IntSet
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -54,6 +59,11 @@ import Topo.Simulation
   , emptyTerrainWrites
   )
 import Topo.Planet (mkLatitudeMapping)
+import Topo.Plugin.RPC.Transport
+  ( RPCPayloadLimits
+  , defaultRPCPayloadLimits
+  , rplMaxDecodedTerrainBytes
+  )
 import qualified Topo.Types
 import Topo.Units (UnitScales(..))
 import Topo.Weather (getWeatherFromOverlay)
@@ -214,7 +224,11 @@ metadataEntryToJSON (name, SomeMetadata version value) = object
 
 -- | Decode a simulation @terrain_writes@ payload into structured writes.
 decodeTerrainWritesValue :: Maybe Value -> Either Text TerrainWrites
-decodeTerrainWritesValue = decodeTerrainWrites
+decodeTerrainWritesValue = decodeTerrainWritesValueWithLimits defaultRPCPayloadLimits
+
+-- | Decode terrain writes using an explicit aggregate decoded-byte budget.
+decodeTerrainWritesValueWithLimits :: RPCPayloadLimits -> Maybe Value -> Either Text TerrainWrites
+decodeTerrainWritesValueWithLimits = decodeTerrainWrites
 
 -- | Report whether an optional simulation @terrain_writes@ payload contains
 -- no actual terrain mutations.
@@ -223,28 +237,40 @@ terrainWritesValueEmpty Nothing = Right True
 terrainWritesValueEmpty (Just Null) = Right True
 terrainWritesValueEmpty (Just (Object obj))
   | KM.null obj = Right True
-  | hasOnlySummaryKeys obj = Right True
+  | hasOnlySummaryKeys obj = validateSummaryOnly defaultConfig obj >> Right True
   | otherwise = terrainWritesObjectEmpty obj
+  where
+    defaultConfig = Topo.Types.WorldConfig { Topo.Types.wcChunkSize = 64 }
 terrainWritesValueEmpty (Just _) = Left "terrain_writes payload must be an object"
 
 -- | Apply a generator terrain payload to a world by decoding and merging
 -- chunk updates.
 applyGeneratorTerrainValue :: Topo.World.TerrainWorld -> Value -> Either Text Topo.World.TerrainWorld
-applyGeneratorTerrainValue world Null = Right world
-applyGeneratorTerrainValue world (Object obj)
-  | KM.null obj = Right world
-  | hasOnlySummaryKeys obj = Right world
-  | otherwise = applyTerrainPayload world obj
-applyGeneratorTerrainValue _ _ = Left "generator terrain payload must be an object or null"
+applyGeneratorTerrainValue = applyGeneratorTerrainValueWithLimits defaultRPCPayloadLimits
 
-decodeTerrainWrites :: Maybe Value -> Either Text TerrainWrites
-decodeTerrainWrites Nothing = Right emptyTerrainWrites
-decodeTerrainWrites (Just Null) = Right emptyTerrainWrites
-decodeTerrainWrites (Just (Object obj))
+-- | Apply a generator payload with explicit decoded payload limits.
+applyGeneratorTerrainValueWithLimits
+  :: RPCPayloadLimits
+  -> Topo.World.TerrainWorld
+  -> Value
+  -> Either Text Topo.World.TerrainWorld
+applyGeneratorTerrainValueWithLimits _ world Null = Right world
+applyGeneratorTerrainValueWithLimits limits world (Object obj)
+  | KM.null obj = Right world
+  | hasOnlySummaryKeys obj = validateSummaryOnly (twConfig world) obj >> Right world
+  | otherwise = applyTerrainPayload limits world obj
+applyGeneratorTerrainValueWithLimits _ _ _ = Left "generator terrain payload must be an object or null"
+
+decodeTerrainWrites :: RPCPayloadLimits -> Maybe Value -> Either Text TerrainWrites
+decodeTerrainWrites _ Nothing = Right emptyTerrainWrites
+decodeTerrainWrites _ (Just Null) = Right emptyTerrainWrites
+decodeTerrainWrites limits (Just (Object obj))
   | KM.null obj = Right emptyTerrainWrites
-  | hasOnlySummaryKeys obj = Right emptyTerrainWrites
-  | otherwise = terrainWritesFromPayload obj
-decodeTerrainWrites (Just _) = Left "terrain_writes payload must be an object"
+  | hasOnlySummaryKeys obj = validateSummaryOnly defaultConfig obj >> Right emptyTerrainWrites
+  | otherwise = terrainWritesFromPayload limits obj
+  where
+    defaultConfig = Topo.Types.WorldConfig { Topo.Types.wcChunkSize = 64 }
+decodeTerrainWrites _ (Just _) = Left "terrain_writes payload must be an object"
 
 hasOnlySummaryKeys :: KM.KeyMap Value -> Bool
 hasOnlySummaryKeys keyMap = all (`elem` terrainPayloadSummaryKeys) (map Key.toText (KM.keys keyMap))
@@ -273,6 +299,34 @@ terrainPayloadSummaryKeys =
   , "encoding"
   , "metadata"
   ]
+
+validateSummaryOnly
+  :: Topo.Types.WorldConfig
+  -> KM.KeyMap Value
+  -> Either Text ()
+validateSummaryOnly fallback payload = do
+  config <- lookupChunkSizeOrEither fallback payload
+  _ <- checkedTileCount config
+  traverse_ validateZeroCountField summaryCountFields
+  case KM.lookup "encoding" payload of
+    Nothing -> Right ()
+    Just (String "base64") -> Right ()
+    Just (String value) -> Left ("unsupported terrain payload encoding: " <> value)
+    Just _ -> Left "terrain payload encoding must be a string"
+  where
+    validateZeroCountField fieldName =
+      case KM.lookup (Key.fromText fieldName) payload of
+        Nothing -> Right ()
+        Just value -> case valueToNonNegativeInt value of
+          Nothing -> Left (fieldName <> " must be a non-negative platform Int")
+          Just 0 -> Right ()
+          Just declared -> Left
+            (fieldName <> " mismatch: declared=" <> tshow declared <> ", actual=0")
+    summaryCountFields =
+      [ "chunk_count", "climate_count", "river_count", "groundwater_count"
+      , "volcanism_count", "glacier_count", "water_body_count"
+      , "vegetation_count", "biome_count", "weather_count", "overlay_count"
+      ]
 
 terrainWriteSectionKeys :: [Text]
 terrainWriteSectionKeys = ["terrain", "climate", "vegetation"]
@@ -329,13 +383,20 @@ renderExportError err =
 tshow :: Show a => a -> Text
 tshow = Text.pack . show
 
-terrainWritesFromPayload :: KM.KeyMap Value -> Either Text TerrainWrites
-terrainWritesFromPayload payload =
-  terrainWritesFromPayloadWithConfig (lookupChunkSize payload) payload
+terrainWritesFromPayload :: RPCPayloadLimits -> KM.KeyMap Value -> Either Text TerrainWrites
+terrainWritesFromPayload limits payload = do
+  payloadConfig <- lookupChunkSizeOrEither defaultConfig payload
+  terrainWritesFromPayloadWithConfig limits payloadConfig payload
+  where
+    defaultConfig = Topo.Types.WorldConfig { Topo.Types.wcChunkSize = 64 }
 
-terrainWritesFromPayloadWithConfig :: Topo.Types.WorldConfig -> KM.KeyMap Value -> Either Text TerrainWrites
-terrainWritesFromPayloadWithConfig payloadConfig payload = do
-  ensureTerrainPayloadEncoding payload
+terrainWritesFromPayloadWithConfig
+  :: RPCPayloadLimits
+  -> Topo.Types.WorldConfig
+  -> KM.KeyMap Value
+  -> Either Text TerrainWrites
+terrainWritesFromPayloadWithConfig limits payloadConfig payload = do
+  validateTerrainPayload limits payloadConfig payload
   terrain <- decodeChunkSection payload "terrain" decodeTerrainChunk payloadConfig
   climate <- decodeChunkSection payload "climate" decodeClimateChunk payloadConfig
   vegetation <- decodeChunkSection payload "vegetation" decodeVegetationChunk payloadConfig
@@ -346,17 +407,18 @@ terrainWritesFromPayloadWithConfig payloadConfig payload = do
     }
 
 applyTerrainPayload
-  :: Topo.World.TerrainWorld
+  :: RPCPayloadLimits
+  -> Topo.World.TerrainWorld
   -> KM.KeyMap Value
   -> Either Text Topo.World.TerrainWorld
-applyTerrainPayload world payload = do
+applyTerrainPayload limits world payload = do
   worldWithHeader <- applyTerrainPayloadHeader world payload
-  writes <- terrainWritesFromPayloadWithConfig (twConfig worldWithHeader) payload
+  writes <- terrainWritesFromPayloadWithConfig limits (twConfig worldWithHeader) payload
   Right (applyTerrainWrites writes worldWithHeader)
 
 applyTerrainPayloadHeader :: TerrainWorld -> KM.KeyMap Value -> Either Text TerrainWorld
 applyTerrainPayloadHeader world payload = do
-  let config = lookupChunkSizeOr (twConfig world) payload
+  config <- lookupChunkSizeOrEither (twConfig world) payload
   hexMeta <- lookupPayloadField "hex_grid" (twHexGrid world) payload
   planet <- lookupPayloadField "planet" (twPlanet world) payload
   slice <- lookupPayloadField "slice" (twSlice world) payload
@@ -381,6 +443,195 @@ lookupPayloadField fieldName fallback payload =
       case Aeson.fromJSON value of
         Aeson.Error err -> Left ("invalid terrain payload field " <> fieldName <> ": " <> Text.pack err)
         Aeson.Success decoded -> Right decoded
+
+data ChunkBinaryLayout
+  = FixedBytesPerTile !Integer
+  | GroundwaterBytes
+  | RiverBytes
+
+data ChunkSectionSpec = ChunkSectionSpec
+  { cssField :: !Text
+  , cssCountField :: !Text
+  , cssLayout :: !ChunkBinaryLayout
+  }
+
+data ValidatedChunk = ValidatedChunk
+  { vcSection :: !Text
+  , vcChunkId :: !Int
+  , vcRawBase64 :: !Text
+  , vcDecodedLength :: !Integer
+  , vcLayout :: !ChunkBinaryLayout
+  }
+
+chunkSectionSpecs :: [ChunkSectionSpec]
+chunkSectionSpecs =
+  [ ChunkSectionSpec "terrain" "chunk_count" (FixedBytesPerTile 113)
+  , ChunkSectionSpec "climate" "climate_count" (FixedBytesPerTile 28)
+  , ChunkSectionSpec "rivers" "river_count" RiverBytes
+  , ChunkSectionSpec "groundwater" "groundwater_count" GroundwaterBytes
+  , ChunkSectionSpec "volcanism" "volcanism_count" (FixedBytesPerTile 26)
+  , ChunkSectionSpec "glaciers" "glacier_count" (FixedBytesPerTile 24)
+  , ChunkSectionSpec "water_bodies" "water_body_count" (FixedBytesPerTile 14)
+  , ChunkSectionSpec "vegetation" "vegetation_count" (FixedBytesPerTile 12)
+  , ChunkSectionSpec "biomes" "biome_count" (FixedBytesPerTile 2)
+  , ChunkSectionSpec "weather" "weather_count" (FixedBytesPerTile 56)
+  ]
+
+-- Validate map cardinality, checked dimensions, encoded lengths, and aggregate
+-- decoded size before allocating decoded chunk buffers or vectors.
+validateTerrainPayload
+  :: RPCPayloadLimits
+  -> Topo.Types.WorldConfig
+  -> KM.KeyMap Value
+  -> Either Text ()
+validateTerrainPayload limits config payload = do
+  ensureTerrainPayloadEncoding payload
+  tileCount <- checkedTileCount config
+  chunks <- concat <$> traverse (validateChunkSection limits tileCount payload) chunkSectionSpecs
+  let actualDecoded = sum (map vcDecodedLength chunks)
+      decodedLimit = toInteger (rplMaxDecodedTerrainBytes limits)
+  when (actualDecoded > decodedLimit) $ Left
+    ("incoming terrain payload decoded aggregate exceeds limit: actual="
+      <> tshow actualDecoded <> " bytes, limit=" <> tshow decodedLimit <> " bytes")
+  traverse_ (validateVariableChunk tileCount) chunks
+
+checkedTileCount :: Topo.Types.WorldConfig -> Either Text Integer
+checkedTileCount config =
+  let side = toInteger (Topo.Types.wcChunkSize config)
+      tiles = side * side
+  in if side <= 0
+      then Left "terrain payload chunk_size must be positive"
+      else if tiles > toInteger (maxBound :: Int)
+        then Left "terrain payload chunk_size squared exceeds platform Int"
+        else Right tiles
+
+validateChunkSection
+  :: RPCPayloadLimits
+  -> Integer
+  -> KM.KeyMap Value
+  -> ChunkSectionSpec
+  -> Either Text [ValidatedChunk]
+validateChunkSection limits tileCount payload spec =
+  case KM.lookup (Key.fromText (cssField spec)) payload of
+    Nothing -> validateSummaryCount spec payload 0 >> Right []
+    Just Null -> validateSummaryCount spec payload 0 >> Right []
+    Just (Object chunkMap) -> do
+      validateSummaryCount spec payload (KM.size chunkMap)
+      let decodedLimit = toInteger (rplMaxDecodedTerrainBytes limits)
+          minimumChunkBytes = minimumLayoutBytes tileCount (cssLayout spec)
+          chunkCount = toInteger (KM.size chunkMap)
+      when (chunkCount * minimumChunkBytes > decodedLimit) $ Left
+        ("incoming " <> cssField spec <> " chunk map exceeds decoded limit before base64 decode: actual>="
+          <> tshow (chunkCount * minimumChunkBytes) <> " bytes, limit="
+          <> tshow decodedLimit <> " bytes")
+      snd <$> foldM (validateChunkEntry tileCount spec) (IntSet.empty, []) (KM.toList chunkMap)
+    Just _ -> Left (cssField spec <> " payload must be an object")
+
+validateSummaryCount :: ChunkSectionSpec -> KM.KeyMap Value -> Int -> Either Text ()
+validateSummaryCount spec payload actual =
+  case KM.lookup (Key.fromText (cssCountField spec)) payload of
+    Nothing -> Right ()
+    Just value -> case valueToNonNegativeInt value of
+      Nothing -> Left (cssCountField spec <> " must be a non-negative platform Int")
+      Just declared -> unless (declared == actual) $ Left
+        (cssCountField spec <> " mismatch: declared=" <> tshow declared
+          <> ", actual=" <> tshow actual)
+
+validateChunkEntry
+  :: Integer
+  -> ChunkSectionSpec
+  -> (IntSet.IntSet, [ValidatedChunk])
+  -> (Key.Key, Value)
+  -> Either Text (IntSet.IntSet, [ValidatedChunk])
+validateChunkEntry tileCount spec (seen, chunks) (chunkKey, rawValue) = do
+  chunkId <- parseChunkId (Key.toText chunkKey)
+  when (chunkId < 0) $ Left ("invalid negative chunk id: " <> Key.toText chunkKey)
+  when (IntSet.member chunkId seen) $ Left
+    (cssField spec <> " payload contains duplicate numeric chunk id " <> tshow chunkId)
+  raw <- case rawValue of
+    String value -> Right value
+    _ -> Left (cssField spec <> " chunk " <> tshow chunkId <> " must be a base64 string")
+  decodedLength <- validatedBase64DecodedLength raw
+  validateLayoutLength tileCount (cssField spec) chunkId (cssLayout spec) decodedLength
+  let chunk = ValidatedChunk
+        { vcSection = cssField spec
+        , vcChunkId = chunkId
+        , vcRawBase64 = raw
+        , vcDecodedLength = decodedLength
+        , vcLayout = cssLayout spec
+        }
+  Right (IntSet.insert chunkId seen, chunk : chunks)
+
+minimumLayoutBytes :: Integer -> ChunkBinaryLayout -> Integer
+minimumLayoutBytes tileCount layout = case layout of
+  FixedBytesPerTile bytesPerTile -> 4 + bytesPerTile * tileCount
+  GroundwaterBytes -> 4 + 16 * tileCount
+  RiverBytes -> 12 + 38 * tileCount
+
+validateLayoutLength :: Integer -> Text -> Int -> ChunkBinaryLayout -> Integer -> Either Text ()
+validateLayoutLength tileCount section chunkId layout actual = case layout of
+  FixedBytesPerTile bytesPerTile -> exact (4 + bytesPerTile * tileCount)
+  GroundwaterBytes ->
+    let legacy = 4 + 16 * tileCount
+        extended = 4 + 28 * tileCount
+    in unless (actual == legacy || actual == extended) $ Left
+        (prefix <> "expected one of [" <> tshow legacy <> ", " <> tshow extended
+          <> "] bytes, actual=" <> tshow actual)
+  RiverBytes ->
+    let minimumBytes = minimumLayoutBytes tileCount RiverBytes
+    in when (actual < minimumBytes) $ Left
+        (prefix <> "minimum=" <> tshow minimumBytes <> " bytes, actual=" <> tshow actual)
+  where
+    prefix = section <> " chunk " <> tshow chunkId <> " length mismatch: "
+    exact expected = unless (actual == expected) $ Left
+      (prefix <> "expected=" <> tshow expected <> " bytes, actual=" <> tshow actual)
+
+validateVariableChunk :: Integer -> ValidatedChunk -> Either Text ()
+validateVariableChunk tileCount chunk = case vcLayout chunk of
+  RiverBytes -> do
+    bytes <- decodeBase64Text (vcRawBase64 chunk)
+    let segmentCountOffset = 4 + 34 * tileCount
+    segmentCount <- word32LEAt (vcSection chunk) (vcChunkId chunk) segmentCountOffset bytes
+    let expected = 12 + 38 * tileCount + 8 * toInteger segmentCount
+        actual = vcDecodedLength chunk
+    unless (actual == expected) $ Left
+      (vcSection chunk <> " chunk " <> tshow (vcChunkId chunk)
+        <> " length mismatch: expected=" <> tshow expected
+        <> " bytes from segment count, actual=" <> tshow actual)
+  _ -> Right ()
+
+word32LEAt :: Text -> Int -> Integer -> BS.ByteString -> Either Text Integer
+word32LEAt section chunkId offset bytes
+  | offset < 0 || offset + 4 > toInteger (BS.length bytes) = Left
+      (section <> " chunk " <> tshow chunkId <> " missing segment count")
+  | offset > toInteger (maxBound :: Int) = Left
+      (section <> " chunk " <> tshow chunkId <> " segment count offset exceeds platform Int")
+  | otherwise =
+      let index = fromInteger offset
+          byte n = toInteger (BS.index bytes (index + n))
+      in Right (byte 0 .|. (byte 1 `shiftL` 8) .|. (byte 2 `shiftL` 16) .|. (byte 3 `shiftL` 24))
+
+validatedBase64DecodedLength :: Text -> Either Text Integer
+validatedBase64DecodedLength raw = do
+  let encodedLength = Text.length raw
+      padding = Text.length (Text.takeWhileEnd (== '=') raw)
+      body = Text.dropEnd padding raw
+      alphabetMember ch =
+        ('A' <= ch && ch <= 'Z') || ('a' <= ch && ch <= 'z')
+          || ('0' <= ch && ch <= '9') || ch == '+' || ch == '/'
+  when (encodedLength `mod` 4 /= 0) $ Left "invalid base64 length"
+  when (padding > 2) $ Left "invalid base64 padding"
+  unless (Text.all alphabetMember body) $ Left "invalid base64 character or padding location"
+  let decodedLength = toInteger (encodedLength `div` 4 * 3 - padding)
+  Right decodedLength
+
+valueToNonNegativeInt :: Value -> Maybe Int
+valueToNonNegativeInt (Number n) =
+  let asInteger = floor n :: Integer
+  in if fromInteger asInteger == n && asInteger >= 0 && asInteger <= fromIntegral (maxBound :: Int)
+      then Just (fromInteger asInteger)
+      else Nothing
+valueToNonNegativeInt _ = Nothing
 
 decodeChunkSection
   :: KM.KeyMap Value
@@ -420,16 +671,16 @@ ensureTerrainPayloadEncoding payload =
     Just _ -> Left "terrain payload encoding must be a string"
     Nothing -> Left "terrain payload missing required encoding field"
 
-lookupChunkSize :: KM.KeyMap Value -> Topo.Types.WorldConfig
-lookupChunkSize = lookupChunkSizeOr defaultConfig
-  where
-    defaultConfig = Topo.Types.WorldConfig { Topo.Types.wcChunkSize = 64 }
-
-lookupChunkSizeOr :: Topo.Types.WorldConfig -> KM.KeyMap Value -> Topo.Types.WorldConfig
-lookupChunkSizeOr fallback payload =
-  case KM.lookup "chunk_size" payload >>= valueToPositiveInt of
-    Just chunkSize -> Topo.Types.WorldConfig { Topo.Types.wcChunkSize = chunkSize }
-    Nothing -> fallback
+lookupChunkSizeOrEither
+  :: Topo.Types.WorldConfig
+  -> KM.KeyMap Value
+  -> Either Text Topo.Types.WorldConfig
+lookupChunkSizeOrEither fallback payload =
+  case KM.lookup "chunk_size" payload of
+    Nothing -> Right fallback
+    Just value -> case valueToPositiveInt value of
+      Just chunkSize -> Right Topo.Types.WorldConfig { Topo.Types.wcChunkSize = chunkSize }
+      Nothing -> Left "terrain payload chunk_size must be a positive platform Int"
 
 valueToPositiveInt :: Value -> Maybe Int
 valueToPositiveInt (Number n) =
