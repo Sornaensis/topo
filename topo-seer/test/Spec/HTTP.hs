@@ -12,7 +12,7 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.Foldable (toList)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
-import Data.IORef (atomicModifyIORef', newIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (find, nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -101,15 +101,19 @@ import Seer.Service.AppService
   , ConfigService(..)
   , DataResourceService(..)
   , LogService(..)
+  , StateService(..)
   , TerrainService(..)
+  , UiService(..)
   , appServiceOperationMethods
   , configGetEnumsOperation
   , configGetSlidersOperation
   , dataResourceCreateRecordOperation
   , dataResourceListRecordsOperation
   , logGetOperation
+  , stateGetStateOperation
   , terrainGetChunkSummaryOperation
   , terrainGetHexOperation
+  , uiSetSeedOperation
   )
 import Seer.Service.Types
   ( ServiceError(..)
@@ -124,6 +128,7 @@ import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
 import System.Directory
   ( createDirectory
   , createDirectoryIfMissing
+  , doesDirectoryExist
   , doesFileExist
   , getCurrentDirectory
   , getTemporaryDirectory
@@ -132,7 +137,7 @@ import System.Directory
   , removeFile
   )
 import System.Environment (lookupEnv, setEnv, unsetEnv, withArgs)
-import System.FilePath ((</>), takeDirectory)
+import System.FilePath ((</>), takeDirectory, takeExtension)
 import System.IO.Error (isDoesNotExistError)
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Overlay (emptyOverlayStore, insertOverlay, OverlayProvenance(..))
@@ -993,51 +998,63 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupHeaderText "x-request-id" (hresHeaders denied) `shouldBe` Just "req-123"
       lookupNestedText ["error", "request_id"] (hresBody denied) `shouldBe` Just "req-123"
 
-  it "keeps known and unknown /commands routes permanently absent before auth, body, service, or event handling" $
+  it "keeps known, unknown, and method-mismatched /commands requests absent before auth or service handling" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
+      serviceCalls <- newIORef []
       let ctx = headlessServiceContext app
           tokenCfg = defaultHttpServerConfig { hscBearerToken = Just "secret" }
-          remoteCfg = tokenCfg { hscBindHost = "0.0.0.0" }
-          throwingApp = headlessAppService
-            { appConfig = (appConfig headlessAppService)
-                { configGetSliders = rawServiceHandler configGetSlidersOperation $ \_ _ ->
-                    throwIO (userError "removed /commands route dispatched")
-                }
-            }
-          requestId = "commands-permanently-absent"
-          commandRequest path headers = (mkRequest "POST" path)
+          guardedApp = commandDispatchGuard serviceCalls
+          authCases =
+            [ ("no-token-config", defaultHttpServerConfig, [])
+            , ("token-missing", tokenCfg, [])
+            , ("token-invalid", tokenCfg, [("authorization", "Bearer wrong")])
+            , ("token-valid", tokenCfg, [("authorization", "Bearer secret")])
+            ]
+          routeCases =
+            [ ("known-get-state", "POST", ["commands", "get_state"], object [])
+            , ("known-set-seed", "POST", ["commands", "set_seed"], object ["seed" .= (777 :: Int)])
+            , ("unknown", "POST", ["commands", "no_such_method"], object [])
+            , ("method-mismatch", "GET", ["commands", "get_state"], object [])
+            ]
+          commandRequest requestId routeMethod path body headers = (mkRequest routeMethod path)
             { hreqHeaders = ("x-request-id", requestId) : headers
             , hreqQuery = [("invalid", Just "query")]
-            , hreqBody = Just (String "malformed-for-any-command")
+            , hreqBody = Just body
             }
-          cases =
-            [ (defaultHttpServerConfig, commandRequest ["commands", "get_sliders"] [])
-            , (defaultHttpServerConfig, commandRequest ["commands", "unknown"] [])
-            , (tokenCfg, commandRequest ["commands", "get_sliders"] [])
-            , (tokenCfg, commandRequest ["commands", "get_sliders"] [("authorization", "Bearer wrong")])
-            , (tokenCfg, commandRequest ["commands", "get_sliders"] [("authorization", "Bearer secret")])
-            , (remoteCfg, commandRequest ["commands", "get_sliders"] [("authorization", "Bearer secret")])
-            ]
+      baseline <- beginHttpPublicationAssertion app
       eventsBefore <- request app (mkRequest "GET" ["events"])
-      forM_ cases $ \(cfg, commandReq) -> do
-        response <- handleHttpRequest cfg throwingApp ctx commandReq
-        assertCommandRouteAbsent requestId response
-      eventsAfter <- request app (mkRequest "GET" ["events"])
-      lookupValue "events" (hresBody eventsAfter) `shouldBe` lookupValue "events" (hresBody eventsBefore)
+      (forM_ routeCases $ \(routeName, routeMethod, path, body) ->
+        forM_ authCases $ \(authName, cfg, headers) -> do
+          let caseName = Text.intercalate " / " [routeName, authName]
+              requestId = Text.intercalate "-" ["commands-absent", routeName, authName]
+          response <- handleHttpRequest cfg guardedApp ctx
+            (commandRequest requestId routeMethod path body headers)
+          assertCommandRouteAbsent caseName requestId response)
+        `finally` assertCommandSideEffectsAbsent app baseline eventsBefore serviceCalls
 
-  it "returns /commands 404 before WAI auth, content-type, JSON, and body-size handling" $
+  it "returns the same /commands 404 through WAI before auth, content-type, JSON, or body-size handling" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
-      let cfg = defaultHttpServerConfig
+      serviceCalls <- newIORef []
+      let noTokenCfg = defaultHttpServerConfig
             { hscBindPort = 7380
-            , hscBearerToken = Just "secret"
             , hscMaxRequestBodyBytes = 1
             }
-      tid <- forkHttpServer cfg headlessAppService (headlessServiceContext app)
+          tokenCfg = noTokenCfg
+            { hscBindPort = 7381
+            , hscBearerToken = Just "secret"
+            }
+          guardedApp = commandDispatchGuard serviceCalls
+      baseline <- beginHttpPublicationAssertion app
+      eventsBefore <- request app (mkRequest "GET" ["events"])
+      noTokenTid <- forkHttpServer noTokenCfg guardedApp (headlessServiceContext app)
+      tokenTid <- forkHttpServer tokenCfg guardedApp (headlessServiceContext app)
       manager <- newManager defaultManagerSettings
-      eventually_ (assertWaiCommandRoutesAbsent manager)
+      (eventually_ (assertWaiCommandRoutesAbsent manager)
         `finally` (do
-          killThread tid
-          threadDelay 100000)
+          killThread tokenTid
+          killThread noTokenTid
+          threadDelay 100000))
+        `finally` assertCommandSideEffectsAbsent app baseline eventsBefore serviceCalls
 
   it "lists every public route in OpenAPI" $ do
     let doc = openApiDocument publicHttpRouteSpecs
@@ -1046,12 +1063,33 @@ spec = describe "Seer.HTTP.Server" $ do
           routeMethod = Text.toLower (hrsMethod route)
       pathMethods doc path `shouldSatisfy` maybe False (routeMethod `elem`)
 
-  it "keeps command routes absent from runtime dispatch and public OpenAPI" $ do
+  it "keeps runtime, public, friendly, and OpenAPI route sets command-free and in lockstep" $ do
     httpRouteSpecs `shouldBe` friendlyHttpRouteSpecs
     publicHttpRouteSpecs `shouldBe` friendlyHttpRouteSpecs
+    forM_
+      [ ("runtime httpRouteSpecs", httpRouteSpecs)
+      , ("public publicHttpRouteSpecs", publicHttpRouteSpecs)
+      , ("friendly friendlyHttpRouteSpecs", friendlyHttpRouteSpecs)
+      ] $ uncurry assertNoCommandRoutes
     let doc = openApiDocument publicHttpRouteSpecs
-    pathMethods doc "/commands/get_state" `shouldBe` Nothing
-    openApiSignatureLines doc `shouldSatisfy` all (not . Text.isInfixOf "/commands/")
+    sort (openApiSignatureLines doc) `shouldBe` sort (map routeSignature publicHttpRouteSpecs)
+    assertNoCommandOpenApiPaths doc
+
+  it "does not export or define generated command HTTP compatibility metadata" $ do
+    mSources <- httpModuleSources
+    case mSources of
+      Nothing -> pendingWith "Seer/HTTP source modules are unavailable in this package-only test run"
+      Just sources -> do
+        case lookup "Server.hs" sources of
+          Nothing -> expectationFailure "Seer/HTTP/Server.hs was not included in the structural source lock"
+          Just serverSource -> httpServerExports serverSource `shouldBe` retainedHttpServerExports
+        forM_ sources $ \(sourceName, source) ->
+          forM_ ["\"commands\"", "command.", "seer.command"] $ \removedFragment ->
+            if removedFragment `Text.isInfixOf` Text.toLower source
+              then expectationFailure
+                (sourceName <> " reintroduced removed command HTTP compatibility metadata: "
+                  <> Text.unpack removedFragment)
+              else pure ()
 
   it "keeps OpenAPI paths and public route metadata in lockstep" $ do
     let doc = openApiDocument publicHttpRouteSpecs
@@ -2656,6 +2694,33 @@ routeSignature :: HttpRouteSpec -> Text
 routeSignature route =
   Text.unwords [hrsMethod route, routePathText route, hrsOperationId route]
 
+assertNoCommandRoutes :: String -> [HttpRouteSpec] -> Expectation
+assertNoCommandRoutes routeSetName routes =
+  case filter hasCommandPrefix routes of
+    [] -> pure ()
+    commandRoutes -> expectationFailure
+      (routeSetName <> " reintroduced removed /commands HTTP routes: "
+        <> Text.unpack (Text.intercalate ", " (map routeSignature commandRoutes)))
+  where
+    hasCommandPrefix route = case hrsPath route of
+      "commands" : _ -> True
+      _ -> False
+
+assertNoCommandOpenApiPaths :: Value -> Expectation
+assertNoCommandOpenApiPaths doc =
+  case filter isCommandPath (openApiPathTexts doc) of
+    [] -> pure ()
+    commandPaths -> expectationFailure
+      ("OpenAPI reintroduced removed /commands paths: "
+        <> Text.unpack (Text.intercalate ", " commandPaths))
+  where
+    isCommandPath path = path == "/commands" || "/commands/" `Text.isPrefixOf` path
+
+openApiPathTexts :: Value -> [Text]
+openApiPathTexts doc = case lookupValue "paths" doc of
+  Just (Object paths) -> map (Key.toText . fst) (KM.toList paths)
+  _ -> []
+
 openApiSignatureLines :: Value -> [Text]
 openApiSignatureLines doc =
   case lookupValue "paths" doc of
@@ -2724,6 +2789,71 @@ publishedOpenApiPath = do
       if exists
         then pure (Just path)
         else firstExisting rest
+
+httpModuleSources :: IO (Maybe [(FilePath, Text)])
+httpModuleSources = do
+  cwd <- getCurrentDirectory
+  firstExistingRoot
+    [ cwd </> "topo-seer" </> "src" </> "Seer" </> "HTTP"
+    , cwd </> "src" </> "Seer" </> "HTTP"
+    ]
+  where
+    firstExistingRoot [] = pure Nothing
+    firstExistingRoot (root:rest) = do
+      exists <- doesDirectoryExist root
+      if not exists
+        then firstExistingRoot rest
+        else do
+          sourceFiles <- sort <$> listHaskellSources root ""
+          if null sourceFiles
+            then firstExistingRoot rest
+            else Just <$> mapM (readSource root) sourceFiles
+
+    listHaskellSources root relative = do
+      entries <- listDirectory (root </> relative)
+      concat <$> mapM (visit root relative) entries
+
+    visit root relative entry = do
+      let relativePath = if null relative then entry else relative </> entry
+          absolutePath = root </> relativePath
+      directory <- doesDirectoryExist absolutePath
+      if directory
+        then listHaskellSources root relativePath
+        else pure [relativePath | takeExtension entry == ".hs"]
+
+    readSource root sourceFile = do
+      source <- TextIO.readFile (root </> sourceFile)
+      pure (sourceFile, source)
+
+httpServerExports :: Text -> [Text]
+httpServerExports source =
+  case Text.breakOn "module Seer.HTTP.Server" source of
+    (_, moduleHeader)
+      | Text.null moduleHeader -> []
+      | otherwise ->
+          let afterOpen = Text.drop 1 (snd (Text.breakOn "(" moduleHeader))
+              exportBlock = fst (Text.breakOn ") where" afterOpen)
+          in filter (not . Text.null)
+              (map (Text.strip . Text.dropWhile (== ',') . Text.strip) (Text.lines exportBlock))
+
+retainedHttpServerExports :: [Text]
+retainedHttpServerExports =
+  [ "HttpServerConfig(..)"
+  , "defaultHttpServerConfig"
+  , "parseHttpBind"
+  , "runHttpServer"
+  , "HttpServerHandle"
+  , "startHttpServer"
+  , "shutdownHttpServer"
+  , "forkHttpServer"
+  , "httpApplication"
+  , "handleHttpRequest"
+  , "HttpRequest(..)"
+  , "HttpResponse(..)"
+  , "httpRouteSpecs"
+  , "publicHttpRouteSpecs"
+  , "friendlyHttpRouteSpecs"
+  ]
 
 assertEndpoint :: Manager -> String -> IO ()
 assertEndpoint manager path = do
@@ -2796,29 +2926,92 @@ assertMalformedUtf8QueryErrors manager =
 
 assertWaiCommandRoutesAbsent :: Manager -> IO ()
 assertWaiCommandRoutesAbsent manager = do
-  let requestId = "wai-commands-permanently-absent"
-      cases =
-        [ ("http://127.0.0.1:7380/commands/get_sliders", LBS.fromStrict (BS.replicate 9 123), [("Content-Type", "text/plain")])
-        , ("http://127.0.0.1:7380/commands/get_sliders", "{", [jsonContentTypeHeader, ("Authorization", "Bearer wrong")])
-        , ("http://127.0.0.1:7380/commands/get_sliders", "{", [jsonContentTypeHeader, ("Authorization", "Bearer secret")])
-        , ("http://127.0.0.1:7380/commands/unknown", "{", [jsonContentTypeHeader, ("Authorization", "Bearer secret")])
+  let authCases =
+        [ ("no-token-config", 7380, [])
+        , ("token-missing", 7381, [])
+        , ("token-invalid", 7381, [("Authorization", "Bearer wrong")])
+        , ("token-valid", 7381, [("Authorization", "Bearer secret")])
         ]
-  forM_ cases $ \(url, rawBody, headers) -> do
-    response <- waiRawRequest manager requestId "POST" url rawBody headers
-    assertCommandRouteAbsent requestId response
+      routeCases =
+        [ ("known-get-state", "POST", "/commands/get_state", LBS.fromStrict (BS.replicate 9 123), [("Content-Type", "text/plain")])
+        , ("known-set-seed", "POST", "/commands/set_seed", "{\"seed\":777}", [jsonContentTypeHeader])
+        , ("unknown", "POST", "/commands/no_such_method", "{", [jsonContentTypeHeader])
+        , ("method-mismatch", "GET", "/commands/get_state", "{}", [("Content-Type", "application/x-json")])
+        ]
+  forM_ authCases $ \(authName, port, authHeaders) ->
+    forM_ routeCases $ \(routeName, requestMethod, path, rawBody, bodyHeaders) -> do
+      let requestId = Text.intercalate "-" ["wai-commands-absent", authName, routeName]
+          url = "http://127.0.0.1:" <> show port <> path
+      response <- waiRawRequest manager requestId requestMethod url rawBody
+        (bodyHeaders <> authHeaders)
+      assertCommandRouteAbsent (routeName <> " / " <> authName) requestId response
 
-assertCommandRouteAbsent :: Text -> HttpResponse -> Expectation
-assertCommandRouteAbsent requestId response = do
-  hresStatusCode response `shouldBe` 404
-  lookupHeaderText "x-request-id" (hresHeaders response) `shouldBe` Just requestId
-  hresBody response `shouldBe` object
-    [ "error" .= object
-        [ "code" .= ("not_found" :: Text)
-        , "message" .= ("route not found" :: Text)
-        , "details" .= ([] :: [Value])
-        , "request_id" .= requestId
-        ]
-    ]
+commandDispatchGuard :: IORef [Text] -> AppService
+commandDispatchGuard serviceCalls = headlessAppService
+  { appState = (appState headlessAppService)
+      { stateGetState = trappingServiceHandler serviceCalls "get_state" stateGetStateOperation
+      }
+  , appUi = (appUi headlessAppService)
+      { uiSetSeed = trappingServiceHandler serviceCalls "set_seed" uiSetSeedOperation
+      }
+  }
+
+trappingServiceHandler
+  :: IORef [Text]
+  -> Text
+  -> TypedServiceOperation request response
+  -> ServiceHandler request response
+trappingServiceHandler serviceCalls methodName operation =
+  rawServiceHandler operation $ \_ _ -> do
+    atomicModifyIORef' serviceCalls (\calls -> (methodName : calls, ()))
+    throwIO (userError ("removed /commands route invoked AppService method " <> Text.unpack methodName))
+
+assertCommandSideEffectsAbsent
+  :: HeadlessApp
+  -> HttpPublicationBaseline
+  -> HttpResponse
+  -> IORef [Text]
+  -> Expectation
+assertCommandSideEffectsAbsent app baseline eventsBefore serviceCalls = do
+  calls <- readIORef serviceCalls
+  calls `shouldBe` []
+  let handles = httpHandles app
+  committed <- readCommittedRenderSnapshot (ahSnapshotVersionRef handles)
+  committed `shouldBe` (hpbVersion baseline, hpbSnapshot baseline)
+  liveUi <- getUiSnapshot (ahUiHandle handles)
+  liveUi `shouldBe` rsUi (hpbSnapshot baseline)
+  atlasJobs <- drainAtlasJobs (ahAtlasManagerHandle handles)
+  length atlasJobs `shouldBe` 0
+  eventsAfter <- request app (mkRequest "GET" ["events"])
+  lookupValue "events" (hresBody eventsAfter)
+    `shouldBe` lookupValue "events" (hresBody eventsBefore)
+
+assertCommandRouteAbsent :: Text -> Text -> HttpResponse -> Expectation
+assertCommandRouteAbsent caseName requestId response =
+  if actual == expected
+    then pure ()
+    else expectationFailure
+      ("removed /commands regression for " <> Text.unpack caseName
+        <> "\nexpected status/request-id/body: " <> show expected
+        <> "\n but got status/request-id/body: " <> show actual)
+  where
+    actual =
+      ( hresStatusCode response
+      , lookupHeaderText "x-request-id" (hresHeaders response)
+      , hresBody response
+      )
+    expected =
+      ( 404
+      , Just requestId
+      , object
+          [ "error" .= object
+              [ "code" .= ("not_found" :: Text)
+              , "message" .= ("route not found" :: Text)
+              , "details" .= ([] :: [Value])
+              , "request_id" .= requestId
+              ]
+          ]
+      )
 
 assertUnauthorizedProtectedTransportErrors :: Manager -> IO ()
 assertUnauthorizedProtectedTransportErrors manager = do
