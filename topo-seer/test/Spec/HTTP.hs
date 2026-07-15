@@ -14,6 +14,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (find, nub, sort)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -106,6 +107,7 @@ import Seer.Service.AppService
   , TerrainService(..)
   , UiService(..)
   , appServiceOperationMethods
+  , appServiceOperationSpecs
   , configGetEnumsOperation
   , configGetSlidersOperation
   , dataResourceCreateRecordOperation
@@ -133,6 +135,7 @@ import Seer.Service.Types
   , serviceErrorCode
   , serviceErrorHTTPStatus
   , serviceErrorMessage
+  , serviceOperationMethod
   )
 import Seer.System (runApp)
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
@@ -1202,6 +1205,38 @@ spec = describe "Seer.HTTP.Server" $ do
           killThread noTokenTid
           threadDelay 100000))
         `finally` assertCommandSideEffectsAbsent app baseline eventsBefore serviceCalls
+
+  describe "friendly HTTP/AppService coverage invariant" $ do
+    it "covers every registered AppService method and rejects stale or command-only HTTP projections" $ do
+      let catalogMethods = sort (map serviceOperationMethod appServiceOperationSpecs)
+          friendlyProjection = serviceRouteProjection friendlyHttpRouteSpecs
+          friendlyMethods = map fst friendlyProjection
+          missingMethods = filter (`notElem` friendlyMethods) catalogMethods
+          staleMethods = filter (`notElem` catalogMethods) friendlyMethods
+          commandOnlyRoutes = commandRouteSignatures httpRouteSpecs
+      stableMethodSetDiagnostics
+        [ ("missing-friendly-route", missingMethods)
+        , ("stale-friendly-route-method", staleMethods)
+        , ("command-only-http-route", commandOnlyRoutes)
+        ] `shouldBe` []
+      appServiceOperationMethods `shouldBe` map serviceOperationMethod appServiceOperationSpecs
+      serviceRouteProjection publicHttpRouteSpecs `shouldBe` friendlyProjection
+      serviceRouteProjection httpRouteSpecs `shouldBe` friendlyProjection
+
+    it "locks the nine reviewed alias groups into public metadata and OpenAPI" $ do
+      let aliasProjection = filter ((> 1) . length . snd) $
+            serviceRouteProjection friendlyHttpRouteSpecs
+          docSignatures = openApiSignatureLines (openApiDocument publicHttpRouteSpecs)
+          missingOpenApiAliases =
+            [ signature
+            | (_, signatures) <- aliasProjection
+            , signature <- signatures
+            , signature `notElem` docSignatures
+            ]
+      aliasProjection `shouldBe` expectedFriendlyServiceAliases
+      stableMethodSetDiagnostics
+        [("friendly-alias-missing-from-openapi", missingOpenApiAliases)]
+        `shouldBe` []
 
   it "lists every public route in OpenAPI" $ do
     let doc = openApiDocument publicHttpRouteSpecs
@@ -2896,6 +2931,84 @@ routeRequestBodyRequired route = case hrsRequestBody route of
 routeSignature :: HttpRouteSpec -> Text
 routeSignature route =
   Text.unwords [hrsMethod route, routePathText route, hrsOperationId route]
+
+serviceRouteProjection :: [HttpRouteSpec] -> [(Text, [Text])]
+serviceRouteProjection routes =
+  [ (serviceMethod, sort signatures)
+  | (serviceMethod, signatures) <- Map.toAscList $ Map.fromListWith (<>)
+      [ (serviceMethod, [routeSignature route])
+      | route <- routes
+      , Just serviceMethod <- [hrsServiceMethod route]
+      ]
+  ]
+
+commandRouteSignatures :: [HttpRouteSpec] -> [Text]
+commandRouteSignatures routes = sort
+  [ routeSignature route
+  | route <- routes
+  , case hrsPath route of
+      "commands" : _ -> True
+      _ -> False
+  ]
+
+stableMethodSetDiagnostics :: [(Text, [Text])] -> [Text]
+stableMethodSetDiagnostics methodSets =
+  [ label <> ": " <> methodName
+  | (label, methods) <- methodSets
+  , methodName <- sort methods
+  ]
+
+expectedFriendlyServiceAliases :: [(Text, [Text])]
+expectedFriendlyServiceAliases =
+  [ ( "cycle_overlay"
+    , [ "POST /overlays/cycle overlays.cycle"
+      , "POST /ui/overlay/cycle ui.overlay.cycle"
+      ]
+    )
+  , ( "cycle_overlay_field"
+    , [ "POST /overlays/fields/cycle overlays.field.cycle"
+      , "POST /ui/overlay-field/cycle ui.overlayField.cycle"
+      ]
+    )
+  , ( "get_camera"
+    , [ "GET /camera camera.get"
+      , "GET /ui/camera ui.camera.get"
+      ]
+    )
+  , ( "get_overlays"
+    , [ "GET /overlays overlays.list"
+      , "GET /terrain/overlays terrain.overlays"
+      ]
+    )
+  , ( "list_overlay_fields"
+    , [ "GET /overlays/fields overlays.fields.list"
+      , "GET /ui/overlay-fields ui.overlayFields.list"
+      ]
+    )
+  , ( "list_plugins"
+    , [ "GET /plugins plugins.list"
+      , "GET /plugins/dependencies plugins.dependencies"
+      , "GET /plugins/state plugins.state"
+      , "GET /plugins/status plugins.status"
+      ]
+    )
+  , ( "set_camera"
+    , [ "PUT /camera camera.set"
+      , "PUT /ui/camera ui.camera.set"
+      ]
+    )
+  , ( "set_overlay"
+    , [ "POST /ui/overlay ui.overlay.set"
+      , "PUT /overlays/current overlays.current.set"
+      , "PUT /ui/overlay ui.overlay.replace"
+      ]
+    )
+  , ( "zoom_to_chunk"
+    , [ "POST /camera/zoom-to-chunk camera.zoomToChunk"
+      , "POST /ui/camera/zoom-to-chunk ui.camera.zoomToChunk"
+      ]
+    )
+  ]
 
 assertNoCommandRoutes :: String -> [HttpRouteSpec] -> Expectation
 assertNoCommandRoutes routeSetName routes =
