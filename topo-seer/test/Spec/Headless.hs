@@ -2,8 +2,10 @@
 
 module Spec.Headless (spec) where
 
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar, takeMVar, tryReadMVar)
 import Control.Exception (bracket, finally)
-import Data.Aeson (Value(..))
+import Data.Aeson (Value(..), object)
 import qualified Data.Aeson.KeyMap as KM
 import Linear (V2(..), V4(..))
 import qualified SDL
@@ -16,11 +18,15 @@ import System.Directory
   )
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
+import System.Timeout (timeout)
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Test.Hspec
 
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Config.Runtime (TopoSeerConfig(..))
+import Seer.DataBrowser.Executor (submitDataBrowserAction, waitDataBrowserExecutorIdle)
+import Seer.DataBrowser.Lifecycle (DataBrowserAppAction(..))
+import Seer.DataBrowser.Model (DataBrowserBeginResult(..))
 import Seer.Headless
   ( HeadlessConfig(..)
   , defaultHeadlessConfig
@@ -30,6 +36,7 @@ import Seer.Headless
   )
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy(..))
 import Seer.Service.Context (ServiceContext(..))
+import Seer.Service.Types (ServiceResponse(..))
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 import UI.DrawCommand (clearClip, clipTo, fillRect, line, strokeRect, textCentered)
 import UI.DrawCommand.SDL (interpretDrawCommands)
@@ -72,6 +79,29 @@ spec = describe "Seer.Headless" $ do
         svcScreenshotStoragePolicy (headlessServiceContext app)
           `shouldSatisfy` isStorageEnabled
 
+  it "cancels and joins every Data Browser worker before bracketed teardown returns" $ do
+    started <- newEmptyMVar
+    release <- newEmptyMVar
+    finished <- newEmptyMVar
+    executorIdle <- newEmptyMVar
+    let gatedService _ _ =
+          (putMVar started () >> readMVar release >> pure (Right (ServiceResponse (object []))))
+            `finally` putMVar finished ()
+    result <- timeout 30000000 $
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        let executor = ccDataBrowserExecutor (headlessCommandContext app)
+        begun <- submitDataBrowserAction executor gatedService DataBrowserLoadPlugins
+        case begun of
+          DataBrowserBeginAccepted {} -> pure ()
+          other -> expectationFailure ("expected accepted Data Browser worker, got " <> show other)
+        expectWithin "headless worker start" (takeMVar started)
+        tryReadMVar finished `shouldReturn` Nothing
+        _ <- forkIO $ waitDataBrowserExecutorIdle executor >> putMVar executorIdle ()
+        pure ()
+    result `shouldBe` Just ()
+    expectWithin "headless executor idle after teardown" (takeMVar executorIdle)
+    tryReadMVar finished `shouldReturn` Just ()
+
   it "uses the configured deterministic seed for repeatable tests" $
     withHeadlessApp defaultHeadlessConfig { hcSeed = 123 } $ \app -> do
       rsp <- dispatchCommand (headlessCommandContext app) SeerCommand
@@ -101,6 +131,13 @@ spec = describe "Seer.Headless" $ do
                   ]
                 SDL.present renderer
       drawSmoke `finally` SDL.quit
+
+expectWithin :: String -> IO a -> IO a
+expectWithin label action = do
+  result <- timeout 1000000 action
+  case result of
+    Just value -> pure value
+    Nothing -> expectationFailure (label <> " deadlocked") >> fail "unreachable"
 
 isStorageEnabled :: ScreenshotStoragePolicy -> Bool
 isStorageEnabled (ScreenshotStorageEnabled _) = True

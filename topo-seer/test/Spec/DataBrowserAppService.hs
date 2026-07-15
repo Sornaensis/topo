@@ -2,17 +2,19 @@
 
 module Spec.DataBrowserAppService (spec) where
 
+import Actor.UI.State (DataBrowserState(..))
 import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson.Types as Aeson
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Seer.DataBrowser.AppService
   ( DataBrowserUi(..)
   , dbarError
   , dbarUi
+  , dataBrowserStateFromModel
   , emptyDataBrowserUi
   , runDataBrowserAppAction
   )
@@ -56,6 +58,23 @@ spec = describe "DataBrowser AppService integration" $ do
     result <- runDataBrowserAppAction (fakeDataService calls) emptyDataBrowserUi (App.DataBrowserSelectRecord 99)
     dbarError result `shouldBe` Just "record index out of range"
     readIORef calls `shouldReturn` []
+
+  it "derives loading solely from the pending envelope at the legacy state boundary" $ do
+    let envelope = DataBrowserPendingEnvelope
+          (DataBrowserRequestId 91)
+          DataBrowserLoadCatalogOperation
+          DataBrowserLoadCatalogRequest
+        inconsistentModels =
+          [ emptyDataBrowserModel { dbModelLoading = True }
+          , emptyDataBrowserModel
+              { dbModelPendingEnvelope = Just envelope
+              , dbModelLoading = False
+              }
+          ]
+    map (\model ->
+      let state = dataBrowserStateFromModel model
+      in (dbsLoading state, isJust (dbsPendingRequest state))) inconsistentModels
+      `shouldBe` [(False, False), (True, True)]
 
   it "creates, updates, deletes, and cancels edits through the reducer/AppService boundary" $ do
     calls <- newIORef []

@@ -2,6 +2,7 @@
 
 module Spec.DataBrowser (spec) where
 
+import Control.Monad (forM_)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Map.Strict as Map
 import qualified Data.Vector as Vector
@@ -253,6 +254,65 @@ spec = describe "DataBrowser model reducer" $ do
     applied `shouldBe` False
     afterStale `shouldBe` secondUi
 
+  it "keeps every stale success and failure from A out of B before and after B completes" $ do
+    let initial = DataBrowserUi (Map.singleton "atlas" [pagedSchema]) emptyDataBrowserModel
+        (firstUi, firstBegin) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 5) initial (Lifecycle.DataBrowserSelectResource "atlas" "cities")
+        (secondUi, secondBegin) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 6) firstUi (Lifecycle.DataBrowserSelectResource "atlas" "cities")
+        firstEnvelope = accepted firstBegin
+        secondEnvelope = accepted secondBegin
+        secondCompletion = DataBrowserCompletion
+          { dbcRequestId = dbpeRequestId secondEnvelope
+          , dbcRequest = dbpeRequest secondEnvelope
+          , dbcOutcome = DataBrowserRecordsLoaded (QueryResult "cities" [record2] (Just 1))
+          }
+        (completedSecond, secondApplied) = completeDataBrowserRequest secondCompletion secondUi
+        staleOutcomes =
+          [ DataBrowserRecordsLoaded (QueryResult "cities" [record1] (Just 1))
+          , DataBrowserWorkerFailed "obsolete request failed"
+          ]
+    secondApplied `shouldBe` True
+    forM_ staleOutcomes $ \outcome -> do
+      let staleCompletion = DataBrowserCompletion
+            { dbcRequestId = dbpeRequestId firstEnvelope
+            , dbcRequest = dbpeRequest firstEnvelope
+            , dbcOutcome = outcome
+            }
+      completeDataBrowserRequest staleCompletion secondUi `shouldBe` (secondUi, False)
+      completeDataBrowserRequest staleCompletion completedSecond `shouldBe` (completedSecond, False)
+
+  it "suppresses page begins during reads and lets selection replace the page" $ do
+    let pageable = loadedModel
+          { dbModelPagination = DataBrowserPagination 5 (Just 10) (Just 100) }
+        initial = DataBrowserUi (Map.singleton "atlas" [pagedSchema]) pageable
+        (pageUi, pageBegin) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 50) initial
+          (Lifecycle.DataBrowserQueryRecords DataBrowserPageNext)
+        pageEnvelope = accepted pageBegin
+        (suppressedUi, suppressed) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 51) pageUi
+          (Lifecycle.DataBrowserQueryRecords DataBrowserPageNext)
+        (replacementUi, replacementBegin) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 52) pageUi
+          (Lifecycle.DataBrowserSelectResource "atlas" "cities")
+        replacementEnvelope = accepted replacementBegin
+    suppressed `shouldBe` DataBrowserBeginRejected "data browser request in progress"
+    suppressedUi `shouldBe` pageUi
+    replacementBegin `shouldBe`
+      DataBrowserBeginAccepted replacementEnvelope (Just (dbpeRequestId pageEnvelope))
+    dbpeRequestId replacementEnvelope `shouldNotBe` dbpeRequestId pageEnvelope
+    forM_
+      [ DataBrowserRecordsLoaded (QueryResult "cities" [record1] (Just 1))
+      , DataBrowserWorkerFailed "obsolete page failed"
+      ] $ \outcome -> do
+        let stalePage = DataBrowserCompletion
+              { dbcRequestId = dbpeRequestId pageEnvelope
+              , dbcRequest = dbpeRequest pageEnvelope
+              , dbcOutcome = outcome
+              }
+        completeDataBrowserRequest stalePage replacementUi `shouldBe` (replacementUi, False)
+
   it "applies resources and browser records in one guarded completion" $ do
     let initial = DataBrowserUi Map.empty emptyDataBrowserModel
         (pendingUi, begun) = Lifecycle.beginDataBrowserAction
@@ -333,7 +393,7 @@ spec = describe "DataBrowser model reducer" $ do
     dbModelAsyncError (dbuModel cancelledUi) `shouldBe` Nothing
     dbModelAsyncError (dbuModel reopenedUi) `shouldBe` Nothing
 
-  it "locks navigation while a mutation is pending without losing edit state" $ do
+  it "locks every navigation and mutation interaction while a mutation is pending" $ do
     let initial = DataBrowserUi (Map.singleton "atlas" [pagedSchema]) loadedModel
         (creatingUi, _) = Lifecycle.beginDataBrowserAction
           (DataBrowserRequestId 10) initial Lifecycle.DataBrowserStartCreate
@@ -342,13 +402,78 @@ spec = describe "DataBrowser model reducer" $ do
         editedUi = creatingUi { dbuModel = editedModel }
         (mutationUi, mutationBegin) = Lifecycle.beginDataBrowserAction
           (DataBrowserRequestId 10) editedUi Lifecycle.DataBrowserCreateRecord
-        (rejectedUi, rejected) = Lifecycle.beginDataBrowserAction
-          (DataBrowserRequestId 11) mutationUi (Lifecycle.DataBrowserSelectPlugin "other")
+        blockedActions =
+          [ Lifecycle.DataBrowserSelectPlugin "other"
+          , Lifecycle.DataBrowserSelectResource "atlas" "cities"
+          , Lifecycle.DataBrowserQueryRecords DataBrowserPageNext
+          , Lifecycle.DataBrowserSelectRecord 0
+          , Lifecycle.DataBrowserDismissRecord
+          , Lifecycle.DataBrowserStartEdit
+          , Lifecycle.DataBrowserStartCreate
+          , Lifecycle.DataBrowserCancelEdit
+          , Lifecycle.DataBrowserRequestDelete
+          , Lifecycle.DataBrowserCancelDelete
+          , Lifecycle.DataBrowserCreateRecord
+          , Lifecycle.DataBrowserUpdateRecord
+          , Lifecycle.DataBrowserDeleteRecord
+          ]
     mutationBegin `shouldSatisfy` isAccepted
-    rejected `shouldBe` DataBrowserBeginRejected "data browser mutation in progress"
-    rejectedUi `shouldBe` mutationUi
-    Map.lookup "name" (dbEditBufferValues (dbModelEditBuffer (dbuModel rejectedUi)))
+    forM_ blockedActions $ \action -> do
+      let (rejectedUi, rejected) = Lifecycle.beginDataBrowserAction
+            (DataBrowserRequestId 11) mutationUi action
+      rejected `shouldBe` DataBrowserBeginRejected "data browser mutation in progress"
+      rejectedUi `shouldBe` mutationUi
+    Map.lookup "name" (dbEditBufferValues (dbModelEditBuffer (dbuModel mutationUi)))
       `shouldBe` Just (String "Retained")
+
+  it "retains exact create, update, and delete state on matching failure and ignores wrong IDs" $ do
+    let resources = Map.singleton "atlas" [pagedSchema]
+        creating = dataBrowserReducer loadedModel DataBrowserStartCreate
+        editing = dataBrowserReducer (selectFirstRecord loadedModel) DataBrowserStartEdit
+        confirming = dataBrowserReducer
+          (selectFirstRecord loadedModel) DataBrowserRequestDelete
+        cases =
+          [ (Lifecycle.DataBrowserCreateRecord, DataBrowserUi resources creating)
+          , (Lifecycle.DataBrowserUpdateRecord, DataBrowserUi resources editing)
+          , (Lifecycle.DataBrowserDeleteRecord, DataBrowserUi resources confirming)
+          ]
+    forM_ (zip [60..] cases) $ \(requestNumber, (action, initial)) -> do
+      let (pendingUi, begun) = Lifecycle.beginDataBrowserAction
+            (DataBrowserRequestId requestNumber) initial action
+          envelope = accepted begun
+          pendingModel = dbuModel pendingUi
+          failure = DataBrowserCompletion
+            { dbcRequestId = dbpeRequestId envelope
+            , dbcRequest = dbpeRequest envelope
+            , dbcOutcome = DataBrowserWorkerFailed "backend rejected"
+            }
+          expectedError = DataBrowserAsyncError
+            { dbaeRequestId = dbpeRequestId envelope
+            , dbaeOperation = dbpeOperation envelope
+            , dbaeRequest = dbpeRequest envelope
+            , dbaeMessage = "backend rejected"
+            }
+          expectedUi = pendingUi
+            { dbuModel = pendingModel
+                { dbModelPendingRequest = Nothing
+                , dbModelPendingEnvelope = Nothing
+                , dbModelAsyncError = Just expectedError
+                , dbModelLoading = False
+                }
+            }
+          (failedUi, applied) = completeDataBrowserRequest failure pendingUi
+          wrongId = DataBrowserRequestId (requestNumber + 100)
+      applied `shouldBe` True
+      failedUi `shouldBe` expectedUi
+      forM_
+        [ DataBrowserWorkerFailed "wrong worker"
+        , DataBrowserMutationCompleted Nothing
+        ] $ \wrongOutcome -> do
+          let wrongCompletion = failure
+                { dbcRequestId = wrongId
+                , dbcOutcome = wrongOutcome
+                }
+          completeDataBrowserRequest wrongCompletion pendingUi `shouldBe` (pendingUi, False)
 
 selectedResourceModel :: DataBrowserModel
 selectedResourceModel =

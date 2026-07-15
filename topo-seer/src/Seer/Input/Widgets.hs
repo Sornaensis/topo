@@ -3,6 +3,7 @@
 
 module Seer.Input.Widgets
   ( handleClick
+  , submitDataBrowserInputAction
   ) where
 
 import Actor.Data (TerrainSnapshot(..))
@@ -45,7 +46,7 @@ import Actor.UI
   , setUiOverlayFields
   )
 import Control.Applicative ((<|>))
-import Control.Monad (when)
+import Control.Monad (void, when)
 import Data.IORef (writeIORef)
 import Data.Int (Int32)
 import Data.List (find, findIndex, partition)
@@ -69,7 +70,7 @@ import Seer.World.Persist (listWorlds)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Pipeline.Stage (parseStageId)
 import qualified Seer.DataBrowser.AppService as DataBrowser
-import Seer.DataBrowser.Executor (submitDataBrowserAction)
+import Seer.DataBrowser.Executor (DataBrowserExecutor, submitDataBrowserAction)
 import Seer.DataBrowser.Model (DataBrowserPageAction(..))
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
 import UI.Components.ConfigSliders (configSliderInputValueForId)
@@ -94,6 +95,17 @@ import Topo.Overlay (Overlay(..), lookupOverlay, overlayNames)
 import Topo.Overlay.Schema (OverlayFieldDef(..), OverlayFieldType(..), OverlaySchema(..))
 import Seer.Input.Context (InputContext(..))
 import Seer.Service.Types (ServiceResponse(..), serviceErrorText)
+
+-- | Non-blocking Data Browser submission boundary used by SDL widget input.
+-- Completion remains owned by the application-scoped executor.
+submitDataBrowserInputAction
+  :: DataBrowserExecutor
+  -> DataBrowser.DataBrowserRunService
+  -> DataBrowser.DataBrowserAppAction
+  -> IO ()
+submitDataBrowserInputAction executor runService action =
+  void (submitDataBrowserAction executor runService action)
+
 handleClick
   :: InputContext
   -> SDL.Point V2 Int32
@@ -472,12 +484,10 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         applyDataBrowserAction uiState (DataBrowser.DataBrowserCycleEnumField path 1)
       _ -> pure ()
 
-    applyDataBrowserAction _uiState action = do
-      _ <- submitDataBrowserAction
+    applyDataBrowserAction _uiState =
+      submitDataBrowserInputAction
         (ieDataBrowserExecutor widgetEnv)
         (runInputService widgetEnv)
-        action
-      pure ()
 
     handleMenuClick ly _widgets point = do
       uiSnap <- getUiSnapshot uiHandle

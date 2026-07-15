@@ -23,7 +23,21 @@ import Actor.UI.Setters
   , setUiShowConfig
   )
 import Actor.UI.State (ConfigTab(..))
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent
+  ( MVar
+  , ThreadId
+  , forkIO
+  , killThread
+  , newEmptyMVar
+  , putMVar
+  , readMVar
+  , takeMVar
+  , threadDelay
+  , tryPutMVar
+  , tryReadMVar
+  )
+import Control.Exception (finally, mask, onException)
+import Control.Monad (void)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
@@ -38,6 +52,7 @@ import Data.Time (getCurrentTime)
 import Data.Word (Word64)
 import Hyperspace.Actor (call)
 import Seer.Command.Dispatch (CommandContext(..))
+import Seer.DataBrowser.Executor (waitDataBrowserExecutorIdle)
 import Seer.Headless
   ( HeadlessApp
   , defaultHeadlessConfig
@@ -111,6 +126,76 @@ spec = describe "DataResource CRUD service/API/UI e2e" $ do
       Nothing -> expectationFailure "CRUD e2e fixture test timed out"
       Just () -> pure ()
 
+  it "returns accepted mutation clicks while direct service and HTTP calls await the same gate" $ do
+    gate <- RpcGate <$> newEmptyMVar <*> newEmptyMVar
+    result <- timeout 30000000 $ withGatedCrudFixtureApp gate $ \app -> do
+      selected <- expectE2EWithin "resource click acceptance" $ clickWidget app
+        ("WidgetDataResourceSelect:" <> crudPluginName <> ":" <> crudResourceName)
+      lookupValue "status" selected `shouldBe` Just (String "accepted")
+      expectE2EWithin "selected-resource RPC start" (takeMVar (rgStarted gate))
+      putMVar (rgRelease gate) ()
+      expectE2EWithin "selected-resource worker idle" $ waitDataBrowserExecutorIdle
+        (ccDataBrowserExecutor (headlessCommandContext (cfaHeadlessApp app)))
+
+      _ <- clickWidget app "WidgetDataRecordSelect:0"
+      _ <- clickWidget app "WidgetDataDeleteBtn"
+      acceptedDelete <- expectE2EWithin "delete click acceptance" $
+        clickWidget app "WidgetDataDeleteConfirm"
+      lookupValue "status" acceptedDelete `shouldBe` Just (String "accepted")
+      lookupValue "operation" acceptedDelete `shouldBe` Just (String "delete_record")
+      lookupValue "request_id" acceptedDelete `shouldSatisfy`
+        maybe False (\case Number _ -> True; _ -> False)
+      lookupValue "info" acceptedDelete `shouldBe` Nothing
+      lookupValue "saved" acceptedDelete `shouldBe` Nothing
+      lookupValue "deleted" acceptedDelete `shouldBe` Nothing
+      expectE2EWithin "delete RPC start" (takeMVar (rgStarted gate))
+      pendingState <- serviceOk app "data_get_state" Null
+      lookupValue "loading" pendingState `shouldBe` Just (Bool True)
+      tryReadMVar (rgRelease gate) `shouldReturn` Nothing
+
+      busy <- expectE2EWithin "busy click rejection" $ serviceResult app "click_widget" $ object
+        [ "widget_id" .= ("WidgetDataDeleteConfirm" :: Text) ]
+      case busy of
+        Left err -> serviceErrorText err `shouldSatisfy`
+          Text.isInfixOf "data browser mutation in progress"
+        Right _ -> expectationFailure "duplicate mutation click was accepted while busy"
+      invalid <- expectE2EWithin "invalid click rejection" $ serviceResult app "click_widget" $ object
+        [ "widget_id" .= ("WidgetDataNotAControl" :: Text) ]
+      case invalid of
+        Left err -> serviceErrorText err `shouldSatisfy` Text.isInfixOf "unknown widget_id"
+        Right _ -> expectationFailure "invalid widget click was accepted"
+      tryReadMVar (rgStarted gate) `shouldReturn` Nothing
+
+      putMVar (rgRelease gate) ()
+      expectE2EWithin "delete worker idle" $ waitDataBrowserExecutorIdle
+        (ccDataBrowserExecutor (headlessCommandContext (cfaHeadlessApp app)))
+
+      serviceDone <- newEmptyMVar
+      _ <- forkIO $ serviceResult app "data_list_records" (object
+        [ "plugin" .= crudPluginName
+        , "resource" .= crudResourceName
+        ]) >>= putMVar serviceDone
+      expectE2EWithin "direct service RPC start" (takeMVar (rgStarted gate))
+      tryReadMVar serviceDone `shouldReturn` Nothing
+      putMVar (rgRelease gate) ()
+      expectE2EWithin "direct service completion" (takeMVar serviceDone) >>= \case
+        Right _ -> pure ()
+        Left err -> expectationFailure ("gated direct service failed: " <> Text.unpack (serviceErrorText err))
+
+      httpDone <- newEmptyMVar
+      _ <- forkIO $ request app (mkRequest "GET" ["data", "records"])
+        { hreqQuery =
+            [ ("plugin", Just crudPluginName)
+            , ("resource", Just crudResourceName)
+            ]
+        } >>= putMVar httpDone
+      expectE2EWithin "HTTP RPC start" (takeMVar (rgStarted gate))
+      tryReadMVar httpDone `shouldReturn` Nothing
+      putMVar (rgRelease gate) ()
+      response <- expectE2EWithin "HTTP completion" (takeMVar httpDone)
+      hresStatusCode response `shouldBe` 200
+    result `shouldBe` Just ()
+
   it "denies direct service/API data calls without manifest capabilities" $ do
     readResult <- timeout 30000000 $ withCrudFixturePlugin readlessCrudManifest [crudSchema] $ \app -> do
       denied <- serviceResult app "data_list_records" $ object
@@ -151,6 +236,19 @@ spec = describe "DataResource CRUD service/API/UI e2e" $ do
 
 data CrudFixtureApp = CrudFixtureApp
   { cfaHeadlessApp :: !HeadlessApp
+  }
+
+data RpcGate = RpcGate
+  { rgStarted :: !(MVar ())
+  , rgRelease :: !(MVar ())
+  }
+
+data FixtureRpcWorker = FixtureRpcWorker
+  { frwThread :: !ThreadId
+  , frwDone :: !(MVar ())
+  , frwHostTransport :: !Transport
+  , frwPluginTransport :: !Transport
+  , frwGate :: !(Maybe RpcGate)
   }
 
 exerciseCrudFixture :: CrudFixtureApp -> IO ()
@@ -310,16 +408,66 @@ withCrudFixtureApp action =
     action app
 
 withCrudFixturePlugin :: RPCManifest -> [DataResourceSchema] -> (CrudFixtureApp -> IO a) -> IO a
-withCrudFixturePlugin manifest negotiatedResources action =
-  withHeadlessApp defaultHeadlessConfig $ \headlessApp -> do
-    installCrudFixturePlugin headlessApp manifest negotiatedResources
-    action (CrudFixtureApp headlessApp)
+withCrudFixturePlugin manifest negotiatedResources =
+  withCrudFixturePluginGate Nothing manifest negotiatedResources
 
-installCrudFixturePlugin :: HeadlessApp -> RPCManifest -> [DataResourceSchema] -> IO ()
-installCrudFixturePlugin headlessApp manifest negotiatedResources = do
+withGatedCrudFixtureApp :: RpcGate -> (CrudFixtureApp -> IO a) -> IO a
+withGatedCrudFixtureApp gate action =
+  withCrudFixturePluginGate (Just gate) crudManifest [crudSchema] $ \app -> do
+    let headlessApp = cfaHeadlessApp app
+        handles = ccActorHandles (headlessCommandContext headlessApp)
+        pluginHandle = ahPluginManagerHandle handles
+        uiHandle = ahUiHandle handles
+    resources <- getPluginDataResources pluginHandle
+    setUiPluginNames uiHandle [crudPluginName]
+    setUiDataResources uiHandle resources
+    setUiShowConfig uiHandle True
+    setUiConfigTab uiHandle ConfigData
+    action app
+
+withCrudFixturePluginGate
+  :: Maybe RpcGate
+  -> RPCManifest
+  -> [DataResourceSchema]
+  -> (CrudFixtureApp -> IO a)
+  -> IO a
+withCrudFixturePluginGate rpcGate manifest negotiatedResources action = do
+  workerSlot <- newEmptyMVar
+  (withHeadlessApp defaultHeadlessConfig $ \headlessApp -> mask $ \restore -> do
+    worker <- installCrudFixturePlugin rpcGate headlessApp manifest negotiatedResources
+    putMVar workerSlot worker
+    restore (action (CrudFixtureApp headlessApp)) `finally` releaseRpcGate rpcGate)
+    `finally` do
+      maybeWorker <- tryReadMVar workerSlot
+      case maybeWorker of
+        Nothing -> pure ()
+        Just worker -> joinFixtureRpcWorker worker
+
+installCrudFixturePlugin
+  :: Maybe RpcGate
+  -> HeadlessApp
+  -> RPCManifest
+  -> [DataResourceSchema]
+  -> IO FixtureRpcWorker
+installCrudFixturePlugin rpcGate headlessApp manifest negotiatedResources = mask $ \restore -> do
   recordsRef <- newIORef crudInitialRecords
   (hostTransport, pluginTransport) <- createTransportPair (rmName manifest)
-  _ <- forkIO (crudFixtureRpcLoop recordsRef pluginTransport)
+  done <- newEmptyMVar
+  thread <- forkIO $
+    crudFixtureRpcLoop rpcGate recordsRef pluginTransport
+      `finally` void (tryPutMVar done ())
+  let worker = FixtureRpcWorker thread done hostTransport pluginTransport rpcGate
+  restore (registerCrudFixturePlugin headlessApp manifest negotiatedResources hostTransport)
+    `onException` abortFixtureRpcWorker worker
+  pure worker
+
+registerCrudFixturePlugin
+  :: HeadlessApp
+  -> RPCManifest
+  -> [DataResourceSchema]
+  -> Transport
+  -> IO ()
+registerCrudFixturePlugin headlessApp manifest negotiatedResources hostTransport = do
   now <- getCurrentTime
   let conn = (newRPCConnection manifest hostTransport Map.empty)
         { rpcResources = negotiatedResources
@@ -352,6 +500,25 @@ installCrudFixturePlugin headlessApp manifest negotiatedResources = do
   accepted <- call @"finishRefresh" pluginHandle #finishRefresh (token, [loaded])
   accepted `shouldBe` True
 
+releaseRpcGate :: Maybe RpcGate -> IO ()
+releaseRpcGate Nothing = pure ()
+releaseRpcGate (Just gate) = void (tryPutMVar (rgRelease gate) ())
+
+joinFixtureRpcWorker :: FixtureRpcWorker -> IO ()
+joinFixtureRpcWorker worker = do
+  releaseRpcGate (frwGate worker)
+  timeout 5000000 (readMVar (frwDone worker)) >>= \case
+    Just () -> pure ()
+    Nothing -> abortFixtureRpcWorker worker
+
+abortFixtureRpcWorker :: FixtureRpcWorker -> IO ()
+abortFixtureRpcWorker worker = do
+  releaseRpcGate (frwGate worker)
+  killThread (frwThread worker)
+  expectE2EWithin "fixture RPC worker shutdown" (readMVar (frwDone worker))
+    `finally` closeTransport (frwPluginTransport worker)
+    `finally` closeTransport (frwHostTransport worker)
+
 createTransportPair :: Text -> IO (Transport, Transport)
 createTransportPair pluginName = do
   (hostToPluginRead, hostToPluginWrite) <- createPipe
@@ -360,39 +527,55 @@ createTransportPair pluginName = do
   pluginResult <- connectPlugin pluginName hostToPluginRead pluginToHostWrite
   case (hostResult, pluginResult) of
     (Right hostTransport, Right pluginTransport) -> pure (hostTransport, pluginTransport)
-    (Left err, _) -> expectationFailure ("failed to create host transport: " <> show err) >> error "unreachable"
-    (_, Left err) -> expectationFailure ("failed to create plugin transport: " <> show err) >> error "unreachable"
+    (Left err, Right pluginTransport) -> do
+      closeTransport pluginTransport
+      expectationFailure ("failed to create host transport: " <> show err) >> error "unreachable"
+    (Right hostTransport, Left err) -> do
+      closeTransport hostTransport
+      expectationFailure ("failed to create plugin transport: " <> show err) >> error "unreachable"
+    (Left hostErr, Left pluginErr) ->
+      expectationFailure
+        ("failed to create fixture transports: " <> show hostErr <> "; " <> show pluginErr)
+        >> error "unreachable"
 
-crudFixtureRpcLoop :: IORef [DataRecord] -> Transport -> IO ()
-crudFixtureRpcLoop recordsRef transport = do
+crudFixtureRpcLoop :: Maybe RpcGate -> IORef [DataRecord] -> Transport -> IO ()
+crudFixtureRpcLoop rpcGate recordsRef transport = do
   recvMessage transport >>= \case
     Left _ -> closeTransport transport
     Right bytes -> case decodeMessage bytes of
-      Left _ -> crudFixtureRpcLoop recordsRef transport
+      Left _ -> crudFixtureRpcLoop rpcGate recordsRef transport
       Right envelope -> case envType envelope of
         MsgHandshake -> do
           _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
-          crudFixtureRpcLoop recordsRef transport
+          crudFixtureRpcLoop rpcGate recordsRef transport
         MsgQueryResource -> do
+          awaitRpcGate rpcGate
           case Aeson.fromJSON (envPayload envelope) of
             Aeson.Success queryRequest -> do
               queryResult <- queryCrudRecords recordsRef queryRequest
               _ <- sendMessage transport (encodeMessage (queryResultEnvelope (envRequestId envelope) queryResult))
-              crudFixtureRpcLoop recordsRef transport
+              crudFixtureRpcLoop rpcGate recordsRef transport
             Aeson.Error err -> do
               _ <- sendMessage transport (encodeMessage (pluginErrorEnvelope (envRequestId envelope) 1005 (Text.pack err)))
-              crudFixtureRpcLoop recordsRef transport
+              crudFixtureRpcLoop rpcGate recordsRef transport
         MsgMutateResource -> do
+          awaitRpcGate rpcGate
           case Aeson.fromJSON (envPayload envelope) of
             Aeson.Success mutateRequest -> do
               mutateResult <- mutateCrudRecords recordsRef mutateRequest
               _ <- sendMessage transport (encodeMessage (mutateResultEnvelope (envRequestId envelope) mutateResult))
-              crudFixtureRpcLoop recordsRef transport
+              crudFixtureRpcLoop rpcGate recordsRef transport
             Aeson.Error err -> do
               _ <- sendMessage transport (encodeMessage (pluginErrorEnvelope (envRequestId envelope) 1005 (Text.pack err)))
-              crudFixtureRpcLoop recordsRef transport
+              crudFixtureRpcLoop rpcGate recordsRef transport
         MsgShutdown -> closeTransport transport
-        _ -> crudFixtureRpcLoop recordsRef transport
+        _ -> crudFixtureRpcLoop rpcGate recordsRef transport
+
+awaitRpcGate :: Maybe RpcGate -> IO ()
+awaitRpcGate Nothing = pure ()
+awaitRpcGate (Just gate) = do
+  putMVar (rgStarted gate) ()
+  takeMVar (rgRelease gate)
 
 queryCrudRecords :: IORef [DataRecord] -> QueryResource -> IO QueryResult
 queryCrudRecords recordsRef queryRequest = do
@@ -473,6 +656,13 @@ waitForState :: CrudFixtureApp -> Text -> Value -> IO ()
 waitForState app key expected = waitUntil ("state " <> key) $ do
   state <- serviceOk app "data_get_state" Null
   pure (lookupValue key state == Just expected)
+
+expectE2EWithin :: String -> IO a -> IO a
+expectE2EWithin label action = do
+  result <- timeout 5000000 action
+  case result of
+    Just value -> pure value
+    Nothing -> expectationFailure (label <> " deadlocked") >> fail "unreachable"
 
 waitUntil :: Text -> IO Bool -> IO ()
 waitUntil label action = loop (50 :: Int)
