@@ -56,6 +56,7 @@ module UI.Layout
   , configParamPlusRect
   , configParamBarRect
   , configRowTopPad
+  , configScrollOffsetForRows
   , pipelineCheckboxRect
   , pipelineMoveUpRect
   , pipelineMoveDownRect
@@ -271,6 +272,19 @@ configScrollBarRect layout =
 
 configRowTopPad :: Int
 configRowTopPad = 12
+
+-- | Clamp a stored config scroll offset to the content currently rendered.
+-- Dynamic tabs can shrink while an asynchronous request is active.
+configScrollOffsetForRows :: Int -> Int -> Layout -> Int
+configScrollOffsetForRows rows requested layout =
+  min maxOffset (max 0 requested)
+  where
+    rowHeight = 24
+    gap = 10
+    contentHeight =
+      max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
+    Rect (V2 _ _, V2 _ scrollHeight) = configScrollAreaRect layout
+    maxOffset = max 0 (contentHeight - scrollHeight)
 
 -- | Shared row geometry for controls that live inside the config scroll area.
 configScrollRowRect :: Int -> Layout -> Rect

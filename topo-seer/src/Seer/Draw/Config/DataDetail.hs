@@ -18,7 +18,14 @@ module Seer.Draw.Config.DataDetail
   , renderValue
   ) where
 
-import Actor.UI (DataBrowserState(..), UiState(..))
+import Actor.UI
+  ( ConfigTab(..)
+  , DataBrowserState(..)
+  , UiState(..)
+  , dataBrowserMutationError
+  , dataBrowserMutationPending
+  , dataBrowserReadPending
+  )
 import Control.Applicative ((<|>))
 import Control.Monad (forM_, when)
 import Data.Aeson (Value(..))
@@ -34,14 +41,20 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Vector as Vector
 import Linear (V2(..))
 import qualified SDL
-import Seer.DataBrowser.Model (DataBrowserValidationError(..))
+import Seer.DataBrowser.Model
+  ( DataBrowserAsyncError(..)
+  , DataBrowserPendingEnvelope(..)
+  , DataBrowserValidationError(..)
+  , dataBrowserOperationFailureText
+  , dataBrowserOperationProgressText
+  , dataBrowserRequestIsMutation
+  )
 import Topo.Plugin.DataResource
   ( DataConstructorDef(..)
   , DataFieldDef(..)
   , DataFieldType(..)
   , DataOperations(..)
   , DataResourceSchema(..)
-  , noOperations
   )
 import Topo.Plugin.RPC.DataService (DataRecord(..))
 import UI.Font (FontCache, drawText)
@@ -72,6 +85,9 @@ data DataDetailPopoverView = DataDetailPopoverView
   , ddvShowEditToggle :: !Bool
   , ddvEditToggleActive :: !Bool
   , ddvShowDeleteButton :: !Bool
+  , ddvInteractionLocked :: !Bool
+  , ddvOperationStatus :: !(Maybe Text)
+  , ddvOperationError :: !(Maybe Text)
   , ddvFields :: ![DataDetailFieldRow]
   , ddvValidationRows :: ![DataDetailValidationRow]
   , ddvDeleteConfirm :: !(Maybe DataDetailDeleteConfirmView)
@@ -114,30 +130,50 @@ data DataDetailDeleteConfirmView = DataDetailDeleteConfirmView
 
 -- | Build the pure view model for the currently selected record, if any.
 dataDetailPopoverView :: UiState -> Maybe DataDetailPopoverView
-dataDetailPopoverView ui = do
-  record <- dbsSelectedRecord dbs
-  rowIdx <- dbsSelectedRowIndex dbs
-  let schema = selectedSchema dbs (uiDataResources ui)
-      fields = maybe [] drsFields schema
-      ops = maybe noOperations drsOperations schema
-      editing = dbsEditMode dbs || dbsCreateMode dbs
-      fieldRows = dataDetailFieldRows dbs fields record
-  pure DataDetailPopoverView
-    { ddvSelectedRowIndex = rowIdx
-    , ddvHeaderText = dataDetailHeaderText dbs
-    , ddvEditing = editing
-    , ddvShowEditToggle = doUpdate ops && not (dbsCreateMode dbs)
-    , ddvEditToggleActive = dbsEditMode dbs
-    , ddvShowDeleteButton = doDelete ops && not editing
-    , ddvFields = fieldRows
-    , ddvValidationRows = map validationRow (dbsValidationErrors dbs)
-    , ddvDeleteConfirm =
-        if dbsDeleteConfirm dbs
-        then Just (DataDetailDeleteConfirmView "Delete record?" "Delete" "Cancel")
-        else Nothing
-    }
+dataDetailPopoverView ui
+  | uiConfigTab ui /= ConfigData = Nothing
+  | dataBrowserReadPending dbs = Nothing
+  | otherwise = do
+      record <- dbsSelectedRecord dbs
+      rowIdx <- dbsSelectedRowIndex dbs
+      schema <- selectedSchema dbs (uiDataResources ui)
+      let fields = drsFields schema
+          ops = drsOperations schema
+          editing = dbsEditMode dbs || dbsCreateMode dbs
+          locked = dataBrowserMutationPending dbs
+          fieldRows = dataDetailFieldRows locked dbs fields record
+      pure DataDetailPopoverView
+        { ddvSelectedRowIndex = rowIdx
+        , ddvHeaderText = dataDetailHeaderText dbs
+        , ddvEditing = editing
+        , ddvShowEditToggle = not locked && doUpdate ops && not (dbsCreateMode dbs)
+        , ddvEditToggleActive = dbsEditMode dbs
+        , ddvShowDeleteButton = not locked && doDelete ops && not editing
+        , ddvInteractionLocked = locked
+        , ddvOperationStatus = pendingMutationText dbs
+        , ddvOperationError = mutationErrorText dbs
+        , ddvFields = fieldRows
+        , ddvValidationRows = map validationRow (dbsValidationErrors dbs)
+        , ddvDeleteConfirm =
+            if dbsDeleteConfirm dbs
+            then Just (DataDetailDeleteConfirmView "Delete record?" "Delete" "Cancel")
+            else Nothing
+        }
   where
     dbs = uiDataBrowser ui
+
+pendingMutationText :: DataBrowserState -> Maybe Text
+pendingMutationText dbs = do
+  pending <- dbsPendingRequest dbs
+  if dataBrowserRequestIsMutation (dbpeRequest pending)
+    then Just (dataBrowserOperationProgressText (dbpeOperation pending))
+    else Nothing
+
+mutationErrorText :: DataBrowserState -> Maybe Text
+mutationErrorText dbs = do
+  asyncError <- dataBrowserMutationError dbs
+  Just (dataBrowserOperationFailureText
+    (dbaeOperation asyncError) (dbaeMessage asyncError))
 
 selectedSchema :: DataBrowserState -> Map.Map Text [DataResourceSchema] -> Maybe DataResourceSchema
 selectedSchema dbs resources = do
@@ -158,8 +194,8 @@ dataDetailHeaderText dbs
       Just v          -> TE.decodeUtf8 (BSL.toStrict (Aeson.encode v))
       Nothing         -> "Record"
 
-dataDetailFieldRows :: DataBrowserState -> [DataFieldDef] -> DataRecord -> [DataDetailFieldRow]
-dataDetailFieldRows dbs fields record =
+dataDetailFieldRows :: Bool -> DataBrowserState -> [DataFieldDef] -> DataRecord -> [DataDetailFieldRow]
+dataDetailFieldRows locked dbs fields record =
   map toRow (enumerateVisibleFields "" fields expanded)
   where
     expanded = dbsExpandedFields dbs
@@ -182,7 +218,7 @@ dataDetailFieldRows dbs fields record =
         , ddfExpanded = expandedRow
         , ddfValue = displayVal
         , ddfValueText = valText
-        , ddfControl = fieldControl editing nestable expandedRow focusedField textCursor fields path displayVal valText
+        , ddfControl = fieldControl (editing && not locked) nestable expandedRow focusedField textCursor fields path displayVal valText
         }
 
 fieldControl
@@ -251,12 +287,27 @@ drawDataDetailPopoverView renderer fontCache layout view = do
 
   drawDataDetailActions renderer fontCache layout view totalRows
   forM_ (zip [0..] (ddvFields view)) $ uncurry (drawDataDetailFieldRow renderer fontCache layout view totalRows)
+  let operationRows = maybeToList (ddvOperationStatus view) ++ maybeToList (ddvOperationError view)
+  forM_ (zip [0..] operationRows) $ uncurry (drawDataDetailOperationRow renderer fontCache layout view totalRows)
   forM_ (zip [0..] (ddvValidationRows view)) $ uncurry (drawDataDetailValidationRow renderer fontCache layout view totalRows)
-  forM_ (ddvDeleteConfirm view) $ drawDeleteConfirmDialog renderer fontCache layout
+  forM_ (ddvDeleteConfirm view) $ \dialog ->
+    drawDeleteConfirmDialog renderer fontCache layout dialog (ddvInteractionLocked view)
 
 
 dataDetailTotalRows :: DataDetailPopoverView -> Int
-dataDetailTotalRows view = length (ddvFields view) + length (ddvValidationRows view)
+dataDetailTotalRows view =
+  length (ddvFields view)
+    + maybeCount (ddvOperationStatus view)
+    + maybeCount (ddvOperationError view)
+    + length (ddvValidationRows view)
+
+maybeCount :: Maybe a -> Int
+maybeCount Nothing = 0
+maybeCount (Just _) = 1
+
+maybeToList :: Maybe a -> [a]
+maybeToList Nothing = []
+maybeToList (Just value) = [value]
 
 drawDataDetailActions :: SDL.Renderer -> FontCache -> Layout -> DataDetailPopoverView -> Int -> IO ()
 drawDataDetailActions renderer fontCache layout view totalRows = do
@@ -276,7 +327,7 @@ drawDataDetailActions renderer fontCache layout view totalRows = do
     let Rect (V2 dx dy, V2 _dw dh) = delRect
     drawText fontCache colDataDetailFieldValue (V2 (dx + 4) (dy + (dh - 12) `div` 2)) "✕"
 
-  when (ddvEditing view) $ do
+  when (ddvEditing view && not (ddvInteractionLocked view)) $ do
     let saveRect = dataDetailSaveRect rowIdx totalRows layout
     SDL.rendererDrawColor renderer SDL.$= colDataSaveBtn
     SDL.fillRect renderer (Just (rectToSDL saveRect))
@@ -353,9 +404,18 @@ drawDataDetailFieldControl renderer fontCache layout view totalRows fIdx row (Re
       drawText fontCache colDataDetailFieldValue (V2 (mx + minusPad) (my + (mh - 12) `div` 2)) minusLabel
       drawText fontCache colDataDetailFieldValue (V2 (plx + plusPad) (ply + (plh - 12) `div` 2)) plusLabel
 
+drawDataDetailOperationRow :: SDL.Renderer -> FontCache -> Layout -> DataDetailPopoverView -> Int -> Int -> Text -> IO ()
+drawDataDetailOperationRow renderer fontCache layout view totalRows operationIdx message = do
+  let fIdx = length (ddvFields view) + operationIdx
+      Rect (V2 fx fy, V2 fw fh) = dataDetailFieldRect (ddvSelectedRowIndex view) totalRows fIdx layout
+  SDL.rendererDrawColor renderer SDL.$= colDataDeleteConfirmBg
+  SDL.fillRect renderer (Just (rectToSDL (Rect (V2 fx fy, V2 fw fh))))
+  drawText fontCache colLogErrorText (V2 (fx + 4) (fy + 2)) message
+
 drawDataDetailValidationRow :: SDL.Renderer -> FontCache -> Layout -> DataDetailPopoverView -> Int -> Int -> DataDetailValidationRow -> IO ()
 drawDataDetailValidationRow renderer fontCache layout view totalRows vIdx row = do
-  let fIdx = length (ddvFields view) + vIdx
+  let operationCount = maybeCount (ddvOperationStatus view) + maybeCount (ddvOperationError view)
+      fIdx = length (ddvFields view) + operationCount + vIdx
       Rect (V2 fx fy, V2 fw fh) = dataDetailFieldRect (ddvSelectedRowIndex view) totalRows fIdx layout
   SDL.rendererDrawColor renderer SDL.$= colDataDeleteConfirmBg
   SDL.fillRect renderer (Just (rectToSDL (Rect (V2 fx fy, V2 fw fh))))
@@ -365,8 +425,8 @@ drawDataDetailValidationRow renderer fontCache layout view totalRows vIdx row = 
     (SDL.P (V2 (fromIntegral fx) (fromIntegral (fy + fh - 1))))
     (SDL.P (V2 (fromIntegral (fx + fw)) (fromIntegral (fy + fh - 1))))
 
-drawDeleteConfirmDialog :: SDL.Renderer -> FontCache -> Layout -> DataDetailDeleteConfirmView -> IO ()
-drawDeleteConfirmDialog renderer fontCache layout dialog = do
+drawDeleteConfirmDialog :: SDL.Renderer -> FontCache -> Layout -> DataDetailDeleteConfirmView -> Bool -> IO ()
+drawDeleteConfirmDialog renderer fontCache layout dialog locked = do
   let dlgRect = deleteConfirmDialogRect layout
       okRect = deleteConfirmOkRect layout
       cancelRect = deleteConfirmCancelRect layout
@@ -376,14 +436,15 @@ drawDeleteConfirmDialog renderer fontCache layout dialog = do
   SDL.drawRect renderer (Just (rectToSDL dlgRect))
   let Rect (V2 dlx dly, V2 dlw _dlh) = dlgRect
   drawText fontCache colDataDetailFieldValue (V2 (dlx + dlw `div` 2 - 50) (dly + 16)) (ddcTitle dialog)
-  SDL.rendererDrawColor renderer SDL.$= colDataDeleteBtn
-  SDL.fillRect renderer (Just (rectToSDL okRect))
-  SDL.rendererDrawColor renderer SDL.$= colDataCancelBtn
-  SDL.fillRect renderer (Just (rectToSDL cancelRect))
-  let Rect (V2 ox oy, V2 _ow oh) = okRect
-      Rect (V2 ccx ccy, V2 _ccw cch) = cancelRect
-  drawText fontCache colDataDetailFieldValue (V2 (ox + 8) (oy + (oh - 12) `div` 2)) (ddcConfirmLabel dialog)
-  drawText fontCache colDataDetailFieldValue (V2 (ccx + 8) (ccy + (cch - 12) `div` 2)) (ddcCancelLabel dialog)
+  when (not locked) $ do
+    SDL.rendererDrawColor renderer SDL.$= colDataDeleteBtn
+    SDL.fillRect renderer (Just (rectToSDL okRect))
+    SDL.rendererDrawColor renderer SDL.$= colDataCancelBtn
+    SDL.fillRect renderer (Just (rectToSDL cancelRect))
+    let Rect (V2 ox oy, V2 _ow oh) = okRect
+        Rect (V2 ccx ccy, V2 _ccw cch) = cancelRect
+    drawText fontCache colDataDetailFieldValue (V2 (ox + 8) (oy + (oh - 12) `div` 2)) (ddcConfirmLabel dialog)
+    drawText fontCache colDataDetailFieldValue (V2 (ccx + 8) (ccy + (cch - 12) `div` 2)) (ddcCancelLabel dialog)
 
 -- | Enumerate the visible field rows, returning @(dotPath, isExpandable)@.
 enumerateVisibleFields :: Text -> [DataFieldDef] -> Set.Set Text -> [(Text, Bool)]

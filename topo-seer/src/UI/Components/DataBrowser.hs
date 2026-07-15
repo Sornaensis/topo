@@ -10,14 +10,26 @@ module UI.Components.DataBrowser
   , DataBrowserPageControlsView(..)
   , DataBrowserCreateButtonView(..)
   , DataBrowserLoadingView(..)
+  , DataBrowserErrorView(..)
   , dataBrowserView
   , dataBrowserViewAtScroll
   , dataBrowserDrawCommands
   ) where
 
-import Actor.UI (DataBrowserState(..))
+import Actor.UI
+  ( DataBrowserState(..)
+  , dataBrowserListError
+  , dataBrowserMutationPending
+  , dataBrowserReadPending
+  )
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import Seer.DataBrowser.Model
+  ( DataBrowserAsyncError(..)
+  , DataBrowserPendingEnvelope(..)
+  , dataBrowserOperationFailureText
+  , dataBrowserOperationProgressText
+  )
 import Linear (V2(..))
 import Topo.Plugin.DataResource
   ( DataOperations(..)
@@ -55,6 +67,7 @@ data DataBrowserView = DataBrowserView
   , dbvResourceRows :: ![DataBrowserResourceRowView]
   , dbvRecordRows :: ![DataBrowserRecordRowView]
   , dbvLoading :: !(Maybe DataBrowserLoadingView)
+  , dbvError :: !(Maybe DataBrowserErrorView)
   , dbvPageControls :: !(Maybe DataBrowserPageControlsView)
   , dbvCreateButton :: !(Maybe DataBrowserCreateButtonView)
   } deriving (Eq, Show)
@@ -84,6 +97,13 @@ data DataBrowserRecordRowView = DataBrowserRecordRowView
 data DataBrowserLoadingView = DataBrowserLoadingView
   { dblvRowIndex :: !Int
   , dblvRect :: !Rect
+  , dblvText :: !Text
+  } deriving (Eq, Show)
+
+data DataBrowserErrorView = DataBrowserErrorView
+  { dbevRowIndex :: !Int
+  , dbevRect :: !Rect
+  , dbevText :: !Text
   } deriving (Eq, Show)
 
 data DataBrowserPageControlsView = DataBrowserPageControlsView
@@ -116,6 +136,7 @@ dataBrowserViewAtScroll scrollY resources dbs layout = DataBrowserView
   , dbvResourceRows = resourceRows
   , dbvRecordRows = recordRows
   , dbvLoading = loadingView
+  , dbvError = errorView
   , dbvPageControls = pageControls
   , dbvCreateButton = createButton
   }
@@ -155,48 +176,67 @@ dataBrowserViewAtScroll scrollY resources dbs layout = DataBrowserView
       ]
 
     recordOffset = resourceOffset + length selectedSchemas
-    recordRows =
-      [ DataBrowserRecordRowView
-          { dbrcvRecordIndex = recordIdx
-          , dbrcvRowIndex = rowIdx
-          , dbrcvRect = itemRect rowIdx
-          , dbrcvSelected = dbsSelectedRowIndex dbs == Just recordIdx
-          }
-      | recordIdx <- [0 .. length (dbsRecords dbs) - 1]
-      , let rowIdx = recordOffset + recordIdx
-      ]
+    recordRows
+      | dataBrowserReadPending dbs = []
+      | otherwise =
+          [ DataBrowserRecordRowView
+              { dbrcvRecordIndex = recordIdx
+              , dbrcvRowIndex = rowIdx
+              , dbrcvRect = itemRect rowIdx
+              , dbrcvSelected = dbsSelectedRowIndex dbs == Just recordIdx
+              }
+          | recordIdx <- [0 .. length (dbsRecords dbs) - 1]
+          , let rowIdx = recordOffset + recordIdx
+          ]
 
-    pageRow = recordOffset + length (dbsRecords dbs)
+    pageRow = recordOffset + length recordRows
     selectedSchema = do
       resourceName <- selectedResource
       findSchema resourceName selectedSchemas
     canPage = maybe False (doPage . drsOperations) selectedSchema
     canCreate = maybe False (doCreate . drsOperations) selectedSchema
 
-    loadingView
-      | dbsLoading dbs =
-          let Rect (V2 lx ly, V2 _lw lh) = itemRect pageRow
-          in Just DataBrowserLoadingView
-            { dblvRowIndex = pageRow
-            , dblvRect = Rect (V2 lx ly, V2 40 lh)
-            }
-      | otherwise = Nothing
+    loadingView = do
+      pending <- dbsPendingRequest dbs
+      if dataBrowserReadPending dbs
+        then Just DataBrowserLoadingView
+          { dblvRowIndex = pageRow
+          , dblvRect = itemRect pageRow
+          , dblvText = dataBrowserOperationProgressText (dbpeOperation pending)
+          }
+        else Nothing
 
+    errorView = do
+      asyncError <- dataBrowserListError dbs
+      pure DataBrowserErrorView
+        { dbevRowIndex = pageRow
+        , dbevRect = itemRect pageRow
+        , dbevText = dataBrowserOperationFailureText
+            (dbaeOperation asyncError) (dbaeMessage asyncError)
+        }
+
+    interactionRow = pageRow + case errorView of
+      Just _ -> 1
+      Nothing -> 0
     pageControls = case (selectedPlugin, selectedResource) of
       (Just pluginName, Just resourceName)
-        | canPage && not (null (dbsRecords dbs)) ->
+        | canPage && not (null recordRows)
+        , not (dataBrowserReadPending dbs)
+        , not (dataBrowserMutationPending dbs) ->
             Just DataBrowserPageControlsView
               { dbpcvPluginName = pluginName
               , dbpcvResourceName = resourceName
-              , dbpcvRowIndex = pageRow
-              , dbpcvPrevRect = shift (dataBrowserPagePrevRect pageRow layout)
-              , dbpcvNextRect = shift (dataBrowserPageNextRect pageRow layout)
+              , dbpcvRowIndex = interactionRow
+              , dbpcvPrevRect = shift (dataBrowserPagePrevRect interactionRow layout)
+              , dbpcvNextRect = shift (dataBrowserPageNextRect interactionRow layout)
               }
       _ -> Nothing
 
-    createRow = pageRow + if canPage && not (null (dbsRecords dbs)) then 1 else 0
+    createRow = interactionRow + if canPage && not (null recordRows) then 1 else 0
     createButton
-      | canCreate = Just DataBrowserCreateButtonView
+      | canCreate
+      , not (dataBrowserReadPending dbs)
+      , not (dataBrowserMutationPending dbs) = Just DataBrowserCreateButtonView
           { dbcbvRowIndex = createRow
           , dbcbvRect = shift (dataBrowserCreateButtonRect createRow layout)
           }
@@ -209,6 +249,7 @@ dataBrowserDrawCommands view =
     ++ concatMap resourceRowCommands (dbvResourceRows view)
     ++ concatMap recordRowCommands (dbvRecordRows view)
     ++ maybe [] loadingCommands (dbvLoading view)
+    ++ maybe [] errorCommands (dbvError view)
     ++ maybe [] pageControlCommands (dbvPageControls view)
     ++ maybe [] createButtonCommands (dbvCreateButton view)
 
@@ -239,7 +280,17 @@ recordRowCommands row =
     fillColor = if dbrcvSelected row then colDataRecordSelected else colDataRecordBg
 
 loadingCommands :: DataBrowserLoadingView -> [DrawCommand]
-loadingCommands view = [fillRect colDataLoadingIndicator (dblvRect view)]
+loadingCommands view =
+  [ fillRect colDataLoadingIndicator (dblvRect view)
+  , rowText (dblvRect view) (dblvText view)
+  ]
+
+errorCommands :: DataBrowserErrorView -> [DrawCommand]
+errorCommands view = [rowText (dbevRect view) (dbevText view)]
+
+rowText :: Rect -> Text -> DrawCommand
+rowText (Rect (V2 x y, V2 _w h)) =
+  textAt colDataDetailFieldValue (V2 (x + 6) (y + (h - 12) `div` 2))
 
 pageControlCommands :: DataBrowserPageControlsView -> [DrawCommand]
 pageControlCommands view =

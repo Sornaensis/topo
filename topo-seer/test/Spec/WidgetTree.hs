@@ -1,17 +1,47 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Spec.WidgetTree (spec) where
 
-import Actor.UI (ConfigTab(..), configRowCount, emptyUiState)
+import Actor.UI
+  ( ConfigTab(..)
+  , DataBrowserState(..)
+  , UiState(..)
+  , configRowCount
+  , emptyDataBrowserState
+  , emptyUiState
+  )
+import Data.Aeson (Value(..))
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
 import Linear (V2(..))
+import Seer.DataBrowser.Model
+  ( DataBrowserAsyncError(..)
+  , DataBrowserOperation(..)
+  , DataBrowserPendingEnvelope(..)
+  , DataBrowserPendingRequest(..)
+  , DataBrowserRequestId(..)
+  , DataBrowserWorkerRequest(..)
+  )
+import Seer.Command.Handlers.Widgets (dataBrowserWidgetIds, widgetState)
 import Seer.Config.SliderSpec (SliderId(..))
 import Seer.Editor.Types (EditorTool(..))
 import Test.Hspec
 import Topo.Pipeline.Stage (allBuiltinStageIds)
-import Topo.Plugin.DataResource (DataConstructorDef(..), DataFieldDef(..), DataFieldType(..))
+import Topo.Plugin.DataResource
+  ( DataConstructorDef(..)
+  , DataFieldDef(..)
+  , DataFieldType(..)
+  , DataOperations(..)
+  , DataPagination(..)
+  , DataResourceSchema(..)
+  , allOperations
+  , currentDataResourceSchemaVersion
+  , defaultDataResourceVersion
+  )
+import Topo.Plugin.RPC.DataService (DataRecord(..))
 import UI.Layout
 import UI.WidgetTree
 import UI.Widgets (Rect(..), containsPoint)
@@ -258,6 +288,110 @@ spec = describe "UI.WidgetTree" $ do
     hitTest widgets (rectHitPoint (pipelineCheckboxRect (simBase + 1) layout))
       `shouldBe` Just WidgetSimAutoTick
 
+  it "keeps only same/different resource replacement navigation during reads" $ do
+    let layout = layoutFor (V2 800 960) 0
+        dbs = browserState
+          { dbsPendingRequest = Just (DataBrowserPendingEnvelope
+              (DataBrowserRequestId 2)
+              DataBrowserListOperation
+              (DataBrowserRecordRequest
+                (DataBrowserListRecordsRequest "atlas" "cities" (Just 10) (Just 10))))
+          , dbsLoading = True
+          }
+        ids = map widgetId (buildDataBrowserWidgets browserResources dbs layout)
+    ids `shouldContain`
+      [ WidgetDataResourceSelect "atlas" "cities"
+      , WidgetDataResourceSelect "atlas" "towns"
+      ]
+    ids `shouldNotContain` [WidgetDataRecordSelect 0]
+    ids `shouldNotContain` [WidgetDataPageNext "atlas" "cities"]
+    ids `shouldNotContain` [WidgetDataCreateNew]
+
+  it "removes every Data Browser hit target during mutations" $ do
+    let layout = layoutFor (V2 800 960) 0
+        request = DataBrowserRecordRequest
+          (DataBrowserCreateRecordRequest "atlas" "cities" (DataRecord Map.empty))
+        dbs = browserState
+          { dbsCreateMode = True
+          , dbsPendingRequest = Just (DataBrowserPendingEnvelope
+              (DataBrowserRequestId 3) DataBrowserCreateOperation request)
+          , dbsLoading = True
+          }
+    buildDataBrowserWidgets browserResources dbs layout `shouldBe` []
+    buildDataDetailWidgets 2 [] Set.empty 1 True False False False True layout
+      `shouldBe` []
+
+  it "keeps command widget listings exact across every async operation class" $ do
+    let readOperations =
+          [ (DataBrowserLoadCatalogOperation, DataBrowserLoadCatalogRequest)
+          , (DataBrowserLoadPluginOperation, DataBrowserLoadPluginRequest "atlas")
+          , (DataBrowserSelectResourceOperation, DataBrowserSelectResourceRequest "atlas" "cities")
+          , (DataBrowserListOperation, DataBrowserRecordRequest
+              (DataBrowserListRecordsRequest "atlas" "cities" (Just 10) (Just 10)))
+          ]
+        mutationOperations =
+          [ (DataBrowserCreateOperation, DataBrowserRecordRequest
+              (DataBrowserCreateRecordRequest "atlas" "cities" (DataRecord Map.empty)))
+          , (DataBrowserUpdateOperation, DataBrowserRecordRequest
+              (DataBrowserUpdateRecordRequest "atlas" "cities" Null (DataRecord Map.empty)))
+          , (DataBrowserDeleteOperation, DataBrowserRecordRequest
+              (DataBrowserDeleteRecordRequest "atlas" "cities" Null))
+          ]
+        idsFor (requestId, (operation, request)) =
+          dataBrowserWidgetIds (browserUi browserState
+            { dbsPendingRequest = Just (DataBrowserPendingEnvelope
+                (DataBrowserRequestId requestId) operation request)
+            , dbsLoading = True
+            })
+    map idsFor (zip [10..] readOperations) `shouldSatisfy` all (\ids ->
+      "WidgetDataResourceSelect:atlas:cities" `elem` ids
+        && "WidgetDataResourceSelect:atlas:towns" `elem` ids
+        && "WidgetDataRecordSelect:0" `notElem` ids
+        && "WidgetDataCreateNew" `notElem` ids)
+    map idsFor (zip [20..] mutationOperations) `shouldBe` [[], [], []]
+
+  it "lists nested edit widgets and exposes pending/error command state" $ do
+    let editDbs = browserState
+          { dbsSelectedRecord = Just (DataRecord (Map.singleton "name" (String "Alpha")))
+          , dbsSelectedRowIndex = Just 0
+          , dbsEditMode = True
+          , dbsEditValues = Map.singleton "name" (String "Alpha")
+          }
+    let editWidgetIds = dataBrowserWidgetIds (browserUi editDbs)
+    editWidgetIds `shouldContain` ["WidgetDataFieldTextClick:name"]
+    editWidgetIds `shouldContain` ["WidgetDataEditSave"]
+
+    let pending = DataBrowserPendingEnvelope
+          (DataBrowserRequestId 42)
+          DataBrowserLoadPluginOperation
+          (DataBrowserLoadPluginRequest "atlas")
+        pendingState = widgetState
+          (browserUi browserState { dbsPendingRequest = Just pending, dbsLoading = True })
+          WidgetConfigTabData
+    case pendingState of
+      Object fields -> do
+        KM.lookup "loading" fields `shouldBe` Just (Bool True)
+        case KM.lookup "pending" fields of
+          Just (Object pendingFields) -> do
+            KM.lookup "request_id" pendingFields `shouldBe` Just (Number 42)
+            KM.lookup "operation" pendingFields `shouldBe` Just (String "load_plugin_resources")
+            KM.lookup "target" pendingFields `shouldSatisfy` maybe False (\case Object _ -> True; _ -> False)
+          value -> expectationFailure ("expected pending object, got " <> show value)
+      value -> expectationFailure ("expected widget state object, got " <> show value)
+
+    let asyncError = DataBrowserAsyncError
+          (DataBrowserRequestId 43)
+          DataBrowserLoadCatalogOperation
+          DataBrowserLoadCatalogRequest
+          "catalog unavailable"
+        errorState = widgetState
+          (browserUi browserState { dbsAsyncError = Just asyncError })
+          WidgetConfigTabData
+    case errorState of
+      Object fields -> KM.lookup "async_error" fields
+        `shouldSatisfy` maybe False (\case Object _ -> True; _ -> False)
+      value -> expectationFailure ("expected widget state object, got " <> show value)
+
   it "aligns data detail widgets to validation-adjusted popover geometry" $ do
     let layout = layoutFor (V2 1200 800) 160
         rowIndex = 2
@@ -270,6 +404,7 @@ spec = describe "UI.WidgetTree" $ do
           validationRows
           True
           True
+          False
           False
           False
           layout
@@ -288,6 +423,7 @@ spec = describe "UI.WidgetTree" $ do
           True
           True
           True
+          False
           layout
     hitTest widgets (rectHitPoint (deleteConfirmOkRect layout))
       `shouldBe` Just WidgetDataDeleteConfirm
@@ -305,6 +441,7 @@ spec = describe "UI.WidgetTree" $ do
           0
           True
           True
+          False
           False
           False
           layout
@@ -345,6 +482,38 @@ spec = describe "UI.WidgetTree" $ do
     length widgets `shouldBe` 1
     hitTest widgets (rectHitPoint (editorReopenRect layout))
       `shouldBe` Just WidgetEditorReopen
+
+browserState :: DataBrowserState
+browserState = emptyDataBrowserState
+  { dbsSelectedPlugin = Just "atlas"
+  , dbsSelectedResource = Just "cities"
+  , dbsRecords = [DataRecord Map.empty]
+  }
+
+browserUi :: DataBrowserState -> UiState
+browserUi dbs = emptyUiState
+  { uiShowConfig = True
+  , uiConfigTab = ConfigData
+  , uiDataResources = browserResources
+  , uiDataBrowser = dbs
+  }
+
+browserResources :: Map.Map Text.Text [DataResourceSchema]
+browserResources = Map.singleton "atlas" [browserSchema "cities", browserSchema "towns"]
+
+browserSchema :: Text.Text -> DataResourceSchema
+browserSchema name = DataResourceSchema
+  { drsSchemaVersion = currentDataResourceSchemaVersion
+  , drsResourceVersion = defaultDataResourceVersion
+  , drsName = name
+  , drsLabel = name
+  , drsHexBound = False
+  , drsKeyField = "id"
+  , drsOverlay = Nothing
+  , drsFields = [DataFieldDef "name" DFText "Name" True Nothing]
+  , drsOperations = allOperations { doCreate = True, doPage = True }
+  , drsPagination = DataPagination 10 100 0
+  }
 
 detailWidgetExpanded :: Set.Set Text.Text
 detailWidgetExpanded = Set.fromList ["profile", "shape"]

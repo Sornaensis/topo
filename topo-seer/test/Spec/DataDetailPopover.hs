@@ -2,13 +2,21 @@
 
 module Spec.DataDetailPopover (spec) where
 
-import Actor.UI (DataBrowserState(..), UiState(..), emptyDataBrowserState, emptyUiState)
+import Actor.UI (ConfigTab(..), DataBrowserState(..), UiState(..), emptyDataBrowserState, emptyUiState)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Vector as Vector
-import Seer.DataBrowser.Model (DataBrowserValidationError(..))
+import Seer.DataBrowser.Model
+  ( DataBrowserAsyncError(..)
+  , DataBrowserOperation(..)
+  , DataBrowserPendingEnvelope(..)
+  , DataBrowserPendingRequest(..)
+  , DataBrowserRequestId(..)
+  , DataBrowserValidationError(..)
+  , DataBrowserWorkerRequest(..)
+  )
 import Seer.Draw.Config.DataDetail
 import Test.Hspec
 import Topo.Plugin.DataResource
@@ -26,6 +34,10 @@ import Topo.Plugin.RPC.DataService (DataRecord(..))
 
 spec :: Spec
 spec = describe "Data detail popover view model" $ do
+  it "does not render over a non-Data config tab" $ do
+    dataDetailPopoverView ((uiWithBrowser baseBrowserState) { uiConfigTab = ConfigTerrain })
+      `shouldBe` Nothing
+
   it "enumerates nested record and ADT display rows" $ do
     let view = selectedView baseBrowserState
         rows = ddvFields view
@@ -82,6 +94,43 @@ spec = describe "Data detail popover view model" $ do
     ddvDeleteConfirm view `shouldBe`
       Just (DataDetailDeleteConfirmView "Delete record?" "Delete" "Cancel")
 
+  it "retains detail values while locking every mutation interaction" $ do
+    let request = DataBrowserRecordRequest
+          (DataBrowserUpdateRecordRequest "atlas" "details" (Number 1) detailRecord)
+        dbs = baseBrowserState
+          { dbsEditMode = True
+          , dbsEditValues = Map.singleton "profile.name" (String "Retained")
+          , dbsPendingRequest = Just (DataBrowserPendingEnvelope
+              (DataBrowserRequestId 8) DataBrowserUpdateOperation request)
+          , dbsLoading = True
+          }
+        view = selectedView dbs
+    ddvInteractionLocked view `shouldBe` True
+    ddvOperationStatus view `shouldBe` Just "Saving…"
+    ddvShowEditToggle view `shouldBe` False
+    ddfValueText (rowByPath "profile.name" (ddvFields view)) `shouldBe` "Retained"
+    ddfControl (rowByPath "profile.name" (ddvFields view)) `shouldBe` DataDetailValueDisplay
+
+  it "shows mutation failures separately and re-enables the retained mode" $ do
+    let request = DataBrowserRecordRequest
+          (DataBrowserUpdateRecordRequest "atlas" "details" (Number 1) detailRecord)
+        dbs = baseBrowserState
+          { dbsEditMode = True
+          , dbsEditValues = Map.singleton "profile.name" (String "Retained")
+          , dbsTextCursor = 7
+          , dbsAsyncError = Just (DataBrowserAsyncError
+              (DataBrowserRequestId 8) DataBrowserUpdateOperation request "backend rejected")
+          }
+        view = selectedView dbs
+    ddvInteractionLocked view `shouldBe` False
+    ddvOperationError view `shouldBe` Just "Save failed: backend rejected"
+    ddvValidationRows view `shouldBe` []
+    ddfControl (rowByPath "profile.name" (ddvFields view))
+      `shouldBe` DataDetailTextInput False "Retaine"
+
+    let unrelated = selectedView dbs { dbsSelectedRecordKey = Just (Number 2) }
+    ddvOperationError unrelated `shouldBe` Nothing
+
 selectedView :: DataBrowserState -> DataDetailPopoverView
 selectedView dbs = case dataDetailPopoverView (uiWithBrowser dbs) of
   Just view -> view
@@ -89,7 +138,8 @@ selectedView dbs = case dataDetailPopoverView (uiWithBrowser dbs) of
 
 uiWithBrowser :: DataBrowserState -> UiState
 uiWithBrowser dbs = emptyUiState
-  { uiDataResources = Map.singleton "atlas" [detailSchema]
+  { uiConfigTab = ConfigData
+  , uiDataResources = Map.singleton "atlas" [detailSchema]
   , uiDataBrowser = dbs
   }
 

@@ -115,9 +115,8 @@ beginDataBrowserAction requestId ui action =
       in (ui { dbuModel = next' }, DataBrowserBeginAccepted envelope superseded)
 
     pureResult next =
-      let next' = next
+      let next' = clearStaleMutationError action next
             { dbModelPendingEnvelope = Nothing
-            , dbModelAsyncError = Nothing
             , dbModelLoading = False
             }
       in case dbModelValidationErrors next' of
@@ -130,6 +129,27 @@ replacementAction :: DataBrowserAppAction -> Bool
 replacementAction DataBrowserSelectPlugin {} = True
 replacementAction DataBrowserSelectResource {} = True
 replacementAction _ = False
+
+-- A failed mutation remains visible while its form is actionable, but leaving
+-- or starting a selection/mutation mode must not let that old failure resurface.
+clearStaleMutationError :: DataBrowserAppAction -> DataBrowserModel -> DataBrowserModel
+clearStaleMutationError action model
+  | clearsMutationError action
+  , Just asyncError <- dbModelAsyncError model
+  , dataBrowserRequestIsMutation (dbaeRequest asyncError) =
+      model { dbModelAsyncError = Nothing }
+  | otherwise = model
+
+clearsMutationError :: DataBrowserAppAction -> Bool
+clearsMutationError action = case action of
+  DataBrowserSelectRecord {} -> True
+  DataBrowserDismissRecord -> True
+  DataBrowserStartEdit -> True
+  DataBrowserStartCreate -> True
+  DataBrowserCancelEdit -> True
+  DataBrowserRequestDelete -> True
+  DataBrowserCancelDelete -> True
+  _ -> False
 
 applyPureAction :: DataBrowserModel -> DataBrowserAppAction -> DataBrowserModel
 applyPureAction model action = case action of

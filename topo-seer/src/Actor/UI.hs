@@ -4,6 +4,11 @@ module Actor.UI
   , ConfigTab(..)
   , DataBrowserState(..)
   , emptyDataBrowserState
+  , dataBrowserReadPending
+  , dataBrowserMutationPending
+  , dataBrowserListError
+  , dataBrowserMutationError
+  , dataBrowserScopedError
   , builtinStageRowCount
   , configRowCount
   , pluginRowIndex
@@ -63,6 +68,11 @@ import Actor.UI.State
   , ConfigTab(..)
   , DataBrowserState(..)
   , emptyDataBrowserState
+  , dataBrowserReadPending
+  , dataBrowserMutationPending
+  , dataBrowserListError
+  , dataBrowserMutationError
+  , dataBrowserScopedError
   , LeftTab(..)
   , Ui
   , UiMenuMode(..)

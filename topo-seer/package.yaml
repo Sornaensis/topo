@@ -74,6 +74,7 @@ library:
     - Seer.Command.AppServiceAdapter
     - Seer.Command.Channel
     - Seer.Command.Dispatch
+    - Seer.Command.Handlers.Widgets
     - Seer.DataBrowser.AppService
     - Seer.DataBrowser.Executor
     - Seer.DataBrowser.Lifecycle
@@ -179,7 +180,6 @@ library:
     - Seer.Command.Handlers.Terrain
     - Seer.Command.Handlers.View
     - Seer.Command.Handlers.Viewport
-    - Seer.Command.Handlers.Widgets
     - Seer.Command.Handlers.World
     - Seer.Command.Context
     - Seer.Service.Headless

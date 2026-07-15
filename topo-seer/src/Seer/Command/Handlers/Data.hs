@@ -40,7 +40,12 @@ import Actor.PluginManager
   , mutatePluginResource
   )
 import Actor.UiActions.Handles (ActorHandles(..))
-import Actor.UI.State (UiState(..), DataBrowserState(..), readUiSnapshotRef)
+import Actor.UI.State
+  ( UiState(..)
+  , DataBrowserState(..)
+  , dataBrowserScopedError
+  , readUiSnapshotRef
+  )
 import Seer.Command.Context (CommandContext(..))
 import Seer.DataBrowser.Model
   ( dataBrowserAsyncErrorValue
@@ -297,7 +302,7 @@ handleDataGetState ctx reqId _params = do
     , "page_offset" .= dbsPageOffset dbs
     , "loading" .= dbsLoading dbs
     , "pending" .= fmap dataBrowserPendingEnvelopeValue (dbsPendingRequest dbs)
-    , "async_error" .= fmap dataBrowserAsyncErrorValue (dbsAsyncError dbs)
+    , "async_error" .= fmap dataBrowserAsyncErrorValue (dataBrowserScopedError dbs)
     , "edit_mode" .= dbsEditMode dbs
     , "create_mode" .= dbsCreateMode dbs
     , "has_selection" .= case dbsSelectedRecord dbs of

@@ -71,12 +71,20 @@ import Topo.Pipeline.Stage (parseStageId)
 import qualified Seer.DataBrowser.AppService as DataBrowser
 import Seer.DataBrowser.Executor (submitDataBrowserAction)
 import Seer.DataBrowser.Model (DataBrowserPageAction(..))
-import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..), noOperations)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
 import UI.Components.ConfigSliders (configSliderInputValueForId)
 import UI.Components.PipelineControls (pipelineParamToggleValue, pipelineParamValueFromClick, pipelineScrollOffset)
 import UI.Layout
-import UI.WidgetTree (Widget(..), WidgetId(..), buildWidgets, buildPluginWidgets, buildDataBrowserWidgets, buildDataDetailWidgets, hitTest, isLeftViewWidget)
+import UI.WidgetTree
+  ( Widget(..)
+  , WidgetId(..)
+  , buildWidgets
+  , buildPluginWidgets
+  , buildDataBrowserWidgets
+  , buildDataDetailWidgetsForState
+  , hitTest
+  , isLeftViewWidget
+  )
 import UI.Widgets (Rect(..), containsPoint)
 import System.Random (randomIO)
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -111,41 +119,20 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       inConfigScroll = uiShowConfig uiSnap && containsPoint scrollArea point
       configScrollForHit = case uiConfigTab uiSnap of
         ConfigPipeline -> pipelineScrollOffset uiSnap layout
-        _ -> uiConfigScroll uiSnap
+        tab -> configScrollOffsetForRows
+          (configRowCount tab uiSnap) (uiConfigScroll uiSnap) layout
       scrollPoint = if inConfigScroll
         then V2 (fromIntegral x) (fromIntegral y + configScrollForHit)
         else point
       dbs_ = uiDataBrowser uiSnap
-      detailWidgets = case (dbsSelectedRowIndex dbs_, dbsSelectedPlugin dbs_, dbsSelectedResource dbs_) of
-        (Just rowIdx, Just pName, Just rName) ->
-          let schemas = Map.findWithDefault [] pName (uiDataResources uiSnap)
-              mSchema = find (\s -> drsName s == rName) schemas
-              fields = maybe [] drsFields mSchema
-              ops = maybe noOperations drsOperations mSchema
-              isEditing = dbsEditMode dbs_ || dbsCreateMode dbs_
-              showEditToggle = doUpdate ops && not (dbsCreateMode dbs_)
-              validationRowCount = length (dbsValidationErrors dbs_)
-          in buildDataDetailWidgets
-               rowIdx
-               fields
-               (dbsExpandedFields dbs_)
-               validationRowCount
-               isEditing
-               showEditToggle
-               (doDelete ops)
-               (dbsDeleteConfirm dbs_)
-               layout
-        _ -> []
-      selectedSchema = do
-        pName <- dbsSelectedPlugin (uiDataBrowser uiSnap)
-        rName <- dbsSelectedResource (uiDataBrowser uiSnap)
-        schemas <- Map.lookup pName (uiDataResources uiSnap)
-        find (\s -> drsName s == rName) schemas
-      canCreate = maybe False (doCreate . drsOperations) selectedSchema
-      canPage = maybe False (doPage . drsOperations) selectedSchema
+      detailWidgets
+        | uiShowConfig uiSnap
+        , uiConfigTab uiSnap == ConfigData =
+            buildDataDetailWidgetsForState (uiDataResources uiSnap) dbs_ layout
+        | otherwise = []
       widgetsAll = buildWidgets layout
                 ++ buildPluginWidgets (uiPluginNames uiSnap) (uiPluginExpanded uiSnap) (uiPluginParamSpecs uiSnap) (uiPluginDiagnosticLines uiSnap) layout
-                ++ buildDataBrowserWidgets (uiDataResources uiSnap) (dbsSelectedPlugin (uiDataBrowser uiSnap)) (dbsSelectedResource (uiDataBrowser uiSnap)) (length (dbsRecords (uiDataBrowser uiSnap))) canCreate canPage layout
+                ++ buildDataBrowserWidgets (uiDataResources uiSnap) dbs_ layout
                 ++ detailWidgets
       widgets =
         if uiShowConfig uiSnap
@@ -159,20 +146,21 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       inLeftViewContent = inLeftViewPanel && containsPoint (leftViewContentClipRect layout) point
       leftViewAdjPoint = V2 (fromIntegral x) (fromIntegral y + uiLeftViewScroll uiSnap)
       (leftViewWidgets, otherWidgets) = partition (isLeftViewWidget . widgetId) nonSliderWidgets
-      (pipelineWidgets, nonPipelineWidgets) = partition (isPipelineScrollWidget . widgetId) otherWidgets
+      (pipelineWidgets, afterPipelineWidgets) = partition (isPipelineScrollWidget . widgetId) otherWidgets
+      (dataBrowserWidgets, nonScrollWidgets) = partition (isDataBrowserScrollWidget . widgetId) afterPipelineWidgets
       detailHit = hitTest detailWidgets point
       hitWidget = detailHit <|>
         if inConfigScroll
-          then case hitTest configSliderWidgets scrollPoint <|> hitTest pipelineWidgets scrollPoint of
+          then case hitTest configSliderWidgets scrollPoint
+              <|> hitTest pipelineWidgets scrollPoint
+              <|> hitTest dataBrowserWidgets scrollPoint of
             Just wid -> Just wid
             Nothing ->
               let viewHit = if inLeftViewContent then hitTest leftViewWidgets leftViewAdjPoint else Nothing
-              in viewHit <|> hitTest nonPipelineWidgets point
+              in viewHit <|> hitTest nonScrollWidgets point
           else if inLeftViewContent
-            then hitTest leftViewWidgets leftViewAdjPoint <|> hitTest otherWidgets point
-            else if inLeftViewPanel
-              then hitTest otherWidgets point
-            else hitTest widgets point
+            then hitTest leftViewWidgets leftViewAdjPoint <|> hitTest nonScrollWidgets point
+            else hitTest nonScrollWidgets point
       configWidgetAllowed tab widget =
         case sliderDefForWidget (widgetId widget) of
           Just sliderDef -> tab == configTabForSliderTab (sliderTab sliderDef)
@@ -308,6 +296,16 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetPluginExpand _ -> True
       WidgetPluginParamSlider _ _ -> True
       WidgetPluginParamCheck _ _ -> True
+      _ -> False
+
+    isDataBrowserScrollWidget :: WidgetId -> Bool
+    isDataBrowserScrollWidget wid = case wid of
+      WidgetDataPluginSelect _ -> True
+      WidgetDataResourceSelect _ _ -> True
+      WidgetDataPagePrev _ _ -> True
+      WidgetDataPageNext _ _ -> True
+      WidgetDataRecordSelect _ -> True
+      WidgetDataCreateNew -> True
       _ -> False
 
     -- Controls like presets, pipeline toggles, and sim/plugin management do

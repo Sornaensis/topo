@@ -12,6 +12,11 @@ module Actor.UI.State
   , configRowCount
   , DataBrowserState(..)
   , emptyDataBrowserState
+  , dataBrowserReadPending
+  , dataBrowserMutationPending
+  , dataBrowserListError
+  , dataBrowserMutationError
+  , dataBrowserScopedError
   , dataBrowserRowCount
   , pluginRowIndex
   , pluginRowsWithParams
@@ -117,7 +122,7 @@ import Seer.Config.SliderRegistry (SliderId(..), SliderTab(..), sliderDefaultVal
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.DataBrowser.Lifecycle (DataBrowserAppAction, beginDataBrowserAction)
 import Seer.DataBrowser.Model
-  ( DataBrowserAsyncError
+  ( DataBrowserAsyncError(..)
   , DataBrowserBeginResult(..)
   , DataBrowserCompletion
   , DataBrowserEditBuffer(..)
@@ -125,13 +130,16 @@ import Seer.DataBrowser.Model
   , DataBrowserModel(..)
   , DataBrowserPagination(..)
   , DataBrowserPendingEnvelope(..)
+  , DataBrowserPendingRequest(..)
   , DataBrowserRequestId(..)
   , DataBrowserSelection(..)
   , DataBrowserUi(..)
   , DataBrowserValidationError
+  , DataBrowserWorkerRequest(..)
   , completeDataBrowserRequest
   , dataBrowserPageRequestFor
   , dataBrowserPendingDescriptor
+  , dataBrowserRequestIsMutation
   )
 import Seer.Editor.Types (EditorState(..), defaultEditorState)
 import Seer.Render.ZoomStage (maxCameraZoom)
@@ -141,7 +149,7 @@ import Topo.Export (canonicalBasisQualifiedExportFields)
 import Topo.Overlay.Schema (OverlayFieldType(..))
 import Topo.Pipeline (StageStatus)
 import Topo.Pipeline.Stage (StageId)
-import Topo.Plugin.DataResource (DataResourceSchema(..))
+import Topo.Plugin.DataResource (DataOperations(..), DataResourceSchema(..))
 import Topo.Plugin.RPC.DataService (DataRecord)
 import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.WidgetId (WidgetId)
@@ -1155,17 +1163,103 @@ emptyDataBrowserState = DataBrowserState
   , dbsAsyncError = Nothing
   }
 
+-- | A replaceable catalog/resource/list request is active. Only plugin and
+-- resource navigation may replace this work.
+dataBrowserReadPending :: DataBrowserState -> Bool
+dataBrowserReadPending dbs = case dbsPendingRequest dbs of
+  Just pending -> not (dataBrowserRequestIsMutation (dbpeRequest pending))
+  Nothing -> False
+
+-- | A create/update/delete request is active. Every Data Browser interaction
+-- is locked until the matching completion arrives.
+dataBrowserMutationPending :: DataBrowserState -> Bool
+dataBrowserMutationPending dbs = case dbsPendingRequest dbs of
+  Just pending -> dataBrowserRequestIsMutation (dbpeRequest pending)
+  Nothing -> False
+
+-- | A read failure is visible only while its target still matches the current
+-- browser selection. Catalog failures are global to the list panel.
+dataBrowserListError :: DataBrowserState -> Maybe DataBrowserAsyncError
+dataBrowserListError dbs = do
+  asyncError <- dbsAsyncError dbs
+  if readErrorMatchesState dbs asyncError then Just asyncError else Nothing
+
+-- | A mutation failure belongs to the retained create/edit/delete mode and
+-- must not reappear after its target or mode changes.
+dataBrowserMutationError :: DataBrowserState -> Maybe DataBrowserAsyncError
+dataBrowserMutationError dbs = do
+  asyncError <- dbsAsyncError dbs
+  if mutationErrorMatchesState dbs asyncError then Just asyncError else Nothing
+
+-- | The one operation error currently scoped to visible Data Browser state.
+dataBrowserScopedError :: DataBrowserState -> Maybe DataBrowserAsyncError
+dataBrowserScopedError dbs = case dataBrowserMutationError dbs of
+  Just asyncError -> Just asyncError
+  Nothing -> dataBrowserListError dbs
+
+readErrorMatchesState :: DataBrowserState -> DataBrowserAsyncError -> Bool
+readErrorMatchesState dbs asyncError = case dbaeRequest asyncError of
+  DataBrowserLoadCatalogRequest -> True
+  DataBrowserLoadPluginRequest pluginName ->
+    dbsSelectedPlugin dbs == Just pluginName
+  DataBrowserSelectResourceRequest pluginName resourceName ->
+    sameResource dbs pluginName resourceName
+  DataBrowserRecordRequest
+      (DataBrowserListRecordsRequest pluginName resourceName _ _) ->
+    sameResource dbs pluginName resourceName
+  DataBrowserRecordRequest _ -> False
+
+mutationErrorMatchesState :: DataBrowserState -> DataBrowserAsyncError -> Bool
+mutationErrorMatchesState dbs asyncError = case dbaeRequest asyncError of
+  DataBrowserRecordRequest descriptor -> case descriptor of
+    DataBrowserCreateRecordRequest pluginName resourceName _ ->
+      sameResource dbs pluginName resourceName && dbsCreateMode dbs
+    DataBrowserUpdateRecordRequest pluginName resourceName key _ ->
+      sameResource dbs pluginName resourceName
+        && dbsSelectedRecordKey dbs == Just key
+        && dbsEditMode dbs
+    DataBrowserDeleteRecordRequest pluginName resourceName key ->
+      sameResource dbs pluginName resourceName
+        && dbsSelectedRecordKey dbs == Just key
+        && dbsDeleteConfirm dbs
+    DataBrowserListRecordsRequest {} -> False
+  _ -> False
+
+sameResource :: DataBrowserState -> Text -> Text -> Bool
+sameResource dbs pluginName resourceName =
+  dbsSelectedPlugin dbs == Just pluginName
+    && dbsSelectedResource dbs == Just resourceName
+
 -- | Number of rows to display in the data browser tab.
---   Header row + one row per plugin with data resources,
---   plus record rows when a resource is selected.
 dataBrowserRowCount :: DataBrowserState -> Map Text [DataResourceSchema] -> Int
 dataBrowserRowCount dbs resources =
   let pluginCount = Map.size resources
       resourceCount = case dbsSelectedPlugin dbs of
         Nothing   -> 0
         Just pName -> length (Map.findWithDefault [] pName resources)
-      recordCount = length (dbsRecords dbs)
-  in max 1 (pluginCount + resourceCount + recordCount)
+      recordCount
+        | dataBrowserReadPending dbs = 0
+        | otherwise = length (dbsRecords dbs)
+      selectedSchema = do
+        pluginName <- dbsSelectedPlugin dbs
+        resourceName <- dbsSelectedResource dbs
+        schemas <- Map.lookup pluginName resources
+        find ((== resourceName) . drsName) schemas
+      unlocked = not (dataBrowserReadPending dbs || dataBrowserMutationPending dbs)
+      pageCount
+        | unlocked
+        , recordCount > 0
+        , maybe False (doPage . drsOperations) selectedSchema = 1
+        | otherwise = 0
+      createCount
+        | unlocked
+        , maybe False (doCreate . drsOperations) selectedSchema = 1
+        | otherwise = 0
+      statusCount
+        | dataBrowserReadPending dbs = 1
+        | Just _ <- dataBrowserListError dbs = 1
+        | otherwise = 0
+  in max 1 (pluginCount + resourceCount + recordCount + statusCount + pageCount + createCount)
 
 -- | Total number of config widget rows for each tab.
 configRowCount :: ConfigTab -> UiState -> Int

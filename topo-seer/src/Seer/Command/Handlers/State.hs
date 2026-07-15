@@ -38,6 +38,7 @@ import Actor.UI.State
   , allBuiltinViewModes
   , baseViewModeSummaryToJSON
   , baseViewModeToText
+  , dataBrowserScopedError
   , effectiveViewSelection
   , layeredViewStateToJSON
   , layeredViewStateToViewMode
@@ -283,7 +284,7 @@ handleGetUiState ctx reqId _params = do
         , "page_offset"       .= dbsPageOffset dbs
         , "loading"           .= dbsLoading dbs
         , "pending"           .= fmap dataBrowserPendingEnvelopeValue (dbsPendingRequest dbs)
-        , "async_error"       .= fmap dataBrowserAsyncErrorValue (dbsAsyncError dbs)
+        , "async_error"       .= fmap dataBrowserAsyncErrorValue (dataBrowserScopedError dbs)
         , "edit_mode"         .= dbsEditMode dbs
         , "create_mode"       .= dbsCreateMode dbs
         , "has_selection"     .= case dbsSelectedRecord dbs of

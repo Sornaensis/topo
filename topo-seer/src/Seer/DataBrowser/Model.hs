@@ -16,6 +16,8 @@ module Seer.DataBrowser.Model
   , DataBrowserRequestId(..)
   , DataBrowserOperation(..)
   , dataBrowserOperationText
+  , dataBrowserOperationProgressText
+  , dataBrowserOperationFailureText
   , DataBrowserPendingRequest(..)
   , DataBrowserWorkerRequest(..)
   , DataBrowserPendingEnvelope(..)
@@ -139,6 +141,31 @@ dataBrowserOperationText operation = case operation of
   DataBrowserCreateOperation -> "create_record"
   DataBrowserUpdateOperation -> "update_record"
   DataBrowserDeleteOperation -> "delete_record"
+
+-- | Readable in-progress copy shared by renderer and state-facing widgets.
+dataBrowserOperationProgressText :: DataBrowserOperation -> Text
+dataBrowserOperationProgressText operation = case operation of
+  DataBrowserLoadCatalogOperation -> "Loading data sources…"
+  DataBrowserLoadPluginOperation -> "Loading resources…"
+  DataBrowserSelectResourceOperation -> "Loading records…"
+  DataBrowserListOperation -> "Loading page…"
+  DataBrowserCreateOperation -> "Creating…"
+  DataBrowserUpdateOperation -> "Saving…"
+  DataBrowserDeleteOperation -> "Deleting…"
+
+-- | Readable, operation-scoped failure copy. Validation errors remain a
+-- separate channel and are never folded into this text.
+dataBrowserOperationFailureText :: DataBrowserOperation -> Text -> Text
+dataBrowserOperationFailureText operation message = prefix <> message
+  where
+    prefix = case operation of
+      DataBrowserLoadCatalogOperation -> "Could not load data sources: "
+      DataBrowserLoadPluginOperation -> "Could not load resources: "
+      DataBrowserSelectResourceOperation -> "Could not load records: "
+      DataBrowserListOperation -> "Could not load page: "
+      DataBrowserCreateOperation -> "Create failed: "
+      DataBrowserUpdateOperation -> "Save failed: "
+      DataBrowserDeleteOperation -> "Delete failed: "
 
 -- | Effect descriptor produced by the pure reducer for integration layers.
 data DataBrowserPendingRequest
@@ -322,18 +349,20 @@ dataBrowserReducer model action = case action of
        else selectedModel
           { dbModelValidationErrors = [validationError Nothing "list not supported"] }
 
-  DataBrowserListSucceeded request result
+  DataBrowserListSucceeded request@(DataBrowserListRecordsRequest _ _ _ requestedOffset) result
     | dbModelPendingRequest model == Just request ->
         let pagination = dbModelPagination model
         in model
           { dbModelRecords = qrsRecords result
           , dbModelPagination = pagination
-              { dbPaginationTotalCount = qrsTotalCount result }
+              { dbPaginationOffset = maybe (dbPaginationOffset pagination) id requestedOffset
+              , dbPaginationTotalCount = qrsTotalCount result }
           , dbModelPendingRequest = Nothing
           , dbModelLoading = False
           , dbModelValidationErrors = []
           }
     | otherwise -> model
+  DataBrowserListSucceeded _ _ -> model
 
   DataBrowserListFailed request message
     | dbModelPendingRequest model == Just request ->
@@ -480,14 +509,7 @@ applyOutcome pending outcome ui = case outcome of
     request = dbpeRequest pending
 
     failedModel message =
-      let next = case dataBrowserPendingDescriptor request of
-            Just descriptor@DataBrowserListRecordsRequest {} ->
-              dataBrowserReducer (withDescriptor descriptor model) (DataBrowserListFailed descriptor message)
-            Just descriptor ->
-              dataBrowserReducer (withDescriptor descriptor model) (DataBrowserMutationFailed descriptor message)
-            Nothing -> model
-              { dbModelValidationErrors = [DataBrowserValidationError Nothing message] }
-      in (clearPending next)
+      (clearPending model)
         { dbModelAsyncError = Just DataBrowserAsyncError
             { dbaeRequestId = dbpeRequestId pending
             , dbaeOperation = dbpeOperation pending
@@ -803,12 +825,7 @@ requestPage pageAction model
             pageOffset = fmap (const offset) pageSize
             request = DataBrowserListRecordsRequest pluginName resourceName pageSize pageOffset
         in model
-          { dbModelRecords = []
-          , dbModelPagination = pagination
-              { dbPaginationOffset = offset
-              , dbPaginationTotalCount = Nothing
-              }
-          , dbModelSelection = clearSelectedRecord selection
+          { dbModelSelection = clearSelectedRecord selection
           , dbModelExpandedFields = Set.empty
           , dbModelEditBuffer = emptyDataBrowserEditBuffer
           , dbModelFocusedField = Nothing

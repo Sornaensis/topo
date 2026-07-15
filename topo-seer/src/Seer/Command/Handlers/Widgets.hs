@@ -9,6 +9,8 @@ module Seer.Command.Handlers.Widgets
   ( handleClickWidget
   , handleListWidgets
   , handleGetWidgetState
+  , dataBrowserWidgetIds
+  , widgetState
   ) where
 
 import Control.Monad (when)
@@ -20,6 +22,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import Data.Word (Word64)
+import Linear (V2(..))
 import qualified Data.Text as Text
 import qualified Data.Text.Read as Text
 
@@ -43,6 +46,7 @@ import Actor.UI.State
   , UiState(..)
   , ViewMode(..)
   , WeatherBasis(..)
+  , dataBrowserScopedError
   , effectiveViewSelection
   , getUiSnapshot
   , readUiSnapshotRef
@@ -78,12 +82,20 @@ import Seer.DataBrowser.Model
   , DataBrowserPageAction(..)
   , DataBrowserPendingEnvelope(..)
   , DataBrowserRequestId(..)
+  , dataBrowserAsyncErrorValue
   , dataBrowserOperationText
+  , dataBrowserPendingEnvelopeValue
   )
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
 import Seer.Editor.Types (EditorState(..))
 import UI.Components.PipelineControls (pipelineParamToggleValue)
-import UI.WidgetTree (WidgetId(..))
+import UI.Layout (layoutFor)
+import UI.WidgetTree
+  ( Widget(..)
+  , WidgetId(..)
+  , buildDataBrowserWidgets
+  , buildDataDetailWidgetsForState
+  )
 
 -- ---------------------------------------------------------------------------
 -- Widget ID serialisation
@@ -993,37 +1005,7 @@ handleListWidgets ctx reqId _params = do
         | otherwise = []
       -- Dynamic: data browser
       dataBrowserWids
-        | configOpen && configTab == ConfigData =
-            let pluginNames = Map.keys (uiDataResources uiSnap)
-                pluginSelectWids = map (widgetIdToText . WidgetDataPluginSelect) pluginNames
-                resourceWids = case dbsSelectedPlugin dbs of
-                  Just pName ->
-                    let schemas = Map.findWithDefault [] pName (uiDataResources uiSnap)
-                    in map (\s -> widgetIdToText (WidgetDataResourceSelect pName (drsName s))) schemas
-                  Nothing -> []
-                selectedSchema = do
-                  pName <- dbsSelectedPlugin dbs
-                  rName <- dbsSelectedResource dbs
-                  resourceSchemaFor uiSnap pName rName
-                recordWids =
-                  [ widgetIdToText (WidgetDataRecordSelect idx)
-                  | idx <- [0 .. length (dbsRecords dbs) - 1]
-                  ]
-                pageWids = case (dbsSelectedPlugin dbs, dbsSelectedResource dbs, selectedSchema) of
-                  (Just pName, Just rName, Just schema)
-                    | doPage (drsOperations schema) && not (null (dbsRecords dbs)) ->
-                        [ widgetIdToText (WidgetDataPagePrev pName rName)
-                        , widgetIdToText (WidgetDataPageNext pName rName)
-                        ]
-                  _ -> []
-                detailWids
-                  | dbsSelectedRowIndex dbs /= Nothing =
-                      [ "WidgetDataDetailDismiss", "WidgetDataEditToggle"
-                      , "WidgetDataEditSave", "WidgetDataEditCancel"
-                      , "WidgetDataCreateNew", "WidgetDataDeleteBtn"
-                      , "WidgetDataDeleteConfirm", "WidgetDataDeleteCancel" ]
-                  | otherwise = []
-            in pluginSelectWids ++ resourceWids ++ recordWids ++ pageWids ++ detailWids
+        | configOpen && configTab == ConfigData = dataBrowserWidgetIds uiSnap
         | otherwise = []
       -- Dynamic: editor
       editorWids
@@ -1045,6 +1027,7 @@ handleListWidgets ctx reqId _params = do
   pure $ okResponse reqId $ object
     [ "widgets" .= allWidgets
     , "widget_count" .= length allWidgets
+    , "data_browser_state" .= object (dataBrowserAsyncStateFields dbs)
     , "categories" .= object
         [ "navigation" .= map fst navigation
         , "generation" .= map fst generation
@@ -1059,6 +1042,18 @@ handleListWidgets ctx reqId _params = do
         , "editor" .= editorWids
         ]
     ]
+
+-- | Data Browser widget IDs exactly as exposed by the shared SDL widget
+-- builders. Geometry is irrelevant to the command surface, so a stable
+-- synthetic layout is sufficient.
+dataBrowserWidgetIds :: UiState -> [Text]
+dataBrowserWidgetIds uiSnap = map (widgetIdToText . widgetId) (browserWidgets ++ detailWidgets)
+  where
+    dbs = uiDataBrowser uiSnap
+    commandLayout = layoutFor (V2 1200 900) 0
+    browserWidgets = buildDataBrowserWidgets (uiDataResources uiSnap) dbs commandLayout
+    detailWidgets =
+      buildDataDetailWidgetsForState (uiDataResources uiSnap) dbs commandLayout
 
 -- ---------------------------------------------------------------------------
 -- get_widget_state
@@ -1084,9 +1079,13 @@ handleGetWidgetState ctx reqId params = do
 
 -- | Compute state JSON for a widget.
 widgetState :: UiState -> WidgetId -> Value
-widgetState uiSnap wid = object $ base ++ specific
+widgetState uiSnap wid = object $ base ++ browserState ++ specific
   where
+    dbs = uiDataBrowser uiSnap
     base = [ "widget_id" .= widgetIdToText wid ]
+    browserState
+      | isDataBrowserWidget wid = dataBrowserAsyncStateFields dbs
+      | otherwise = []
     specific = case wid of
       WidgetLeftToggle ->
         [ "active" .= uiShowLeftPanel uiSnap ]
@@ -1135,9 +1134,9 @@ widgetState uiSnap wid = object $ base ++ specific
       WidgetPluginExpand name ->
         [ "expanded" .= Map.findWithDefault False name (uiPluginExpanded uiSnap) ]
       WidgetDataEditToggle ->
-        [ "edit_mode" .= dbsEditMode (uiDataBrowser uiSnap) ]
+        [ "edit_mode" .= dbsEditMode dbs ]
       WidgetDataDeleteBtn ->
-        [ "confirm_shown" .= dbsDeleteConfirm (uiDataBrowser uiSnap) ]
+        [ "confirm_shown" .= dbsDeleteConfirm dbs ]
       _ -> []
     selection = effectiveViewSelection uiSnap
     baseActive baseMode = [ "active" .= (lvsBaseView selection == baseMode) ]
@@ -1146,3 +1145,35 @@ widgetState uiSnap wid = object $ base ++ specific
       [ "active" .= (lvsWeatherBasis selection == basis && weatherBasisEnabled uiSnap)
       , "enabled" .= weatherBasisEnabled uiSnap
       ]
+
+dataBrowserAsyncStateFields :: DataBrowserState -> [Aeson.Pair]
+dataBrowserAsyncStateFields dbs =
+  [ "loading" .= dbsLoading dbs
+  , "pending" .= fmap dataBrowserPendingEnvelopeValue (dbsPendingRequest dbs)
+  , "async_error" .= fmap dataBrowserAsyncErrorValue (dataBrowserScopedError dbs)
+  ]
+
+isDataBrowserWidget :: WidgetId -> Bool
+isDataBrowserWidget wid = case wid of
+  WidgetConfigTabData -> True
+  WidgetDataPluginSelect _ -> True
+  WidgetDataResourceSelect _ _ -> True
+  WidgetDataPagePrev _ _ -> True
+  WidgetDataPageNext _ _ -> True
+  WidgetDataRecordSelect _ -> True
+  WidgetDataDetailDismiss -> True
+  WidgetDataFieldToggle _ -> True
+  WidgetDataEditToggle -> True
+  WidgetDataEditSave -> True
+  WidgetDataEditCancel -> True
+  WidgetDataCreateNew -> True
+  WidgetDataDeleteBtn -> True
+  WidgetDataDeleteConfirm -> True
+  WidgetDataDeleteCancel -> True
+  WidgetDataFieldTextClick _ -> True
+  WidgetDataFieldStepMinus _ -> True
+  WidgetDataFieldStepPlus _ -> True
+  WidgetDataFieldBoolToggle _ -> True
+  WidgetDataFieldEnumPrev _ -> True
+  WidgetDataFieldEnumNext _ -> True
+  _ -> False

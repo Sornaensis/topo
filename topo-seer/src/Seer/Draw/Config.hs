@@ -22,6 +22,7 @@ import UI.Layout
   , configRowTopPad
   , configScrollAreaRect
   , configScrollBarRect
+  , configScrollOffsetForRows
   , configTabRects
   )
 import UI.Components.ConfigSliders
@@ -65,7 +66,7 @@ drawConfigPanel renderer fontCache ui dataSnap layout =
       contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
       Rect (V2 _ _, V2 _ scrollH) = scrollAreaRect
       maxOffset = max 0 (contentHeight - scrollH)
-      scrollY = min maxOffset (uiConfigScroll ui)
+      scrollY = configScrollOffsetForRows rows (uiConfigScroll ui) layout
   in if uiShowConfig ui
     then do
       SDL.rendererDrawColor renderer SDL.$= colConfigPanel

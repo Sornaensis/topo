@@ -6,7 +6,13 @@ module Seer.Draw.Config.Labels
   ( drawConfigLabels
   ) where
 
-import Actor.UI (ConfigTab(..), DataBrowserState(..), UiState(..), configRowCount)
+import Actor.UI
+  ( ConfigTab(..)
+  , DataBrowserState(..)
+  , UiState(..)
+  , configRowCount
+  , dataBrowserReadPending
+  )
 import Control.Monad (forM_, when)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
@@ -35,13 +41,8 @@ drawConfigLabels :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO (
 drawConfigLabels renderer fontCache ui layout = when (uiShowConfig ui) $ do
   let lc = textPrimary
       scrollArea = configScrollAreaRect layout
-      rowHeight = 24
-      gap = 10
       rows = configRowCount (uiConfigTab ui) ui
-      contentHeight = max rowHeight (configRowTopPad + rows * rowHeight + max 0 (rows - 1) * gap)
-      Rect (V2 _ _, V2 _ scrollH) = scrollArea
-      maxOffset = max 0 (contentHeight - scrollH)
-      scrollY = min maxOffset (uiConfigScroll ui)
+      scrollY = configScrollOffsetForRows rows (uiConfigScroll ui) layout
       sr (Rect (V2 x y, V2 w h)) = Rect (V2 x (y - scrollY), V2 w h)
       activeSliderRows = configSliderRowsScrolled ui layout
 
@@ -95,8 +96,13 @@ drawConfigLabels renderer fontCache ui layout = when (uiShowConfig ui) $ do
                 labelY = ry + 4
             drawTextLineTruncated fontCache (V2 (sx + pad + 12) labelY) textDataResourceLabel resourceLabelMaxW (drsLabel schema)
           -- Record labels
+          -- Read requests hide record rows and their targets until the
+          -- replacement result arrives. Progress/error copy is emitted by the
+          -- shared Data Browser draw-command view.
           let recordOffset = resourceOffset + length schemas
-              records = dbsRecords dbs
+              records
+                | dataBrowserReadPending dbs = []
+                | otherwise = dbsRecords dbs
           forM_ (zip [0..] records) $ \(recIdx, _record) -> do
             let rowIdx = recordOffset + recIdx
                 Rect (V2 _ ry, V2 _ _rowH) = sr (configScrollRowRect rowIdx layout)
@@ -104,10 +110,6 @@ drawConfigLabels renderer fontCache ui layout = when (uiShowConfig ui) $ do
                 -- Show the record's key value or index
                 recordLabel = Text.pack ("#" <> show (recIdx + 1))
             drawTextLine fontCache (V2 (sx + pad + 24) labelY) textMuted recordLabel
-          when (dbsLoading dbs) $ do
-            let loadRow = recordOffset + length records
-                Rect (V2 _ ly, V2 _ _lh) = sr (configScrollRowRect loadRow layout)
-            drawTextLine fontCache (V2 (sx + pad) (ly + 4)) textDataLoading "Loading..."
 
     _ -> interpretDrawCommands renderer fontCache $
       configSliderLabelCommands activeSliderRows

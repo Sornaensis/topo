@@ -193,12 +193,12 @@ spec = describe "DataBrowser model reducer" $ do
     Map.lookup "outer.Wrap.0.choice.A.0" cleared `shouldBe` Nothing
     Map.lookup "outer.Wrap.0.choice.B.0" cleared `shouldBe` Just (String "new")
 
-  it "requests pages and clears record selection" $ do
+  it "requests pages while retaining the current page until completion" $ do
     let selected = selectFirstRecord loadedModel
         nextPage = dataBrowserReducer selected (DataBrowserPage DataBrowserPageNext)
-    dbModelRecords nextPage `shouldBe` []
+    dbModelRecords nextPage `shouldBe` [record1, record2]
     dbSelectionRecord (dbModelSelection nextPage) `shouldBe` Nothing
-    dbModelPagination nextPage `shouldBe` DataBrowserPagination 15 (Just 10) Nothing
+    dbModelPagination nextPage `shouldBe` DataBrowserPagination 5 (Just 10) (Just 2)
     dbModelPendingRequest nextPage `shouldBe`
       Just (DataBrowserListRecordsRequest "atlas" "cities" (Just 10) (Just 15))
     dbModelLoading nextPage `shouldBe` True
@@ -269,6 +269,69 @@ spec = describe "DataBrowser model reducer" $ do
     dbuResources completedUi `shouldBe` Map.singleton "atlas" [pagedSchema]
     dbModelRecords (dbuModel completedUi) `shouldBe` [record1, record2]
     dbModelPendingEnvelope (dbuModel completedUi) `shouldBe` Nothing
+
+  it "scopes matching async failures separately and clears them on retry" $ do
+    let pageableModel = loadedModel
+          { dbModelPagination = DataBrowserPagination 5 (Just 10) (Just 100) }
+        initial = DataBrowserUi (Map.singleton "atlas" [pagedSchema]) pageableModel
+        (pendingUi, begun) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 20) initial
+          (Lifecycle.DataBrowserQueryRecords DataBrowserPageNext)
+        envelope = accepted begun
+        failure = DataBrowserCompletion
+          { dbcRequestId = dbpeRequestId envelope
+          , dbcRequest = dbpeRequest envelope
+          , dbcOutcome = DataBrowserWorkerFailed "page unavailable"
+          }
+        (failedUi, applied) = completeDataBrowserRequest failure pendingUi
+        failedModel = dbuModel failedUi
+        (retryUi, retry) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 21) failedUi
+          (Lifecycle.DataBrowserQueryRecords DataBrowserPageNext)
+    applied `shouldBe` True
+    fmap dbaeMessage (dbModelAsyncError failedModel) `shouldBe` Just "page unavailable"
+    dbModelValidationErrors failedModel `shouldBe` []
+    dbModelRecords failedModel `shouldBe` [record1, record2]
+    dbPaginationOffset (dbModelPagination failedModel) `shouldBe` 5
+    retry `shouldSatisfy` isAccepted
+    fmap dbpeRequest (dbModelPendingEnvelope (dbuModel retryUi))
+      `shouldBe` Just (DataBrowserRecordRequest
+        (DataBrowserListRecordsRequest "atlas" "cities" (Just 10) (Just 15)))
+    dbModelAsyncError (dbuModel retryUi) `shouldBe` Nothing
+
+  it "retains a mutation operation error when a validation retry is rejected" $ do
+    let editing = dataBrowserReducer (selectFirstRecord loadedModel) DataBrowserStartEdit
+        invalid = dataBrowserReducer editing
+          (DataBrowserSetFieldValue "population" (String "invalid"))
+        priorRequest = DataBrowserRecordRequest
+          (DataBrowserUpdateRecordRequest "atlas" "cities" (Number 1) record1)
+        priorError = DataBrowserAsyncError
+          (DataBrowserRequestId 30) DataBrowserUpdateOperation priorRequest "backend rejected"
+        initial = DataBrowserUi (Map.singleton "atlas" [pagedSchema])
+          invalid { dbModelAsyncError = Just priorError }
+        (rejectedUi, result) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 31) initial Lifecycle.DataBrowserUpdateRecord
+    result `shouldBe` DataBrowserBeginRejected "population: expected int"
+    dbModelAsyncError (dbuModel rejectedUi) `shouldBe` Just priorError
+    dbModelValidationErrors (dbuModel rejectedUi)
+      `shouldBe` [DataBrowserValidationError (Just "population") "expected int"]
+
+  it "does not revive a mutation failure after leaving and re-entering its mode" $ do
+    let editing = dataBrowserReducer (selectFirstRecord loadedModel) DataBrowserStartEdit
+        request = DataBrowserRecordRequest
+          (DataBrowserUpdateRecordRequest "atlas" "cities" (Number 1) record1)
+        priorError = DataBrowserAsyncError
+          (DataBrowserRequestId 40) DataBrowserUpdateOperation request "backend rejected"
+        initial = DataBrowserUi (Map.singleton "atlas" [pagedSchema])
+          editing { dbModelAsyncError = Just priorError }
+        (cancelledUi, cancelled) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 41) initial Lifecycle.DataBrowserCancelEdit
+        (reopenedUi, reopened) = Lifecycle.beginDataBrowserAction
+          (DataBrowserRequestId 41) cancelledUi Lifecycle.DataBrowserStartEdit
+    cancelled `shouldBe` DataBrowserBeginPure
+    reopened `shouldBe` DataBrowserBeginPure
+    dbModelAsyncError (dbuModel cancelledUi) `shouldBe` Nothing
+    dbModelAsyncError (dbuModel reopenedUi) `shouldBe` Nothing
 
   it "locks navigation while a mutation is pending without losing edit state" $ do
     let initial = DataBrowserUi (Map.singleton "atlas" [pagedSchema]) loadedModel

@@ -14,6 +14,14 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Linear (V2(..))
+import Seer.DataBrowser.Model
+  ( DataBrowserAsyncError(..)
+  , DataBrowserOperation(..)
+  , DataBrowserPendingEnvelope(..)
+  , DataBrowserRequestId(..)
+  , DataBrowserWorkerRequest(..)
+  , dataBrowserOperationProgressText
+  )
 import Test.Hspec
 import Topo.Plugin.DataResource
   ( DataFieldDef(..)
@@ -61,6 +69,25 @@ spec = describe "UI draw-command snapshots" $ do
       , "fill (532,158,82,12)"
       ]
 
+  it "uses operation-specific Data Browser progress copy" $ do
+    map dataBrowserOperationProgressText
+      [ DataBrowserLoadCatalogOperation
+      , DataBrowserLoadPluginOperation
+      , DataBrowserSelectResourceOperation
+      , DataBrowserListOperation
+      , DataBrowserCreateOperation
+      , DataBrowserUpdateOperation
+      , DataBrowserDeleteOperation
+      ] `shouldBe`
+      [ "Loading data sources…"
+      , "Loading resources…"
+      , "Loading records…"
+      , "Loading page…"
+      , "Creating…"
+      , "Saving…"
+      , "Deleting…"
+      ]
+
   it "captures Data Browser browse, pagination, create, and loading states" $ do
     let layout = layoutFor (V2 800 960) 0
         loaded = dataBrowserView resources loadedBrowserState layout
@@ -84,7 +111,24 @@ spec = describe "UI draw-command snapshots" $ do
       , "text at (516,328) +"
       ]
     fmap (rectShape . dblvRect) (dbvLoading loading)
-      `shouldBe` Just "(508,220,40,24)"
+      `shouldBe` Just "(508,220,238,24)"
+    fmap dblvText (dbvLoading loading) `shouldBe` Just "Loading records…"
+    dbvRecordRows loading `shouldBe` []
+    dbvPageControls loading `shouldBe` Nothing
+    dbvCreateButton loading `shouldBe` Nothing
+
+  it "renders scoped list errors without a record selection" $ do
+    let layout = layoutFor (V2 800 960) 0
+        failed = dataBrowserView Map.empty catalogErrorBrowserState layout
+    fmap dbevText (dbvError failed)
+      `shouldBe` Just "Could not load data sources: catalog unavailable"
+    dbvLoading failed `shouldBe` Nothing
+
+    let listFailed = dataBrowserView resources initialListErrorBrowserState layout
+    fmap dbevRowIndex (dbvError listFailed) `shouldBe` Just 2
+    fmap dbcbvRowIndex (dbvCreateButton listFailed) `shouldBe` Just 3
+    fmap dbevRect (dbvError listFailed)
+      `shouldNotBe` fmap dbcbvRect (dbvCreateButton listFailed)
 
 commandShape :: DrawCommand -> Text
 commandShape command = case command of
@@ -129,6 +173,30 @@ loadingBrowserState = emptyDataBrowserState
   { dbsSelectedPlugin = Just "atlas"
   , dbsSelectedResource = Just "cities"
   , dbsLoading = True
+  , dbsPendingRequest = Just (DataBrowserPendingEnvelope
+      (DataBrowserRequestId 4)
+      DataBrowserSelectResourceOperation
+      (DataBrowserSelectResourceRequest "atlas" "cities"))
+  }
+
+initialListErrorBrowserState :: DataBrowserState
+initialListErrorBrowserState = emptyDataBrowserState
+  { dbsSelectedPlugin = Just "atlas"
+  , dbsSelectedResource = Just "cities"
+  , dbsAsyncError = Just (DataBrowserAsyncError
+      (DataBrowserRequestId 5)
+      DataBrowserSelectResourceOperation
+      (DataBrowserSelectResourceRequest "atlas" "cities")
+      "list unavailable")
+  }
+
+catalogErrorBrowserState :: DataBrowserState
+catalogErrorBrowserState = emptyDataBrowserState
+  { dbsAsyncError = Just (DataBrowserAsyncError
+      (DataBrowserRequestId 3)
+      DataBrowserLoadCatalogOperation
+      DataBrowserLoadCatalogRequest
+      "catalog unavailable")
   }
 
 record1 :: DataRecord

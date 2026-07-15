@@ -9,11 +9,19 @@ module UI.WidgetTree
   , buildPluginWidgets
   , buildDataBrowserWidgets
   , buildDataDetailWidgets
+  , buildDataDetailWidgetsForState
   , buildSliderRowWidgets
   , hitTest
   , isLeftViewWidget
   ) where
 
+import Actor.UI.State
+  ( DataBrowserState(..)
+  , dataBrowserListError
+  , dataBrowserMutationError
+  , dataBrowserMutationPending
+  , dataBrowserReadPending
+  )
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -23,7 +31,7 @@ import qualified Data.Text as T
 import Linear (V2(..))
 import Seer.Config.SliderRegistry (SliderTab(..), SliderDef(..), allSliderDefs, sliderDefsForTab, sliderMinusWidgetId, sliderPlusWidgetId)
 import Seer.Editor.Types (EditorTool(..))
-import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataConstructorDef(..))
+import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataConstructorDef(..), DataOperations(..))
 import Topo.Plugin.RPC.Manifest (RPCParamSpec)
 import UI.Components.PipelineControls (pipelinePluginWidgetRects, pipelineStageWidgetRects)
 import UI.Layout
@@ -163,15 +171,18 @@ buildPluginWidgets pluginNames expanded paramSpecs diagnosticLines layout =
 -- * Page-prev \/ page-next buttons on the last row (when records present and supported).
 buildDataBrowserWidgets
   :: Map Text [DataResourceSchema]
-  -> Maybe Text      -- ^ Selected plugin
-  -> Maybe Text      -- ^ Selected resource
-  -> Int             -- ^ Number of loaded records
-  -> Bool            -- ^ Whether the selected resource supports create
-  -> Bool            -- ^ Whether the selected resource supports pagination
+  -> DataBrowserState
   -> Layout
   -> [Widget]
-buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount canCreate canPage layout =
-  let pluginNames = Map.keys resources
+buildDataBrowserWidgets resources dbs layout
+  | dataBrowserMutationPending dbs = []
+  | dataBrowserReadPending dbs = navigationWidgets
+  | otherwise = navigationWidgets ++ recordWidgets ++ pageWidgets ++ createWidget
+  where
+      selectedPlugin = dbsSelectedPlugin dbs
+      selectedResource = dbsSelectedResource dbs
+      recordCount = length (dbsRecords dbs)
+      pluginNames = Map.keys resources
       pluginWidgets =
         [ Widget (WidgetDataPluginSelect pName) (dataBrowserItemRect idx layout)
         | (idx, pName) <- zip [0..] pluginNames
@@ -186,6 +197,14 @@ buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount ca
                    | (rIdx, schema) <- zip [0..] schemas
                    ]
           in (ws, length schemas)
+      navigationWidgets = pluginWidgets ++ resourceWidgets
+      selectedSchema = do
+        pluginName <- selectedPlugin
+        resourceName <- selectedResource
+        schemas <- Map.lookup pluginName resources
+        findSchema resourceName schemas
+      canCreate = maybe False (doCreate . drsOperations) selectedSchema
+      canPage = maybe False (doPage . drsOperations) selectedSchema
       recordOffset = resourceOffset + resourceCount
       recordWidgets =
         [ Widget (WidgetDataRecordSelect rIdx)
@@ -193,19 +212,65 @@ buildDataBrowserWidgets resources selectedPlugin selectedResource recordCount ca
         | rIdx <- [0 .. recordCount - 1]
         ]
       pageRow = recordOffset + recordCount
+      interactionRow = pageRow + case dataBrowserListError dbs of
+        Just _ -> 1
+        Nothing -> 0
       pageWidgets = case (selectedPlugin, selectedResource) of
         (Just pName, Just rName)
           | canPage && recordCount > 0 ->
-              [ Widget (WidgetDataPagePrev pName rName) (dataBrowserPagePrevRect pageRow layout)
-              , Widget (WidgetDataPageNext pName rName) (dataBrowserPageNextRect pageRow layout)
+              [ Widget (WidgetDataPagePrev pName rName) (dataBrowserPagePrevRect interactionRow layout)
+              , Widget (WidgetDataPageNext pName rName) (dataBrowserPageNextRect interactionRow layout)
               ]
         _ -> []
-      createRow = pageRow + (if null pageWidgets then 0 else 1)
+      createRow = interactionRow + (if null pageWidgets then 0 else 1)
       createWidget
         | canCreate =
             [ Widget WidgetDataCreateNew (dataBrowserCreateButtonRect createRow layout) ]
         | otherwise = []
-  in pluginWidgets ++ resourceWidgets ++ recordWidgets ++ pageWidgets ++ createWidget
+
+      findSchema resourceName = foldr match Nothing
+        where
+          match schema acc
+            | drsName schema == resourceName = Just schema
+            | otherwise = acc
+
+-- | Build detail targets from the same live schema and scoped status rows used
+-- by drawing. A missing schema or active read has no detail surface.
+buildDataDetailWidgetsForState
+  :: Map Text [DataResourceSchema]
+  -> DataBrowserState
+  -> Layout
+  -> [Widget]
+buildDataDetailWidgetsForState resources dbs layout = case
+    (dbsSelectedRowIndex dbs, dbsSelectedPlugin dbs, dbsSelectedResource dbs) of
+  (Just rowIndex, Just pluginName, Just resourceName)
+    | not (dataBrowserReadPending dbs)
+    , Just schema <- findSchema pluginName resourceName ->
+        let operations = drsOperations schema
+            operationRowCount =
+              (if dataBrowserMutationPending dbs then 1 else 0)
+                + case dataBrowserMutationError dbs of
+                    Just _ -> 1
+                    Nothing -> 0
+        in buildDataDetailWidgets
+          rowIndex
+          (drsFields schema)
+          (dbsExpandedFields dbs)
+          (length (dbsValidationErrors dbs) + operationRowCount)
+          (dbsEditMode dbs || dbsCreateMode dbs)
+          (doUpdate operations && not (dbsCreateMode dbs))
+          (doDelete operations)
+          (dbsDeleteConfirm dbs)
+          (dataBrowserMutationPending dbs)
+          layout
+  _ -> []
+  where
+    findSchema pluginName resourceName = do
+      schemas <- Map.lookup pluginName resources
+      foldr (match resourceName) Nothing schemas
+    match resourceName schema acc
+      | drsName schema == resourceName = Just schema
+      | otherwise = acc
 
 -- | Build clickable widgets for the record detail popover.
 --
@@ -221,9 +286,12 @@ buildDataDetailWidgets
   -> Bool           -- ^ Show edit toggle
   -> Bool           -- ^ Can delete
   -> Bool           -- ^ Delete confirmation dialog shown
+  -> Bool           -- ^ Mutation request locks every detail interaction
   -> Layout
   -> [Widget]
-buildDataDetailWidgets rowIndex fields expanded validationRowCount editMode showEditToggle canDelete deleteConfirmShown layout =
+buildDataDetailWidgets rowIndex fields expanded validationRowCount editMode showEditToggle canDelete deleteConfirmShown interactionLocked layout
+  | interactionLocked = []
+  | otherwise =
   let flatFields = enumerateVisibleFields "" fields expanded
       fieldCount = length flatFields
       rowCount = fieldCount + validationRowCount
