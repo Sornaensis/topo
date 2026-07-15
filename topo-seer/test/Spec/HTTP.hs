@@ -99,6 +99,7 @@ import Seer.System.Snapshot (SnapshotPollEnv(..), pollRenderSnapshot)
 import Seer.Service.AppService
   ( AppService(..)
   , ConfigService(..)
+  , ServiceContext(..)
   , DataResourceService(..)
   , LogService(..)
   , StateService(..)
@@ -113,15 +114,25 @@ import Seer.Service.AppService
   , stateGetStateOperation
   , terrainGetChunkSummaryOperation
   , terrainGetHexOperation
+  , runServiceOperation
+  , uiSetOverlayOperation
   , uiSetSeedOperation
   )
+import Seer.Service.Events (readBufferedServiceEvents)
 import Seer.Service.Types
   ( ServiceError(..)
+  , ServiceEventEnvelope(..)
+  , ServiceEventSeverity(..)
+  , ServiceEventSource(..)
   , ServiceHandler
   , ServiceRequest(..)
   , ServiceResponse(..)
+  , ServiceResult
   , TypedServiceOperation
   , rawServiceHandler
+  , serviceErrorCode
+  , serviceErrorHTTPStatus
+  , serviceErrorMessage
   )
 import Seer.System (runApp)
 import Spec.Support.OverlayFixtures (mkSparseFloatOverlay)
@@ -890,6 +901,142 @@ spec = describe "Seer.HTTP.Server" $ do
         `finally` (do
           killThread tid
           threadDelay 100000)
+
+  describe "friendly HTTP/AppService parity matrix" $ do
+    it "matches direct AppService reads and typed query coercion" $
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        installTerrainFixture app
+        let ctx = headlessServiceContext app
+
+        directState <- runServiceOperation headlessAppService ctx "get_state" Null
+        state <- request app (mkRequest "GET" ["state"])
+        assertHttpServiceSuccess directState state
+
+        let hexParams = object ["q" .= (0 :: Int), "r" .= (0 :: Int)]
+        directHex <- runServiceOperation headlessAppService ctx "get_hex" hexParams
+        hexRsp <- request app (mkRequest "GET" ["terrain", "hex"])
+          { hreqQuery = [("q", Just "+0"), ("r", Just "-0")] }
+        assertHttpServiceSuccess directHex hexRsp
+
+    it "matches required mutations and optional no-argument screenshots" $
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        let ctx = headlessServiceContext app
+            seedBody = object ["seed" .= (640 :: Int)]
+        seedRsp <- request app (mkRequest "POST" ["ui", "seed"])
+          { hreqBody = Just seedBody }
+        directSeed <- runServiceOperation headlessAppService ctx "set_seed" seedBody
+        assertHttpServiceSuccess directSeed seedRsp
+
+        directNoArg <- runServiceOperation headlessAppService ctx "take_screenshot" Null
+        screenshotNoArg <- request app (mkRequest "POST" ["screenshots"])
+        assertHttpServiceSuccess directNoArg screenshotNoArg
+
+        let screenshotBody = object []
+        directObject <- runServiceOperation headlessAppService ctx "take_screenshot" screenshotBody
+        screenshotObject <- request app (mkRequest "POST" ["screenshots"])
+          { hreqBody = Just screenshotBody }
+        assertHttpServiceSuccess directObject screenshotObject
+
+    it "keeps list_plugins and set_overlay aliases on one AppService behavior" $ do
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        let ctx = headlessServiceContext app
+        directPlugins <- runServiceOperation headlessAppService ctx "list_plugins" Null
+        forM_
+          [ ["plugins"]
+          , ["plugins", "status"]
+          , ["plugins", "state"]
+          , ["plugins", "dependencies"]
+          ] $ \path -> do
+            pluginRsp <- request app (mkRequest "GET" path)
+            assertHttpServiceSuccess directPlugins pluginRsp
+
+      let overlayBody = object ["overlay" .= ("weather" :: Text), "field_index" .= (0 :: Int)]
+      forM_
+        [ ("PUT", ["overlays", "current"])
+        , ("POST", ["ui", "overlay"])
+        , ("PUT", ["ui", "overlay"])
+        ] $ \(routeMethod, path) ->
+          withHeadlessApp defaultHeadlessConfig $ \app -> do
+            installOverlayFixture app
+            let ctx = headlessServiceContext app
+            overlayRsp <- request app (mkRequest routeMethod path) { hreqBody = Just overlayBody }
+            directOverlay <- runServiceOperation headlessAppService ctx "set_overlay" overlayBody
+            assertHttpServiceSuccess directOverlay overlayRsp
+
+    it "maps direct validation, service, and data-resource errors to HTTP" $
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        let ctx = headlessServiceContext app
+        directValidation <- runServiceOperation headlessAppService ctx "set_seed" (object [])
+        validationRsp <- request app (withRequestIdHeader "parity-validation" $
+          (mkRequest "POST" ["ui", "seed"]) { hreqBody = Just (object []) })
+        assertHttpServiceError "parity-validation" directValidation validationRsp
+
+        let serviceApp = headlessAppService
+              { appUi = (appUi headlessAppService)
+                  { uiSetOverlay = rawServiceHandler uiSetOverlayOperation $ \_ _ ->
+                      pure (Left (ServiceUnavailable "overlay unavailable"))
+                  }
+              }
+            overlayBody = object ["overlay" .= ("weather" :: Text)]
+        directService <- runServiceOperation serviceApp ctx "set_overlay" overlayBody
+        serviceRsp <- handleHttpRequest defaultHttpServerConfig serviceApp ctx $
+          withRequestIdHeader "parity-service" $
+            (mkRequest "PUT" ["overlays", "current"]) { hreqBody = Just overlayBody }
+        assertHttpServiceError "parity-service" directService serviceRsp
+        assertFriendlyHttpEvent ctx "parity-service" "ui.state.changed.failed"
+          "overlays.current.set" "PUT" "/overlays/current" "set_overlay" ServiceEventWarn
+          (object ["type" .= ("error" :: Text), "code" .= ("unavailable" :: Text), "message" .= ("overlay unavailable" :: Text)])
+
+        let dataApp = headlessAppService
+              { appDataResources = (appDataResources headlessAppService)
+                  { dataCreateRecord = rawServiceHandler dataResourceCreateRecordOperation $ \_ _ ->
+                      pure (Left (ServiceDataResourceError PermissionDenied "denied" []))
+                  }
+              }
+            dataBody = object
+              [ "plugin" .= ("fixture" :: Text)
+              , "resource" .= ("records" :: Text)
+              , "fields" .= object []
+              ]
+        directData <- runServiceOperation dataApp ctx "data_create_record" dataBody
+        dataRsp <- handleHttpRequest defaultHttpServerConfig dataApp ctx $
+          withRequestIdHeader "parity-data" $
+            (mkRequest "POST" ["data", "records"]) { hreqBody = Just dataBody }
+        assertHttpServiceError "parity-data" directData dataRsp
+        assertFriendlyHttpEvent ctx "parity-data" "data.resources.changed.failed"
+          "data.records.create" "POST" "/data/records" "data_create_record" ServiceEventWarn
+          (object ["type" .= ("error" :: Text), "code" .= ("permission_denied" :: Text), "message" .= ("denied" :: Text)])
+
+    it "gates auth before dispatch and publishes one correlated friendly mutation event" $
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        let cfg = defaultHttpServerConfig { hscBearerToken = Just "secret" }
+            ctx = headlessServiceContext app
+            requestId = "friendly-parity-seed-701"
+            seedBody = object ["seed" .= (701 :: Int)]
+            seedRequest headers = (mkRequest "POST" ["ui", "seed"])
+              { hreqHeaders = ("x-request-id", requestId) : headers
+              , hreqBody = Just seedBody
+              }
+        baseline <- beginHttpPublicationAssertion app
+        denied <- handleHttpRequest cfg headlessAppService ctx (seedRequest [])
+        hresStatusCode denied `shouldBe` 401
+        lookupHeaderText "x-request-id" (hresHeaders denied) `shouldBe` Just requestId
+        lookupNestedText ["error", "request_id"] (hresBody denied) `shouldBe` Just requestId
+        readCommittedRenderSnapshot (ahSnapshotVersionRef (httpHandles app))
+          `shouldReturn` (hpbVersion baseline, hpbSnapshot baseline)
+        correlatedEvents ctx requestId `shouldReturn` []
+
+        acceptedBaseline <- beginHttpPublicationAssertion app
+        accepted <- handleHttpRequest cfg headlessAppService ctx $
+          seedRequest [("authorization", "Bearer secret")]
+        lookupHeaderText "x-request-id" (hresHeaders accepted) `shouldBe` Just requestId
+        (_, committed) <- expectExactHttpPublication app acceptedBaseline
+        uiSeed (rsUi committed) `shouldBe` 701
+        direct <- runServiceOperation headlessAppService ctx "set_seed" seedBody
+        assertHttpServiceSuccess direct accepted
+        assertFriendlyHttpEvent ctx requestId "ui.state.changed"
+          "ui.seed.set" "POST" "/ui/seed" "set_seed" ServiceEventInfo
+          (object ["type" .= ("object" :: Text), "keys" .= (["seed"] :: [Text]), "seed" .= (701 :: Int)])
 
   it "maps plugin parameter validation and not-found errors to HTTP envelopes" $
     withHttpPluginDir $ do
@@ -1956,6 +2103,62 @@ assertBodyPolicyResponse requestId expected response = do
       lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just expectedCode
       errorDetailCode (hresBody response) `shouldBe` Just expectedDetailCode
       lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
+
+assertHttpServiceSuccess :: ServiceResult -> HttpResponse -> Expectation
+assertHttpServiceSuccess direct response = case direct of
+  Right (ServiceResponse body) -> do
+    hresStatusCode response `shouldBe` 200
+    hresBody response `shouldBe` body
+  Left err -> expectationFailure ("direct AppService call failed: " <> show err)
+
+assertHttpServiceError :: Text -> ServiceResult -> HttpResponse -> Expectation
+assertHttpServiceError requestId direct response = case direct of
+  Left err -> do
+    hresStatusCode response `shouldBe` serviceErrorHTTPStatus err
+    lookupHeaderText "x-request-id" (hresHeaders response) `shouldBe` Just requestId
+    lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just (serviceErrorCode err)
+    lookupNestedText ["error", "message"] (hresBody response) `shouldBe` Just (serviceErrorMessage err)
+    lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
+  Right success -> expectationFailure ("direct AppService call unexpectedly succeeded: " <> show success)
+
+correlatedEvents :: ServiceContext -> Text -> IO [ServiceEventEnvelope]
+correlatedEvents ctx requestId = case svcEventBus ctx of
+  Nothing -> pure []
+  Just bus -> filter ((== Just requestId) . serviceEventCorrelationId)
+    <$> readBufferedServiceEvents bus
+
+assertFriendlyHttpEvent
+  :: ServiceContext
+  -> Text
+  -> Text
+  -> Text
+  -> Text
+  -> Text
+  -> Text
+  -> ServiceEventSeverity
+  -> Value
+  -> Expectation
+assertFriendlyHttpEvent ctx requestId topic operationId routeMethod path serviceMethod severity expectedResult = do
+  events <- correlatedEvents ctx requestId
+  case events of
+    [event] -> do
+      serviceEventTopic event `shouldBe` topic
+      serviceEventSource event `shouldBe` ServiceEventFromHttp
+      serviceEventSeverity event `shouldBe` severity
+      serviceEventCorrelationId event `shouldBe` Just requestId
+      lookupText "status" (serviceEventPayload event)
+        `shouldBe` Just (if severity == ServiceEventInfo then "ok" else "error")
+      lookupText "operation_id" (serviceEventPayload event) `shouldBe` Just operationId
+      lookupText "http_method" (serviceEventPayload event) `shouldBe` Just routeMethod
+      lookupText "path" (serviceEventPayload event) `shouldBe` Just path
+      lookupText "service_method" (serviceEventPayload event) `shouldBe` Just serviceMethod
+      lookupValue "result" (serviceEventPayload event) `shouldBe` Just expectedResult
+      case serviceEventPayload event of
+        Object payload -> sort (map Key.toText (KM.keys payload))
+          `shouldBe` ["http_method", "operation_id", "path", "result", "service_method", "status"]
+        payload -> expectationFailure ("friendly HTTP event payload was not an object: " <> show payload)
+    _ -> expectationFailure
+      ("expected one friendly HTTP event for " <> Text.unpack requestId <> ", got " <> show events)
 
 arrayFieldContainsText :: Text -> Text -> Value -> Bool
 arrayFieldContainsText field expected (Object obj) = case KM.lookup (Key.fromText field) obj of
