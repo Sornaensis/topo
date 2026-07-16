@@ -30,7 +30,11 @@ import Actor.PluginManager.Types
   , pluginLifecycleStateText
   )
 import Topo.Plugin (Capability(..))
-import Topo.Plugin.DataResource (DataResourceSchema(..))
+import Topo.Plugin.DataResource
+  ( DataOperations(..)
+  , DataPagination(..)
+  , DataResourceSchema(..)
+  )
 import Topo.Plugin.DataResource.Validation
   ( validateMutateResourceRequest
   , validateMutateResult
@@ -73,6 +77,9 @@ data DataResourceRouteLease = DataResourceRouteLease
   , drrlConnection :: !RPCConnection
   , drrlSchema :: !DataResourceSchema
   , drrlOperation :: !DataResourceRouteOperation
+  , drrlAuthorizedQuery :: !(Maybe QueryResource)
+  , drrlEffectiveQuery :: !(Maybe QueryResource)
+  , drrlAuthorizedMutation :: !(Maybe MutateResource)
   }
 
 prepareQueryPluginDataResource
@@ -80,26 +87,34 @@ prepareQueryPluginDataResource
   -> QueryResource
   -> PluginManagerState
   -> Either Text DataResourceRouteLease
-prepareQueryPluginDataResource pluginName qr =
-  preparePluginDataResource
+prepareQueryPluginDataResource pluginName qr st = do
+  lease <- preparePluginDataResource
     pluginName
     (qrResource qr)
     CapDataRead
     DataResourceRouteQuery
     (\schema -> validateQueryResourceRequest schema qr)
+    st
+  let effective = applyQueryPaginationDefaults (drrlSchema lease) qr
+  Right lease
+    { drrlAuthorizedQuery = Just qr
+    , drrlEffectiveQuery = Just effective
+    }
 
 prepareMutatePluginDataResource
   :: Text
   -> MutateResource
   -> PluginManagerState
   -> Either Text DataResourceRouteLease
-prepareMutatePluginDataResource pluginName mr =
-  preparePluginDataResource
+prepareMutatePluginDataResource pluginName mr st = do
+  lease <- preparePluginDataResource
     pluginName
     (mrResource mr)
     CapDataWrite
     DataResourceRouteMutation
     (\schema -> validateMutateResourceRequest schema mr)
+    st
+  Right lease { drrlAuthorizedMutation = Just mr }
 
 preparePluginDataResource
   :: Text
@@ -129,6 +144,9 @@ preparePluginDataResource pluginName resourceName capability operation validateR
                       , drrlConnection = conn
                       , drrlSchema = schema
                       , drrlOperation = operation
+                      , drrlAuthorizedQuery = Nothing
+                      , drrlEffectiveQuery = Nothing
+                      , drrlAuthorizedMutation = Nothing
                       }
       _ -> failureLeft (DataResourceFailure PluginUnavailable (pluginUnavailableMessage lp))
 
@@ -139,13 +157,15 @@ executeQueryPluginDataResource
   -> IO (Either Text QueryResult)
 executeQueryPluginDataResource lease qr
   | drrlOperation lease /= DataResourceRouteQuery = pure staleDataResourceRouteFailure
-  | otherwise = do
-      result <- queryResource (drrlConnection lease) qr
+  | drrlAuthorizedQuery lease /= Just qr = pure (requestMismatchFailure "query")
+  | Just effective <- drrlEffectiveQuery lease = do
+      result <- queryResource (drrlConnection lease) effective
       pure $ case result of
         Left err -> Left (renderRPCDataResourceError err)
-        Right qResult -> case validateQueryResult (drrlSchema lease) qr qResult of
+        Right qResult -> case validateQueryResult (drrlSchema lease) effective qResult of
           Just failure -> failureLeft failure
           Nothing -> Right qResult
+  | otherwise = pure (requestMismatchFailure "query")
 
 -- | Perform mutation IO and result validation on the caller thread.
 executeMutatePluginDataResource
@@ -154,6 +174,7 @@ executeMutatePluginDataResource
   -> IO (Either Text MutateResult)
 executeMutatePluginDataResource lease mr
   | drrlOperation lease /= DataResourceRouteMutation = pure staleDataResourceRouteFailure
+  | drrlAuthorizedMutation lease /= Just mr = pure (requestMismatchFailure "mutation")
   | otherwise = do
       result <- mutateResource (drrlConnection lease) mr
       pure $ case result of
@@ -182,6 +203,21 @@ dataResourceLifecycleAvailable lp =
 staleDataResourceRouteFailure :: Either Text a
 staleDataResourceRouteFailure =
   failureLeft (DataResourceFailure PluginUnavailable "plugin runtime changed while data-resource request was in flight")
+
+requestMismatchFailure :: Text -> Either Text a
+requestMismatchFailure operation = failureLeft
+  (DataResourceFailure PermissionDenied
+    ("data-resource " <> operation <> " does not match the exact actor-authorized request"))
+
+applyQueryPaginationDefaults :: DataResourceSchema -> QueryResource -> QueryResource
+applyQueryPaginationDefaults schema request
+  | doPage (drsOperations schema) = request
+      { qrPageSize = Just (fromMaybe (dpDefaultPageSize pagination) (qrPageSize request))
+      , qrPageOffset = Just (fromMaybe (dpDefaultPageOffset pagination) (qrPageOffset request))
+      }
+  | otherwise = request
+  where
+    pagination = drsPagination schema
 
 failureLeft :: DataResourceFailure -> Either Text a
 failureLeft = Left . dataResourceFailureText
@@ -223,9 +259,11 @@ renderRPCDataResourceError err =
 findResourceSchema :: Text -> LoadedPlugin -> RPCConnection -> Maybe DataResourceSchema
 findResourceSchema resourceName lp conn = go negotiatedResources
   where
-    negotiatedResources = case rpcResources conn of
-      [] -> rmDataResources (lpManifest lp)
-      resources -> resources
+    negotiatedResources
+      | rpcResourcesNegotiated conn = rpcResources conn
+      | otherwise = case rpcResources conn of
+          [] -> rmDataResources (lpManifest lp)
+          resources -> resources
     go [] = Nothing
     go (schema:rest)
       | drsName schema == resourceName = Just schema

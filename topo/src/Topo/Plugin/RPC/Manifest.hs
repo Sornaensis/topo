@@ -1824,7 +1824,9 @@ exampleInvocationScopes includeSimulation = object $
   where
     generatorScope = (legacyGeneratorScope exampleScopeBudgets)
       { risdOutput = (risdOutput (legacyGeneratorScope exampleScopeBudgets))
-          { rsoOwnedOverlay = includeSimulation }
+          { rsoOwnedOverlay = False
+          , rsoGeneratorMetadata = False
+          }
       }
     exampleScopeBudgets = RPCScopeBudgets
       { rsbTerrainBytes = 67108864

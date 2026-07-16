@@ -34,8 +34,8 @@
       "output": {
         "terrainSections": ["terrain", "climate", "vegetation"],
         "chunks": { "type": "all" },
-        "ownedOverlay": true,
-        "generatorMetadata": true
+        "ownedOverlay": false,
+        "generatorMetadata": false
       },
       "budgets": { "terrainBytes": 67108864, "overlayBytes": 67108864, "outputBytes": 67108864 }
     },

@@ -121,8 +121,13 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import System.Timeout (timeout)
 
-import Topo.Overlay (Overlay(..), insertOverlay, lookupOverlay)
-import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON)
+import Topo.Overlay (Overlay(..), insertOverlay, lookupOverlay, overlayChunkIds)
+import Topo.Overlay.JSON
+  ( overlayFromJSON
+  , overlayFromScopedJSON
+  , overlayToJSON
+  , overlayToScopedJSON
+  )
 import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (Capability(..), PluginEnv(..), PluginError(..), getWorld, liftTopo, logInfo, putWorld)
@@ -295,6 +300,9 @@ data RPCConnection = RPCConnection
     -- root.
   , rpcResources        :: ![DataResourceSchema]
     -- ^ Data resource schemas received from handshake.
+  , rpcResourcesNegotiated :: !Bool
+    -- ^ Whether the handshake resource list is authoritative, including an
+    -- explicitly empty narrowing.
   , rpcRequestTimeoutMicros :: !(Maybe Int)
     -- ^ Per-request timeout budget. Nothing means no request timeout.
   , rpcSession :: !RPCSession
@@ -332,6 +340,7 @@ newRPCConnectionWithLimits payloadLimits manifest transport params = unsafePerfo
     , rpcStreamV1 = Nothing
     , rpcDataDirectory   = Nothing
     , rpcResources       = []
+    , rpcResourcesNegotiated = False
     , rpcRequestTimeoutMicros = timeoutMicrosFromMs (rspRequestTimeoutMs (rmStartPolicy manifest))
     , rpcSession = session
     , rpcRuntimeFailure = failureSlot
@@ -720,30 +729,46 @@ invokeGeneratorWithProgress
   -> (PluginProgress -> IO ())
   -> (PluginLog -> IO ())
   -> IO (Either RPCError GeneratorResult)
-invokeGeneratorWithProgress conn seed terrainData onProgress onLog
+invokeGeneratorWithProgress conn seed terrainData onProgress onLog =
+  invokeGeneratorWithResolvedScope conn Nothing seed terrainData onProgress onLog
+
+invokeGeneratorWithResolvedScope
+  :: RPCConnection
+  -> Maybe ResolvedInvocationScope
+  -> Word64
+  -> Value
+  -> (PluginProgress -> IO ())
+  -> (PluginLog -> IO ())
+  -> IO (Either RPCError GeneratorResult)
+invokeGeneratorWithResolvedScope conn maybeScope seed terrainData onProgress onLog
   | rpcProtocolVersion conn >= 5 = pure (Left (RPCProtocolError
       "protocol 5 generator invocation requires an explicit scoped stream adapter"))
+  | generatorScopeDeclaration (rpcManifest conn) /= Nothing, maybeScope == Nothing =
+      pure (Left (RPCProtocolError
+        "scoped generator invocation requires exact host world facts; use rpcGeneratorStage"))
   | otherwise = do
-  let manifest = rpcManifest conn
-      scopedTerrainData = generatorTerrainInputPayload manifest terrainData
-      envelope = RPCEnvelope
-        { envType = MsgInvokeGenerator
-        , envPayload = Aeson.toJSON InvokeGenerator
-          { igPayloadVersion = 1
-          , igStageId = "plugin:" <> rmName manifest
-          , igSeed    = seed
-          , igConfig  = rpcParams conn
-          , igTerrain = scopedTerrainData
-          , igInvocationScope = Nothing
-          }
-        , envRequestId = Nothing
-        }
-  result <- rpcCallWithProgress True (rpcRequestTimeoutMicros conn) "plugin generator request timed out" conn envelope onProgress onLog
-  case result of
-    Left err  -> pure (Left err)
-    Right env -> trackRuntimeResult conn $ case Aeson.fromJSON (envPayload env) of
-      Aeson.Success gr -> Right gr
-      Aeson.Error err  -> Left (RPCProtocolError (Text.pack err))
+      let manifest = rpcManifest conn
+          scopedTerrainData = generatorTerrainInputPayload manifest terrainData
+          envelope = RPCEnvelope
+            { envType = MsgInvokeGenerator
+            , envPayload = Aeson.toJSON InvokeGenerator
+              { igPayloadVersion = 1
+              , igStageId = "plugin:" <> rmName manifest
+              , igSeed    = seed
+              , igConfig  = rpcParams conn
+              , igTerrain = scopedTerrainData
+              , igInvocationScope = invocationScopeBinding manifest InvocationGenerator maybeScope
+              }
+            , envRequestId = Nothing
+            }
+      result <- rpcCallWithProgress True (rpcRequestTimeoutMicros conn) "plugin generator request timed out" conn envelope onProgress onLog
+      case result of
+        Left err  -> pure (Left err)
+        Right env -> trackRuntimeResult conn $ do
+          validateScopedResultPayload manifest InvocationGenerator maybeScope (envPayload env)
+          case Aeson.fromJSON (envPayload env) of
+            Aeson.Success gr -> Right gr
+            Aeson.Error err  -> Left (RPCProtocolError (Text.pack err))
 
 -- | Invoke the plugin's simulation tick.
 --
@@ -758,44 +783,71 @@ invokeSimulation
 invokeSimulation conn ctx overlay onProgress onLog
   | rpcProtocolVersion conn >= 5 = pure (Left (RPCProtocolError
       "protocol 5 simulation invocation requires an explicit scoped stream adapter"))
-  | otherwise = do
+  | otherwise = case resolveSimulationInvocationScope conn ctx overlay of
+      Left err -> pure (Left (RPCProtocolError err))
+      Right scope -> invokeSimulationWithResolvedScope conn scope ctx overlay onProgress onLog
+
+invokeSimulationWithResolvedScope
+  :: RPCConnection
+  -> ResolvedInvocationScope
+  -> SimContext
+  -> Overlay
+  -> (PluginProgress -> IO ())
+  -> (PluginLog -> IO ())
+  -> IO (Either RPCError SimulationResult)
+invokeSimulationWithResolvedScope conn scope ctx overlay onProgress onLog = do
   let manifest = rpcManifest conn
       policy = simulationPayloadPolicy manifest
+      hasExplicitScope = simulationScopeDeclaration manifest /= Nothing
       terrainPayloadResult
+        | hasExplicitScope, Set.null (risTerrainInputSections scope) = Right Null
+        | hasExplicitScope = Payload.terrainWorldToScopedPayloadWithBudget
+            (rsbTerrainBytes (risBudgets scope))
+            (risTerrainInputSections scope)
+            (risTerrainInputChunkIds scope)
+            (scTerrain ctx)
         | sppIncludeTerrain policy = Payload.terrainWorldToPayloadWithLimits
             (rpcPayloadLimits conn) (scTerrain ctx)
         | otherwise = Right Null
       overlaysPayload
+        | hasExplicitScope = scopedOverlaysToJSON
+            (risDependencyOverlayChunkIds scope) (scOverlays ctx)
         | sppIncludeOverlays policy = overlaysToJSON (scOverlays ctx)
         | otherwise = Object mempty
       ownOverlayPayload
+        | hasExplicitScope && risOwnedOverlayIdentity scope == Just (rmName manifest) =
+            overlayToScopedJSON (risOwnOverlayReadChunkIds scope) overlay
+        | hasExplicitScope = Null
         | sppIncludeOwnOverlay policy = overlayToJSON overlay
         | otherwise = Null
-  case terrainPayloadResult of
-    Left err -> pure (Left (RPCProtocolError err))
-    Right terrainPayload -> do
+  case (terrainPayloadResult, validateOverlayInputBudget hasExplicitScope scope overlaysPayload ownOverlayPayload) of
+    (Left err, _) -> pure (Left (RPCProtocolError err))
+    (_, Left err) -> pure (Left (RPCProtocolError err))
+    (Right terrainPayload, Right ()) -> do
       let envelope = RPCEnvelope
             { envType = MsgInvokeSimulation
             , envPayload = Aeson.toJSON InvokeSimulation
               { isPayloadVersion = 1
               , isNodeId     = rmName manifest
-                , isWorldTime  = wtTick (scWorldTime ctx)
-                , isDeltaTicks = scDeltaTicks ctx
-                , isCalendar   = calendarToJSON (scCalendar ctx)
-                , isConfig     = rpcParams conn
-                , isTerrain    = terrainPayload
-                , isOverlays   = overlaysPayload
-                , isOwnOverlay = ownOverlayPayload
-                , isInvocationScope = Nothing
-                }
+              , isWorldTime  = wtTick (scWorldTime ctx)
+              , isDeltaTicks = scDeltaTicks ctx
+              , isCalendar   = calendarToJSON (scCalendar ctx)
+              , isConfig     = rpcParams conn
+              , isTerrain    = terrainPayload
+              , isOverlays   = overlaysPayload
+              , isOwnOverlay = ownOverlayPayload
+              , isInvocationScope = invocationScopeBinding manifest InvocationSimulation (Just scope)
+              }
             , envRequestId = Nothing
             }
       result <- rpcCallWithProgress True (rpcRequestTimeoutMicros conn) "plugin simulation request timed out" conn envelope onProgress onLog
       case result of
         Left err  -> pure (Left err)
-        Right env -> trackRuntimeResult conn $ case Aeson.fromJSON (envPayload env) of
-          Aeson.Success sr -> Right sr
-          Aeson.Error err  -> Left (RPCProtocolError (Text.pack err))
+        Right env -> trackRuntimeResult conn $ do
+          validateScopedResultPayload manifest InvocationSimulation (Just scope) (envPayload env)
+          case Aeson.fromJSON (envPayload env) of
+            Aeson.Success sr -> Right sr
+            Aeson.Error err  -> Left (RPCProtocolError (Text.pack err))
 
 -- | Send a shutdown message to the plugin.
 rpcShutdown :: RPCConnection -> IO ()
@@ -899,6 +951,7 @@ performHandshakeWithAuth conn worldPath mAuth = do
                       , rpcStreamV1 = negotiated
                       , rpcDataDirectory   = fmap Text.unpack normalizedDataDirectory
                       , rpcResources       = haResources ack
+                      , rpcResourcesNegotiated = True
                       })
           Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
       MsgError ->
@@ -1288,24 +1341,27 @@ rpcGeneratorStage conn =
     , stageRun  = do
         logInfo ("plugin:" <> rmName manifest <> ": invoking generator")
         world <- liftTopo getWorld
-        case generatorStageTerrainPayload (rpcPayloadLimits conn) manifest world of
+        case resolveGeneratorInvocationScope conn world of
           Left err ->
-            throwError (PluginInvariantError ("rpc generator encode failed: " <> err))
-          Right terrainPayload -> do
-            seed <- asks peSeed
-            reportProgress <- asks peProgress
-            result <- liftIO (invokeGeneratorWithProgress conn seed terrainPayload
-              (reportProgress . formatPluginProgressDetail (rmName manifest))
-              (\_ -> pure ()))
-            case result of
-              Left err -> throwError (PluginInvariantError ("rpc generator failed: " <> rpcErrorText err))
-              Right generatorResult ->
-                case applyGeneratorResult (rpcPayloadLimits conn) manifest world generatorResult of
-                  Left mergeErr ->
-                    throwError (PluginInvariantError ("rpc generator merge failed: " <> mergeErr))
-                  Right mergedWorld -> do
-                    liftTopo (putWorld mergedWorld)
-                    logInfo ("plugin:" <> rmName manifest <> ": generator complete")
+            throwError (PluginInvariantError ("rpc generator scope resolution failed: " <> err))
+          Right scope -> case generatorStageTerrainPayload (rpcPayloadLimits conn) manifest scope world of
+            Left err ->
+              throwError (PluginInvariantError ("rpc generator encode failed: " <> err))
+            Right terrainPayload -> do
+              seed <- asks peSeed
+              reportProgress <- asks peProgress
+              result <- liftIO (invokeGeneratorWithResolvedScope conn (Just scope) seed terrainPayload
+                (reportProgress . formatPluginProgressDetail (rmName manifest))
+                (\_ -> pure ()))
+              case result of
+                Left err -> throwError (PluginInvariantError ("rpc generator failed: " <> rpcErrorText err))
+                Right generatorResult ->
+                  case applyGeneratorResult (rpcPayloadLimits conn) manifest (Just scope) world generatorResult of
+                    Left mergeErr ->
+                      throwError (PluginInvariantError ("rpc generator merge failed: " <> mergeErr))
+                    Right mergedWorld -> do
+                      liftTopo (putWorld mergedWorld)
+                      logInfo ("plugin:" <> rmName manifest <> ": generator complete")
     }
 
 -- | Create a 'SimNode' from an RPC connection.
@@ -1331,19 +1387,20 @@ rpcSimNode conn =
       , snwWriteTick    = \ctx overlay -> do
           if not (sppRequireWriteOverlay policy)
             then pure (Left "manifest missing writeOverlay/writeWorld capability")
-            else do
-              result <- invokeSimulation conn ctx overlay (reportSimulationProgress ctx name) ignoreLog
-              case result of
-                Left err -> pure (Left (rpcErrorText err))
-                Right sr -> do
-                  let decodedOverlay = preserveHostProvenance overlay
-                        <$> overlayFromJSON (ovSchema overlay) (srOverlay sr)
-                      decodedWrites = Payload.decodeTerrainWritesValueWithLimits
+            else case resolveSimulationInvocationScope conn ctx overlay of
+              Left err -> pure (Left err)
+              Right scope -> do
+                result <- invokeSimulationWithResolvedScope conn scope ctx overlay (reportSimulationProgress ctx name) ignoreLog
+                case result of
+                  Left err -> pure (Left (rpcErrorText err))
+                  Right sr -> pure $ do
+                    nextOverlay <- validateSimulationOverlayOutput manifest scope overlay (srOverlay sr)
+                    writes <- if simulationScopeDeclaration manifest == Nothing
+                      then Payload.decodeTerrainWritesValueWithLimits
                         (rpcPayloadLimits conn) (srTerrainWrites sr)
-                  pure $ case (decodedOverlay, decodedWrites) of
-                    (Right nextOverlay, Right writes) -> Right (nextOverlay, writes)
-                    (Left overlayErr, _) -> Left overlayErr
-                    (_, Left writesErr) -> Left writesErr
+                      else Payload.decodeTerrainWritesValueScopedWithLimits
+                        (rpcPayloadLimits conn) scope (scTerrain ctx) (srTerrainWrites sr)
+                    Right (nextOverlay, writes)
       }
     else SimNodeReader
       { snrId           = nodeId
@@ -1353,13 +1410,15 @@ rpcSimNode conn =
       , snrReadTick     = \ctx overlay -> do
           if not (sppRequireWriteOverlay policy)
             then pure (Left "manifest missing writeOverlay/writeWorld capability")
-            else do
-              result <- invokeSimulation conn ctx overlay (reportSimulationProgress ctx name) ignoreLog
-              pure $ case result of
-                Left err -> Left (rpcErrorText err)
-                Right sr -> do
-                  rejectUnauthorizedTerrainWrites manifest (srTerrainWrites sr)
-                  preserveHostProvenance overlay <$> overlayFromJSON (ovSchema overlay) (srOverlay sr)
+            else case resolveSimulationInvocationScope conn ctx overlay of
+              Left err -> pure (Left err)
+              Right scope -> do
+                result <- invokeSimulationWithResolvedScope conn scope ctx overlay (reportSimulationProgress ctx name) ignoreLog
+                pure $ case result of
+                  Left err -> Left (rpcErrorText err)
+                  Right sr -> do
+                    rejectUnauthorizedTerrainWrites manifest (srTerrainWrites sr)
+                    validateSimulationOverlayOutput manifest scope overlay (srOverlay sr)
       }
   where
     reportSimulationProgress ctx pluginName progress =
@@ -1406,11 +1465,159 @@ generatorTerrainInputPayload manifest terrainData
 generatorStageTerrainPayload
   :: RPCPayloadLimits
   -> RPCManifest
+  -> ResolvedInvocationScope
   -> Topo.World.TerrainWorld
   -> Either Text Value
-generatorStageTerrainPayload limits manifest world
+generatorStageTerrainPayload limits manifest scope world
+  | generatorScopeDeclaration manifest /= Nothing
+  , not (Set.null (risTerrainInputSections scope)) =
+      Payload.terrainWorldToScopedPayloadWithBudget
+        (rsbTerrainBytes (risBudgets scope))
+        (risTerrainInputSections scope) (risTerrainInputChunkIds scope) world
+  | generatorScopeDeclaration manifest /= Nothing = Right Null
   | canReadTerrain manifest = Payload.terrainWorldToPayloadWithLimits limits world
   | otherwise = Right Null
+
+resolveGeneratorInvocationScope
+  :: RPCConnection
+  -> Topo.World.TerrainWorld
+  -> Either Text ResolvedInvocationScope
+resolveGeneratorInvocationScope conn world =
+  firstScopeError $ resolveInvocationScope
+    (rpcProtocolVersion conn)
+    (generatorScopeDeclaration manifest)
+    (rmCapabilities manifest)
+    RPCInvocationContext
+      { ricKind = InvocationGenerator
+      , ricWorldChunkIds = worldChunkIds world
+      , ricCallerChunkIds = Nothing
+      , ricAllowsCallerChunks = False
+      , ricDependencyOverlayNames = Set.empty
+      , ricOverlayChunkIds = Map.empty
+      , ricOwnedOverlayName = ownedName
+      , ricOwnOverlayChunkIds = maybe IntSet.empty overlayChunkIds ownedOverlay
+      , ricDataResourceDeclarations = Map.empty
+      , ricDataResourceRequest = Nothing
+      , ricAvailableBudgets = invocationBudgets conn
+      }
+  where
+    manifest = rpcManifest conn
+    ownedName = if manifestHasOverlay manifest then Just (rmName manifest) else Nothing
+    ownedOverlay = ownedName >>= \name -> lookupOverlay name (Topo.World.twOverlays world)
+
+resolveSimulationInvocationScope
+  :: RPCConnection
+  -> SimContext
+  -> Overlay
+  -> Either Text ResolvedInvocationScope
+resolveSimulationInvocationScope conn ctx ownOverlay = do
+  scope <- firstScopeError $ resolveInvocationScope
+    (rpcProtocolVersion conn)
+    (simulationScopeDeclaration manifest)
+    (rmCapabilities manifest)
+    RPCInvocationContext
+      { ricKind = InvocationSimulation
+      , ricWorldChunkIds = worldIds
+      , ricCallerChunkIds = Nothing
+      , ricAllowsCallerChunks = False
+      , ricDependencyOverlayNames = Map.keysSet (scOverlays ctx)
+      , ricOverlayChunkIds = fmap overlayChunkIds (scOverlays ctx)
+      , ricOwnedOverlayName = Just (rmName manifest)
+      , ricOwnOverlayChunkIds = overlayChunkIds ownOverlay
+      , ricDataResourceDeclarations = Map.empty
+      , ricDataResourceRequest = Nothing
+      , ricAvailableBudgets = invocationBudgets conn
+      }
+  when (simulationScopeDeclaration manifest /= Nothing) $ do
+    unless (risOwnedOverlayIdentity scope == Just (rmName manifest)) $
+      Left "scoped simulation must authorize output for the plugin-owned overlay"
+    unless (risOwnOverlayReadChunkIds scope == overlayChunkIds ownOverlay) $
+      Left "scoped simulation writing a whole overlay must receive the complete own overlay"
+    unless (risOwnOverlayWriteChunkIds scope == worldIds) $
+      Left "scoped simulation whole-overlay output must authorize the complete world chunk domain"
+  Right scope
+  where
+    manifest = rpcManifest conn
+    worldIds = worldChunkIds (scTerrain ctx)
+
+worldChunkIds :: Topo.World.TerrainWorld -> IntSet.IntSet
+worldChunkIds = IntMap.keysSet . Topo.World.twTerrain
+
+invocationBudgets :: RPCConnection -> RPCScopeBudgets
+invocationBudgets conn = RPCScopeBudgets
+  { rsbTerrainBytes = fromIntegral (rplMaxDecodedTerrainBytes (rpcPayloadLimits conn))
+  , rsbOverlayBytes = fromIntegral (rplMaxFrameSizeBytes (rpcPayloadLimits conn))
+  , rsbOutputBytes = fromIntegral (rplMaxFrameSizeBytes (rpcPayloadLimits conn))
+  }
+
+generatorScopeDeclaration :: RPCManifest -> Maybe RPCInvocationScopeDecl
+generatorScopeDeclaration manifest = rmInvocationScopes manifest >>= riscGenerator
+
+simulationScopeDeclaration :: RPCManifest -> Maybe RPCInvocationScopeDecl
+simulationScopeDeclaration manifest = rmInvocationScopes manifest >>= riscSimulation
+
+invocationScopeBinding
+  :: RPCManifest
+  -> RPCInvocationKind
+  -> Maybe ResolvedInvocationScope
+  -> Maybe RPCInvocationScopeBinding
+invocationScopeBinding manifest kind maybeScope
+  | declarationForKind manifest kind == Nothing = Nothing
+  | otherwise = fmap (\scope -> RPCInvocationScopeBinding (risScopeId scope) (Just scope)) maybeScope
+
+declarationForKind :: RPCManifest -> RPCInvocationKind -> Maybe RPCInvocationScopeDecl
+declarationForKind manifest InvocationGenerator = generatorScopeDeclaration manifest
+declarationForKind manifest InvocationSimulation = simulationScopeDeclaration manifest
+declarationForKind _ InvocationDataResource = Nothing
+
+firstScopeError :: Either ScopeError a -> Either Text a
+firstScopeError = either (Left . renderScopeError) Right
+
+renderScopeError :: ScopeError -> Text
+renderScopeError err = sePath err <> ": " <> seMessage err
+
+validateOverlayInputBudget
+  :: Bool
+  -> ResolvedInvocationScope
+  -> Value
+  -> Value
+  -> Either Text ()
+validateOverlayInputBudget False _ _ _ = Right ()
+validateOverlayInputBudget True scope dependencies ownOverlay =
+  let actual = fromIntegral (BL.length (Aeson.encode (object
+        [ "dependencies" .= dependencies
+        , "own" .= ownOverlay
+        ]))) :: Word64
+      limit = rsbOverlayBytes (risBudgets scope)
+  in when (actual > limit) $ Left
+      ("scoped overlay input exceeds resolved budget: actual=" <> Text.pack (show actual)
+        <> " bytes, limit=" <> Text.pack (show limit) <> " bytes")
+
+validateScopedResultPayload
+  :: RPCManifest
+  -> RPCInvocationKind
+  -> Maybe ResolvedInvocationScope
+  -> Value
+  -> Either RPCError ()
+validateScopedResultPayload manifest kind maybeScope payload
+  | declarationForKind manifest kind == Nothing = Right ()
+  | otherwise = case maybeScope of
+      Nothing -> Left (RPCProtocolError "scoped result validation is missing the host-resolved scope")
+      Just scope -> case payload of
+        Object fields -> do
+          let allowed = Set.fromList (case kind of
+                InvocationGenerator -> ["terrain", "overlay", "metadata"]
+                InvocationSimulation -> ["overlay", "terrain_writes"]
+                InvocationDataResource -> [])
+              unknown = filter (`Set.notMember` allowed) (map Key.toText (KM.keys fields))
+              actual = fromIntegral (BL.length (Aeson.encode payload)) :: Word64
+              limit = rsbOutputBytes (risBudgets scope)
+          unless (null unknown) $ Left (RPCProtocolError
+            ("scoped result contains unsupported keys: " <> Text.intercalate ", " unknown))
+          when (actual > limit) $ Left (RPCProtocolError
+            ("scoped result exceeds resolved output budget: actual=" <> Text.pack (show actual)
+              <> " bytes, limit=" <> Text.pack (show limit) <> " bytes"))
+        _ -> Left (RPCProtocolError "scoped result payload must be an object")
 
 canReadOverlay :: RPCManifest -> Bool
 canReadOverlay manifest =
@@ -1447,6 +1654,13 @@ overlaysToJSON :: Map Text Overlay -> Value
 overlaysToJSON overlays =
   object [ Key.fromText name .= overlayToJSON overlay | (name, overlay) <- Map.toList overlays ]
 
+scopedOverlaysToJSON :: Map Text IntSet.IntSet -> Map Text Overlay -> Value
+scopedOverlaysToJSON grants overlays = object
+  [ Key.fromText name .= overlayToScopedJSON chunkIds overlay
+  | (name, chunkIds) <- Map.toList grants
+  , Just overlay <- [Map.lookup name overlays]
+  ]
+
 rpcErrorText :: RPCError -> Text
 rpcErrorText rpcError =
   case rpcError of
@@ -1459,12 +1673,30 @@ rpcErrorText rpcError =
 applyGeneratorResult
   :: RPCPayloadLimits
   -> RPCManifest
+  -> Maybe ResolvedInvocationScope
   -> Topo.World.TerrainWorld
   -> GeneratorResult
   -> Either Text Topo.World.TerrainWorld
-applyGeneratorResult limits manifest world result = do
-  worldWithTerrain <- Payload.applyGeneratorTerrainValueWithLimits limits world (grTerrain result)
-  applyGeneratorOverlayPayload manifest worldWithTerrain (grOverlay result)
+applyGeneratorResult limits manifest maybeScope world result = do
+  validateGeneratorMetadataOutput manifest maybeScope (grMetadata result)
+  worldWithTerrain <- case (generatorScopeDeclaration manifest, maybeScope) of
+    (Just _, Just scope) -> Payload.applyGeneratorTerrainValueScopedWithLimits
+      limits scope world (grTerrain result)
+    _ -> Payload.applyGeneratorTerrainValueWithLimits limits world (grTerrain result)
+  applyGeneratorOverlayPayload manifest maybeScope worldWithTerrain (grOverlay result)
+
+validateGeneratorMetadataOutput
+  :: RPCManifest
+  -> Maybe ResolvedInvocationScope
+  -> Maybe Value
+  -> Either Text ()
+validateGeneratorMetadataOutput _ _ Nothing = Right ()
+validateGeneratorMetadataOutput _ _ (Just Null) = Right ()
+validateGeneratorMetadataOutput manifest _ (Just _)
+  | generatorScopeDeclaration manifest == Nothing = Right ()
+  | otherwise = Left
+      ("plugin " <> rmName manifest
+        <> " returned generator metadata, but scoped metadata output has no bounded host consumer")
 
 terrainWorldToPayload :: Topo.World.TerrainWorld -> Either Text Value
 terrainWorldToPayload = Payload.terrainWorldToPayload
@@ -1517,11 +1749,12 @@ decodeBase64Text = Payload.decodeBase64Text
 
 applyGeneratorOverlayPayload
   :: RPCManifest
+  -> Maybe ResolvedInvocationScope
   -> Topo.World.TerrainWorld
   -> Maybe Value
   -> Either Text Topo.World.TerrainWorld
-applyGeneratorOverlayPayload _ world Nothing = Right world
-applyGeneratorOverlayPayload manifest world (Just overlayValue)
+applyGeneratorOverlayPayload _ _ world Nothing = Right world
+applyGeneratorOverlayPayload manifest maybeScope world (Just overlayValue)
   | not (manifestHasOverlay manifest) =
       Left ("plugin " <> rmName manifest
         <> " returned generator overlay output for overlay " <> rmName manifest
@@ -1530,13 +1763,52 @@ applyGeneratorOverlayPayload manifest world (Just overlayValue)
       Left ("plugin " <> rmName manifest
         <> " returned generator overlay output for overlay " <> rmName manifest
         <> " but manifest is missing writeOverlay/writeWorld capability")
+  | Just scope <- maybeScope
+  , generatorScopeDeclaration manifest /= Nothing
+  , risOwnedOverlayIdentity scope /= Just (rmName manifest) =
+      Left ("plugin " <> rmName manifest <> " returned overlay output outside its resolved owned-overlay scope")
+  | Just scope <- maybeScope
+  , generatorScopeDeclaration manifest /= Nothing
+  , risOwnOverlayWriteChunkIds scope /= worldChunkIds world =
+      Left "generator whole-overlay output requires the complete world chunk domain"
   | otherwise =
       case lookupOverlay (rmName manifest) (Topo.World.twOverlays world) of
         Nothing -> Left ("plugin " <> rmName manifest
           <> " returned generator overlay output for overlay " <> rmName manifest
           <> " but host has no registered overlay surface")
         Just existingOverlay -> do
-          decodedOverlay <- overlayFromJSON (ovSchema existingOverlay) overlayValue
+          decodedOverlay <- case maybeScope of
+            Just _ | generatorScopeDeclaration manifest /= Nothing ->
+              overlayFromScopedJSON (ovSchema existingOverlay) overlayValue
+            _ -> overlayFromJSON (ovSchema existingOverlay) overlayValue
+          case maybeScope of
+            Just scope | generatorScopeDeclaration manifest /= Nothing ->
+              rejectOverlayChunksOutsideScope scope decodedOverlay
+            _ -> Right ()
           let nextOverlay = preserveHostProvenance existingOverlay decodedOverlay
               nextOverlays = insertOverlay nextOverlay (Topo.World.twOverlays world)
           Right world { Topo.World.twOverlays = nextOverlays }
+
+validateSimulationOverlayOutput
+  :: RPCManifest
+  -> ResolvedInvocationScope
+  -> Overlay
+  -> Value
+  -> Either Text Overlay
+validateSimulationOverlayOutput manifest scope existing payload = do
+  when (simulationScopeDeclaration manifest /= Nothing
+      && risOwnedOverlayIdentity scope /= Just (rmName manifest)) $
+    Left "simulation result is not authorized for the plugin-owned overlay"
+  decoded <- if simulationScopeDeclaration manifest /= Nothing
+    then overlayFromScopedJSON (ovSchema existing) payload
+    else overlayFromJSON (ovSchema existing) payload
+  when (simulationScopeDeclaration manifest /= Nothing) $
+    rejectOverlayChunksOutsideScope scope decoded
+  Right (preserveHostProvenance existing decoded)
+
+rejectOverlayChunksOutsideScope :: ResolvedInvocationScope -> Overlay -> Either Text ()
+rejectOverlayChunksOutsideScope scope overlay =
+  let unauthorized = overlayChunkIds overlay `IntSet.difference` risOwnOverlayWriteChunkIds scope
+  in unless (IntSet.null unauthorized) $ Left
+      ("overlay output contains unauthorized chunk IDs: "
+        <> Text.intercalate ", " (map (Text.pack . show) (IntSet.toAscList unauthorized)))

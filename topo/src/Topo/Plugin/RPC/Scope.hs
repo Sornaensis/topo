@@ -485,6 +485,10 @@ validateDeclaration kind dependencies hasOverlay base declaration = concat
   , [ ScopeError (base <> ".input.dependencyOverlays") "generator scopes cannot request dependency overlays"
     | kind == InvocationGenerator, not (null (rsiDependencyOverlays input))
     ]
+  , [ ScopeError (base <> ".input.ownOverlay")
+        "scoped generator own-overlay input is unavailable because generator invocations carry no own-overlay field"
+    | kind == InvocationGenerator, rsiOwnOverlay input
+    ]
   , [ ScopeError (base <> ".input.dependencyOverlays") ("overlay is not a simulation dependency: " <> name)
     | kind == InvocationSimulation, name <- rsiDependencyOverlays input, name `notElem` dependencies
     ]
@@ -494,8 +498,24 @@ validateDeclaration kind dependencies hasOverlay base declaration = concat
   , [ ScopeError (base <> ".output.ownedOverlay") "owned-overlay output requires an overlay declaration"
     | rsoOwnedOverlay output, not hasOverlay
     ]
+  , [ ScopeError (base <> ".output.ownedOverlay")
+        "scoped generator whole-overlay output is unavailable because generator invocations carry no own-overlay input"
+    | kind == InvocationGenerator, rsoOwnedOverlay output
+    ]
+  , [ ScopeError (base <> ".input.ownOverlay")
+        "simulation scopes must receive the complete plugin-owned overlay"
+    | kind == InvocationSimulation, not (rsiOwnOverlay input)
+    ]
+  , [ ScopeError (base <> ".output.ownedOverlay")
+        "simulation scopes must authorize whole plugin-owned overlay output"
+    | kind == InvocationSimulation, not (rsoOwnedOverlay output)
+    ]
   , [ ScopeError (base <> ".output.generatorMetadata") "simulation scopes cannot emit generator metadata"
     | kind == InvocationSimulation, rsoGeneratorMetadata output
+    ]
+  , [ ScopeError (base <> ".output.generatorMetadata")
+        "generator metadata output is unavailable until the host defines a bounded consumer"
+    | kind == InvocationGenerator, rsoGeneratorMetadata output
     ]
   ]
   where
@@ -542,6 +562,33 @@ resolveInvocationScope negotiatedVersion maybeDeclaration capabilities context =
         | negotiatedVersion <= 4 -> Right (legacyFor kind context)
         | otherwise -> Left (ScopeError "invocation_scope" "protocol 5 requires an explicit invocation scope")
     validateResolverDeclaration kind context declaration
+    if maybeDeclaration /= Nothing
+        && kind == InvocationGenerator
+        && rsoGeneratorMetadata (risdOutput declaration)
+      then Left (ScopeError "output.generatorMetadata"
+        "generator metadata output is unavailable until the host defines a bounded consumer")
+      else Right ()
+    if maybeDeclaration /= Nothing
+        && kind == InvocationGenerator
+        && rsiOwnOverlay (risdInput declaration)
+      then Left (ScopeError "input.ownOverlay"
+        "scoped generator own-overlay input is unavailable because generator invocations carry no own-overlay field")
+      else Right ()
+    if maybeDeclaration /= Nothing
+        && kind == InvocationGenerator
+        && rsoOwnedOverlay (risdOutput declaration)
+      then Left (ScopeError "output.ownedOverlay"
+        "scoped generator whole-overlay output is unavailable because generator invocations carry no own-overlay input")
+      else Right ()
+    if maybeDeclaration /= Nothing && kind == InvocationSimulation
+      then if not (rsiOwnOverlay (risdInput declaration))
+        then Left (ScopeError "input.ownOverlay"
+          "simulation scopes must receive the complete plugin-owned overlay")
+        else if not (rsoOwnedOverlay (risdOutput declaration))
+          then Left (ScopeError "output.ownedOverlay"
+            "simulation scopes must authorize whole plugin-owned overlay output")
+          else Right ()
+      else Right ()
     selectedInputChunks <- resolveSelector capabilities context (rsiChunkSelector (risdInput declaration))
     selectedOutputChunks <- resolveSelector capabilities context (rsoChunkSelector (risdOutput declaration))
     let canTerrainRead = hasAny [CapReadTerrain, CapReadWorld]
@@ -560,9 +607,12 @@ resolveInvocationScope negotiatedVersion maybeDeclaration capabilities context =
           | otherwise = Map.map (`IntSet.intersection` selectedInputChunks)
               (Map.restrictKeys (ricOverlayChunkIds context)
                 (requestedDependencies `Set.intersection` ricDependencyOverlayNames context))
+        -- Whole-overlay replacement is the only negotiated own-overlay form.
+        -- Its payload therefore remains complete even when the selector narrows
+        -- terrain and dependency-overlay reads.
         ownRead
           | rsiOwnOverlay (risdInput declaration) && (canOverlayRead || canOverlayWrite) =
-              ricOwnOverlayChunkIds context `IntSet.intersection` selectedInputChunks
+              ricOwnOverlayChunkIds context
           | otherwise = IntSet.empty
         outputSections
           | canTerrainWrite = Set.fromList (rsoTerrainSections (risdOutput declaration))
@@ -575,7 +625,7 @@ resolveInvocationScope negotiatedVersion maybeDeclaration capabilities context =
           | otherwise = Nothing
         ownWrite = case ownedIdentity of
           Nothing -> IntSet.empty
-          Just _ -> selectedOutputChunks `IntSet.intersection` ricWorldChunkIds context
+          Just _ -> ricWorldChunkIds context
         budgets = intersectBudgets (risdBudgets declaration) (ricAvailableBudgets context)
         unresolved = ResolvedInvocationScope
           { risScopeId = ""

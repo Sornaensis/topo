@@ -9,13 +9,16 @@ module Topo.Plugin.RPC.Payload
   , terrainWorldToPayloadWithLimits
   , terrainWorldToScopedPayload
   , terrainWorldToScopedPayloadWithLimits
+  , terrainWorldToScopedPayloadWithBudget
   , terrainWorldToCompletePayload
   , terrainWorldToCompletePayloadWithLimits
   , decodeTerrainWritesValue
   , decodeTerrainWritesValueWithLimits
+  , decodeTerrainWritesValueScopedWithLimits
   , terrainWritesValueEmpty
   , applyGeneratorTerrainValue
   , applyGeneratorTerrainValueWithLimits
+  , applyGeneratorTerrainValueScopedWithLimits
   , encodeBase64Text
   , decodeBase64Text
   ) where
@@ -31,6 +34,7 @@ import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
+import Data.Word (Word64)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Read as TextRead
@@ -66,7 +70,10 @@ import Topo.Simulation
   , emptyTerrainWrites
   )
 import Topo.Planet (mkLatitudeMapping)
-import Topo.Plugin.RPC.Scope (TerrainSection(..))
+import Topo.Plugin.RPC.Scope
+  ( ResolvedInvocationScope(..)
+  , TerrainSection(..)
+  )
 import Topo.Plugin.RPC.Transport
   ( RPCPayloadLimits
   , defaultRPCPayloadLimits
@@ -131,11 +138,21 @@ terrainWorldToScopedPayloadWithLimits
   -> IntSet.IntSet
   -> Topo.World.TerrainWorld
   -> Either Text Value
-terrainWorldToScopedPayloadWithLimits limits sections chunkIds world
+terrainWorldToScopedPayloadWithLimits limits =
+  terrainWorldToScopedPayloadWithBudget (fromIntegral (rplMaxDecodedTerrainBytes limits))
+
+-- | Scoped terrain encoding with an exact resolved decoded-byte ceiling.
+terrainWorldToScopedPayloadWithBudget
+  :: Word64
+  -> Set TerrainSection
+  -> IntSet.IntSet
+  -> Topo.World.TerrainWorld
+  -> Either Text Value
+terrainWorldToScopedPayloadWithBudget decodedByteLimit sections chunkIds world
   | Set.null sections = Right (object [])
   | otherwise = do
       let config = Topo.World.twConfig world
-          initialBudget = Just (toInteger (rplMaxDecodedTerrainBytes limits))
+          initialBudget = Just (toInteger decodedByteLimit)
           selected chunks = IntMap.restrictKeys chunks chunkIds
       (terrainFields, budget1) <-
         if Set.member TerrainElevation sections
@@ -310,6 +327,25 @@ decodeTerrainWritesValue = decodeTerrainWritesValueWithLimits defaultRPCPayloadL
 decodeTerrainWritesValueWithLimits :: RPCPayloadLimits -> Maybe Value -> Either Text TerrainWrites
 decodeTerrainWritesValueWithLimits = decodeTerrainWrites
 
+-- | Validate and decode terrain writes against one immutable output scope.
+-- Authorization is checked before any chunk bytes are decoded.
+decodeTerrainWritesValueScopedWithLimits
+  :: RPCPayloadLimits
+  -> ResolvedInvocationScope
+  -> TerrainWorld
+  -> Maybe Value
+  -> Either Text TerrainWrites
+decodeTerrainWritesValueScopedWithLimits limits scope world maybePayload =
+  case maybePayload of
+    Nothing -> Right emptyTerrainWrites
+    Just Null -> Right emptyTerrainWrites
+    Just (Object payload)
+      | KM.null payload -> Right emptyTerrainWrites
+      | otherwise -> do
+          validateScopedTerrainOutput limits scope world payload
+          terrainWritesFromPayloadWithConfig limits (twConfig world) payload
+    Just _ -> Left "terrain_writes payload must be an object"
+
 -- | Report whether an optional simulation @terrain_writes@ payload contains
 -- no actual terrain mutations.
 terrainWritesValueEmpty :: Maybe Value -> Either Text Bool
@@ -340,6 +376,24 @@ applyGeneratorTerrainValueWithLimits limits world (Object obj)
   | hasOnlySummaryKeys obj = validateSummaryOnly (twConfig world) obj >> Right world
   | otherwise = applyTerrainPayload limits world obj
 applyGeneratorTerrainValueWithLimits _ _ _ = Left "generator terrain payload must be an object or null"
+
+-- | Apply generator writes only after the complete payload has passed exact
+-- section, key, chunk, and geometry authorization.
+applyGeneratorTerrainValueScopedWithLimits
+  :: RPCPayloadLimits
+  -> ResolvedInvocationScope
+  -> TerrainWorld
+  -> Value
+  -> Either Text TerrainWorld
+applyGeneratorTerrainValueScopedWithLimits _ _ world Null = Right world
+applyGeneratorTerrainValueScopedWithLimits _ _ world (Object payload)
+  | KM.null payload = Right world
+applyGeneratorTerrainValueScopedWithLimits limits scope world (Object payload) = do
+  validateScopedTerrainOutput limits scope world payload
+  writes <- terrainWritesFromPayloadWithConfig limits (twConfig world) payload
+  Right (applyTerrainWrites writes world)
+applyGeneratorTerrainValueScopedWithLimits _ _ _ _ =
+  Left "generator terrain payload must be an object or null"
 
 decodeTerrainWrites :: RPCPayloadLimits -> Maybe Value -> Either Text TerrainWrites
 decodeTerrainWrites _ Nothing = Right emptyTerrainWrites
@@ -410,6 +464,56 @@ validateSummaryOnly fallback payload = do
 
 terrainWriteSectionKeys :: [Text]
 terrainWriteSectionKeys = ["terrain", "climate", "vegetation"]
+
+validateScopedTerrainOutput
+  :: RPCPayloadLimits
+  -> ResolvedInvocationScope
+  -> TerrainWorld
+  -> KM.KeyMap Value
+  -> Either Text ()
+validateScopedTerrainOutput limits scope world payload = do
+  let sections = risTerrainOutputSections scope
+      allowedChunks = risTerrainOutputChunkIds scope
+      sectionSpecs = concatMap scopedSectionFields (Set.toAscList sections)
+      allowedKeys = Set.fromList (["encoding", "chunk_size"] <> concatMap (\(field, countField) -> [field, countField]) sectionSpecs)
+      unsupportedKeys = filter (`Set.notMember` allowedKeys) (map Key.toText (KM.keys payload))
+  unless (null unsupportedKeys) $ Left
+    ("terrain output contains unauthorized keys: " <> Text.intercalate ", " unsupportedKeys)
+  when (Set.null sections) $ Left "terrain output is not authorized by the resolved invocation scope"
+  payloadConfig <- lookupChunkSizeOrEither (twConfig world) payload
+  unless (payloadConfig == twConfig world) $ Left
+    "terrain output chunk_size does not match the immutable host world geometry"
+  traverse_ (validateScopedSectionChunks payload allowedChunks . fst) sectionSpecs
+  validateTerrainPayload limits payloadConfig payload
+
+scopedSectionFields :: TerrainSection -> [(Text, Text)]
+scopedSectionFields TerrainElevation = [("terrain", "chunk_count")]
+scopedSectionFields TerrainClimate = [("climate", "climate_count")]
+scopedSectionFields TerrainVegetation = [("vegetation", "vegetation_count")]
+
+validateScopedSectionChunks
+  :: KM.KeyMap Value
+  -> IntSet.IntSet
+  -> Text
+  -> Either Text ()
+validateScopedSectionChunks payload allowedChunks fieldName =
+  case KM.lookup (Key.fromText fieldName) payload of
+    Nothing -> Right ()
+    Just Null -> Right ()
+    Just (Object chunks) -> do
+      supplied <- foldKeyMapM collect IntSet.empty chunks
+      let unauthorized = supplied `IntSet.difference` allowedChunks
+      unless (IntSet.null unauthorized) $ Left
+        (fieldName <> " output contains unauthorized chunk IDs: "
+          <> Text.intercalate ", " (map tshow (IntSet.toAscList unauthorized)))
+    Just _ -> Left (fieldName <> " payload must be an object")
+  where
+    collect seen key _ = do
+      chunkId <- parseChunkId (Key.toText key)
+      when (chunkId < 0) $ Left ("invalid negative chunk id: " <> Key.toText key)
+      when (IntSet.member chunkId seen) $ Left
+        (fieldName <> " payload contains duplicate numeric chunk id " <> tshow chunkId)
+      Right (IntSet.insert chunkId seen)
 
 terrainWritesObjectEmpty :: KM.KeyMap Value -> Either Text Bool
 terrainWritesObjectEmpty payload = do

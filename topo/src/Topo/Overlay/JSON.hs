@@ -12,9 +12,12 @@
 -- binary persistence in 'Topo.Overlay.Export'.
 module Topo.Overlay.JSON
   ( overlayToJSON
+  , overlayToScopedJSON
   , overlayFromJSON
+  , overlayFromScopedJSON
   ) where
 
+import Control.Monad (unless, when)
 import Data.Aeson
   ( FromJSON(..)
   , ToJSON(..)
@@ -25,10 +28,14 @@ import Data.Aeson
   , withObject
   )
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 import Data.Aeson.Types (Parser, parseEither)
 import Data.Bifunctor (first)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.IntSet as IntSet
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
@@ -113,6 +120,17 @@ overlayToJSON overlay =
     , "chunks" .= chunksToJSON (ovData overlay)
     ]
 
+-- | Encode only the selected chunk IDs without first constructing a complete
+-- overlay JSON value.
+overlayToScopedJSON :: IntSet.IntSet -> Overlay -> Value
+overlayToScopedJSON chunkIds overlay =
+  overlayToJSON (overlay { ovData = restrictOverlayData chunkIds (ovData overlay) })
+
+restrictOverlayData :: IntSet.IntSet -> OverlayData -> OverlayData
+restrictOverlayData chunkIds overlayData = case overlayData of
+  SparseData chunks -> SparseData (IntMap.restrictKeys chunks chunkIds)
+  DenseData chunks -> DenseData (IntMap.restrictKeys chunks chunkIds)
+
 chunksToJSON :: OverlayData -> Value
 chunksToJSON overlayData =
   case overlayData of
@@ -127,6 +145,49 @@ chunksToJSON overlayData =
 overlayFromJSON :: OverlaySchema -> Value -> Either Text Overlay
 overlayFromJSON schema value =
   first toText (parseEither (parseOverlayPayload schema) value)
+
+-- | Scoped output decoder with fail-closed keys, IDs, and duplicate checks.
+-- The legacy decoder intentionally remains permissive for protocol-v4
+-- no-scope compatibility.
+overlayFromScopedJSON :: OverlaySchema -> Value -> Either Text Overlay
+overlayFromScopedJSON schema value = first toText $ parseEither
+  (\payload -> validateScopedOverlayValue payload >> parseOverlayPayload schema payload)
+  value
+
+validateScopedOverlayValue :: Value -> Parser ()
+validateScopedOverlayValue = withObject "scoped overlay payload" $ \o -> do
+  ensureObjectKeys "overlay payload" ["storage", "chunks"] o
+  storage <- o .: "storage" :: Parser Text
+  chunks <- o .: "chunks" :: Parser [Value]
+  case storage of
+    "sparse" -> do
+      chunkIds <- traverse validateSparseChunk chunks
+      ensureUniqueIds "sparse overlay chunk" chunkIds
+    "dense" -> do
+      chunkIds <- traverse validateDenseChunk chunks
+      ensureUniqueIds "dense overlay chunk" chunkIds
+    _ -> fail "unknown scoped overlay storage"
+  where
+    validateSparseChunk = withObject "scoped sparse chunk" $ \chunk -> do
+      ensureObjectKeys "sparse chunk" ["chunk_id", "tiles"] chunk
+      chunkId <- chunk .: "chunk_id"
+      when (chunkId < 0) (fail "sparse overlay chunk ID must be non-negative")
+      tiles <- chunk .: "tiles" :: Parser [Value]
+      tileIds <- traverse validateSparseTile tiles
+      ensureUniqueIds "sparse overlay tile" tileIds
+      pure chunkId
+    validateSparseTile = withObject "scoped sparse tile" $ \tile -> do
+      ensureObjectKeys "sparse tile" ["tile", "fields"] tile
+      tileId <- tile .: "tile"
+      when (tileId < 0) (fail "sparse overlay tile index must be non-negative")
+      _ <- tile .: "fields" :: Parser Value
+      pure tileId
+    validateDenseChunk = withObject "scoped dense chunk" $ \chunk -> do
+      ensureObjectKeys "dense chunk" ["chunk_id", "fields"] chunk
+      chunkId <- chunk .: "chunk_id"
+      when (chunkId < 0) (fail "dense overlay chunk ID must be non-negative")
+      _ <- chunk .: "fields" :: Parser Value
+      pure chunkId
 
 parseOverlayPayload :: OverlaySchema -> Value -> Parser Overlay
 parseOverlayPayload schema = withObject "overlay payload" $ \o -> do
@@ -236,6 +297,23 @@ expectStorage expected actual =
 storageTag :: OverlayStorage -> Text
 storageTag StorageSparse = "sparse"
 storageTag StorageDense = "dense"
+
+ensureObjectKeys :: Text -> [Text] -> KM.KeyMap Value -> Parser ()
+ensureObjectKeys label allowed objectValue =
+  unless (null unknown) $
+    fail (Text.unpack (label <> " contains unsupported keys: " <> Text.intercalate ", " unknown))
+  where
+    allowedSet = Set.fromList allowed
+    unknown = filter (`Set.notMember` allowedSet) (map Key.toText (KM.keys objectValue))
+
+ensureUniqueIds :: Text -> [Int] -> Parser ()
+ensureUniqueIds label values =
+  case duplicates of
+    duplicateId:_ -> fail (Text.unpack (label <> " ID is duplicated: " <> Text.pack (show duplicateId)))
+    [] -> pure ()
+  where
+    counts = IntMap.fromListWith (+) [(value, 1 :: Int) | value <- values]
+    duplicates = IntMap.keys (IntMap.filter (> 1) counts)
 
 toText :: String -> Text
 toText = Text.pack

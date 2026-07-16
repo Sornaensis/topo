@@ -30,6 +30,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (UTCTime)
 import Data.Word (Word32, Word64)
+import qualified Data.Vector as Vector
 import System.Directory (doesFileExist, doesPathExist, getCurrentDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Info (os)
@@ -126,7 +127,7 @@ import Topo.Plugin.DataResource
 import Topo.Calendar (CalendarDate(..), WorldTime(..), simulationTickSeconds)
 import Topo.Hex (defaultHexGridMeta)
 import Topo.Overlay (Overlay, emptyOverlay, insertOverlay, lookupOverlay)
-import Topo.Overlay.JSON (overlayToJSON)
+import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON)
 import Topo.Overlay.Schema
   ( OverlayFieldDef(..)
   , OverlayFieldType(..)
@@ -137,7 +138,14 @@ import Topo.Overlay.Schema
 import Topo.Simulation (SimContext(..), SimNode(..), terrainWritesEmpty)
 import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleDecl(..), defaultScheduleDecl)
 import Topo.Types (ChunkId(..), WorldConfig(..))
-import Topo.World (TerrainWorld(..), emptyTerrainChunk, emptyWorld, setTerrainChunk)
+import Topo.World
+  ( TerrainWorld(..)
+  , emptyClimateChunk
+  , emptyTerrainChunk
+  , emptyWorld
+  , setClimateChunk
+  , setTerrainChunk
+  )
 
 ------------------------------------------------------------------------
 -- Arbitrary instances for QuickCheck
@@ -1397,8 +1405,9 @@ spec = describe "Plugin.RPC" $ do
       messages `shouldSatisfy` any (Text.isInfixOf "unavailable overlay")
       let generatorCaller = RPCInvocationScopes 1
             (Just (scopeTestDeclaration SelectCallerChunks)) Nothing
-      validateInvocationScopeDeclarations 4 True Nothing True (Just generatorCaller)
-        `shouldSatisfy` any (Text.isInfixOf "global generator" . seMessage)
+          generatorErrors = validateInvocationScopeDeclarations 4 True Nothing True (Just generatorCaller)
+      generatorErrors `shouldSatisfy` any (Text.isInfixOf "global generator" . seMessage)
+      generatorErrors `shouldSatisfy` any (Text.isInfixOf "no own-overlay field" . seMessage)
 
     it "retains protocol-v4 omission as the explicit legacy scope" $ do
       let context = scopeTestContext InvocationSimulation
@@ -1428,10 +1437,11 @@ spec = describe "Plugin.RPC" $ do
           risTerrainInputSections scope `shouldBe` Set.fromList [TerrainElevation, TerrainClimate]
           risTerrainInputChunkIds scope `shouldBe` IntSet.singleton 2
           risDependencyOverlayChunkIds scope `shouldBe` Map.singleton "weather" (IntSet.singleton 2)
-          risOwnOverlayReadChunkIds scope `shouldBe` IntSet.singleton 2
+          risOwnOverlayReadChunkIds scope `shouldBe` IntSet.fromList [2, 3]
           risTerrainOutputSections scope `shouldBe` Set.singleton TerrainClimate
           risTerrainOutputChunkIds scope `shouldBe` IntSet.singleton 2
           risOwnedOverlayIdentity scope `shouldBe` Just "civilization"
+          risOwnOverlayWriteChunkIds scope `shouldBe` IntSet.fromList [1, 2, 3, 4]
           risBudgets scope `shouldBe` RPCScopeBudgets 500 2000 100
           risScopeId scope `shouldBe` resolvedInvocationScopeDigest scope
           resolveInvocationScope 5 (Just declaration) [CapReadTerrain, CapReadOverlay, CapWriteTerrain, CapWriteOverlay]
@@ -1492,7 +1502,14 @@ spec = describe "Plugin.RPC" $ do
         `shouldSatisfy` isLeft
 
     it "binds protocol-v5 wire references to stable inline descriptors" $ do
-      case resolveInvocationScope 5 (Just (legacyGeneratorScope scopeTestBudgets))
+      let legacy = legacyGeneratorScope scopeTestBudgets
+          declaration = legacy
+            { risdOutput = (risdOutput legacy)
+                { rsoOwnedOverlay = False
+                , rsoGeneratorMetadata = False
+                }
+            }
+      case resolveInvocationScope 5 (Just declaration)
           [CapReadTerrain] (scopeTestContext InvocationGenerator) of
         Left err -> expectationFailure (show err)
         Right scope -> do
@@ -2450,6 +2467,86 @@ spec = describe "Plugin.RPC" $ do
         result <- timeout transportTestTimeoutMicros (takeMVar done)
         result `shouldBe` Just (Right generatorResult)
 
+    it "encodes only explicitly scoped generator sections without constructing the full-world payload" $
+      withConnectedTransports "rpc-generator-scoped-input" $ \host plugin -> do
+        limits <- case mkRPCPayloadLimits 4096 of
+          Left err -> expectationFailure (Text.unpack err) >> fail "payload limits"
+          Right value -> pure value
+        let manifest = scopedGeneratorManifest
+            conn = newRPCConnectionWithLimits limits manifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (runGeneratorStageWithCaps PluginCore.allowAllCapabilities conn scopedTerrainWorld >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        case Aeson.fromJSON (envPayload request) of
+          Aeson.Error err -> expectationFailure ("failed to decode scoped generator request: " <> err)
+          Aeson.Success invoke -> case igTerrain invoke of
+            Object terrain -> do
+              KM.member "climate" terrain `shouldBe` True
+              KM.member "climate_count" terrain `shouldBe` True
+              KM.member "terrain" terrain `shouldBe` False
+              KM.member "chunk_count" terrain `shouldBe` False
+              case KM.lookup "climate" terrain of
+                Just (Object chunks) -> map AesonKey.toText (KM.keys chunks) `shouldMatchList` ["0", "1"]
+                other -> expectationFailure ("expected climate chunks, got " <> show other)
+              case igInvocationScope invoke >>= risbDescriptor of
+                Just scope -> risKind scope `shouldBe` InvocationGenerator
+                Nothing -> expectationFailure "expected inline generator invocation scope"
+            other -> expectationFailure ("expected scoped terrain object, got " <> show other)
+        sendGeneratorResult plugin request (GeneratorResult Null Nothing Nothing)
+        (outcome, _) <- takeGeneratorStageResult done
+        outcome `shouldBe` Right ()
+
+    it "fails scoped direct generator calls before sending caller-built terrain" $
+      withConnectedTransports "rpc-generator-scoped-direct-reject" $ \host _plugin -> do
+        let conn = newRPCConnection scopedGeneratorManifest host Map.empty
+        result <- invokeGenerator conn 1 (object ["full_world" .= True])
+        case result of
+          Left (RPCProtocolError err) -> err `shouldSatisfy` Text.isInfixOf "exact host world facts"
+          other -> expectationFailure ("expected pre-send scoped direct rejection, got " <> show other)
+
+    it "rejects unauthorized scoped generator output atomically before overlay mutation" $
+      withConnectedTransports "rpc-generator-scoped-output-atomic" $ \host plugin -> do
+        let schema = overlaySchemaNamed "test-plugin"
+            initialOverlay = emptyOverlay schema
+            world = scopedTerrainWorld { twOverlays = insertOverlay initialOverlay (twOverlays scopedTerrainWorld) }
+            manifest = scopedGeneratorManifest
+              { rmOverlay = Just (RPCOverlayDecl "test-plugin.toposchema")
+              , rmCapabilities = [CapReadTerrain, CapWriteOverlay]
+              , rmInvocationScopes = Just (RPCInvocationScopes 1
+                  (Just (scopedGeneratorDeclaration False)) Nothing)
+              }
+            conn = newRPCConnection manifest host Map.empty
+        unauthorizedTerrain <- case terrainWorldToScopedPayload
+            (Set.singleton TerrainElevation) (IntSet.singleton 0) world of
+          Left err -> expectationFailure (Text.unpack err) >> fail "terrain encode"
+          Right payload -> pure payload
+        done <- newEmptyMVar
+        _ <- forkIO (runGeneratorStageWithCaps PluginCore.allowAllCapabilities conn world >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        sendGeneratorResult plugin request GeneratorResult
+          { grTerrain = unauthorizedTerrain
+          , grOverlay = Just (overlayPayloadWithValue 77)
+          , grMetadata = Nothing
+          }
+        (outcome, worldAfter) <- takeGeneratorStageResult done
+        case outcome of
+          Left (PluginCore.PluginInvariantError msg) ->
+            msg `shouldSatisfy` Text.isInfixOf "unauthorized keys"
+          other -> expectationFailure ("expected scoped output rejection, got " <> show other)
+        lookupOverlay "test-plugin" (twOverlays worldAfter) `shouldBe` Just initialOverlay
+        twClimate worldAfter `shouldBe` twClimate world
+
+    it "rejects ungranted scoped generator metadata" $
+      withConnectedTransports "rpc-generator-scoped-metadata" $ \host plugin -> do
+        let conn = newRPCConnection scopedGeneratorManifest host Map.empty
+        done <- newEmptyMVar
+        _ <- forkIO (runGeneratorStageWithCaps PluginCore.allowAllCapabilities conn scopedTerrainWorld >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        sendGeneratorResult plugin request (GeneratorResult Null Nothing (Just (object ["unexpected" .= True])))
+        (outcome, worldAfter) <- takeGeneratorStageResult done
+        expectPluginInvariantContaining "no bounded host consumer" outcome
+        twTerrain worldAfter `shouldBe` twTerrain scopedTerrainWorld
+
     it "does not require writeTerrain capability for generator terrain output" $
       withConnectedTransports "rpc-generator-implicit-terrain-write" $ \host plugin -> do
         terrainPayload <- nonEmptyGeneratorTerrainPayload
@@ -2558,6 +2655,59 @@ spec = describe "Plugin.RPC" $ do
         (outcome, worldAfter) <- takeGeneratorStageResult done
         outcome `shouldBe` Right ()
         fmap overlayToJSON (lookupOverlay "test-plugin" (twOverlays worldAfter)) `shouldBe` Just overlayPayload
+
+    it "narrows scoped simulation terrain and dependency overlays while keeping the own overlay whole" $
+      withConnectedTransports "rpc-simulation-scoped-input" $ \host plugin -> do
+        weather <- overlayFromPayload (overlaySchemaNamed "weather") (overlayPayloadAtChunk 1 5)
+        own <- overlayFromPayload (overlaySchemaNamed "test-plugin") (overlayPayloadAtChunk 0 7)
+        let context = testSimContext
+              { scTerrain = scopedTerrainWorld
+              , scOverlays = Map.singleton "weather" weather
+              }
+            conn = newRPCConnection scopedSimulationManifest host Map.empty
+        done <- newEmptyMVar
+        case rpcSimNode conn of
+          SimNodeWriter{snwWriteTick = runTick} -> do
+            _ <- forkIO (runTick context own >>= putMVar done)
+            request <- recvEnvelopeFrom plugin
+            case Aeson.fromJSON (envPayload request) of
+              Aeson.Error err -> expectationFailure ("failed to decode scoped simulation request: " <> err)
+              Aeson.Success invoke -> do
+                terrainChunkKeys (isTerrain invoke) "terrain" `shouldBe` ["1"]
+                overlayPayloadChunkIds (isOverlays invoke) "weather" `shouldBe` [1]
+                overlayChunkIdsFromPayload (isOwnOverlay invoke) `shouldBe` [0]
+            sendSimulationResult plugin request (SimulationResult (overlayToJSON own) Nothing)
+            result <- timeout transportTestTimeoutMicros (takeMVar done)
+            result `shouldSatisfy` maybe False isRight
+          _ -> expectationFailure "expected scoped SimNodeWriter"
+
+    it "rejects unauthorized scoped simulation terrain writes before returning an overlay update" $
+      withConnectedTransports "rpc-simulation-scoped-output-atomic" $ \host plugin -> do
+        weather <- overlayFromPayload (overlaySchemaNamed "weather") (overlayPayloadAtChunk 1 5)
+        own <- overlayFromPayload (overlaySchemaNamed "test-plugin") (overlayPayloadAtChunk 0 7)
+        let context = testSimContext
+              { scTerrain = scopedTerrainWorld
+              , scOverlays = Map.singleton "weather" weather
+              }
+            conn = newRPCConnection scopedSimulationManifest host Map.empty
+        unauthorizedWrites <- case terrainWorldToScopedPayload
+            (Set.singleton TerrainElevation) (IntSet.singleton 0) scopedTerrainWorld of
+          Left err -> expectationFailure (Text.unpack err) >> fail "terrain writes encode"
+          Right payload -> pure payload
+        done <- newEmptyMVar
+        case rpcSimNode conn of
+          SimNodeWriter{snwWriteTick = runTick} -> do
+            _ <- forkIO (runTick context own >>= putMVar done)
+            request <- recvEnvelopeFrom plugin
+            sendSimulationResult plugin request SimulationResult
+              { srOverlay = overlayPayloadAtChunk 0 99
+              , srTerrainWrites = Just unauthorizedWrites
+              }
+            result <- timeout transportTestTimeoutMicros (takeMVar done)
+            case result of
+              Just (Left err) -> err `shouldSatisfy` Text.isInfixOf "unauthorized keys"
+              other -> expectationFailure ("expected scoped simulation output rejection, got " <> show other)
+          _ -> expectationFailure "expected scoped SimNodeWriter"
 
     it "routes correlated simulation progress to the invokeSimulation callback and completes" $
       withConnectedTransports "rpc-simulation-progress" $ \host plugin -> do
@@ -3396,6 +3546,117 @@ expectPluginInvariantContaining expected outcome =
       msg `shouldSatisfy` Text.isInfixOf expected
     other -> expectationFailure ("expected plugin invariant containing " <> Text.unpack expected <> ", got " <> show other)
 
+scopedTerrainWorld :: TerrainWorld
+scopedTerrainWorld = foldr addChunk base [ChunkId 0, ChunkId 1]
+  where
+    config = WorldConfig { wcChunkSize = 4 }
+    base = emptyWorld config defaultHexGridMeta
+    addChunk chunkId =
+      setClimateChunk chunkId (emptyClimateChunk config)
+        . setTerrainChunk chunkId (emptyTerrainChunk config)
+
+scopedGeneratorManifest :: RPCManifest
+scopedGeneratorManifest = baseManifest
+  { rmCapabilities = [CapReadTerrain]
+  , rmInvocationScopes = Just (RPCInvocationScopes 1
+      (Just (scopedGeneratorDeclaration False)) Nothing)
+  }
+
+scopedGeneratorDeclaration :: Bool -> RPCInvocationScopeDecl
+scopedGeneratorDeclaration ownsOverlay = RPCInvocationScopeDecl
+  { risdInput = RPCScopeInput
+      { rsiTerrainSections = [TerrainClimate]
+      , rsiChunkSelector = SelectAllInvocationChunks
+      , rsiDependencyOverlays = []
+      , rsiOwnOverlay = False
+      }
+  , risdOutput = RPCScopeOutput
+      { rsoTerrainSections = [TerrainClimate]
+      , rsoChunkSelector = SelectAllInvocationChunks
+      , rsoOwnedOverlay = ownsOverlay
+      , rsoGeneratorMetadata = False
+      }
+  , risdBudgets = RPCScopeBudgets maxBound maxBound maxBound
+  }
+
+scopedSimulationManifest :: RPCManifest
+scopedSimulationManifest = baseManifest
+  { rmGenerator = Nothing
+  , rmSimulation = Just RPCSimulationDecl
+      { rsdDependencies = ["weather"]
+      , rsdSchedule = defaultScheduleDecl
+      }
+  , rmOverlay = Just (RPCOverlayDecl "test-plugin.toposchema")
+  , rmCapabilities = [CapReadTerrain, CapReadOverlay, CapWriteTerrain, CapWriteOverlay]
+  , rmInvocationScopes = Just (RPCInvocationScopes 1 Nothing (Just declaration))
+  }
+  where
+    declaration = RPCInvocationScopeDecl
+      { risdInput = RPCScopeInput
+          { rsiTerrainSections = [TerrainElevation]
+          , rsiChunkSelector = SelectOverlayUnion ["weather"]
+          , rsiDependencyOverlays = ["weather"]
+          , rsiOwnOverlay = True
+          }
+      , risdOutput = RPCScopeOutput
+          { rsoTerrainSections = [TerrainClimate]
+          , rsoChunkSelector = SelectAllInvocationChunks
+          , rsoOwnedOverlay = True
+          , rsoGeneratorMetadata = False
+          }
+      , risdBudgets = RPCScopeBudgets maxBound maxBound maxBound
+      }
+
+overlayFromPayload :: OverlaySchema -> Value -> IO Overlay
+overlayFromPayload schema payload = case overlayFromJSON schema payload of
+  Left err -> expectationFailure (Text.unpack err) >> fail "overlay payload"
+  Right overlay -> pure overlay
+
+overlayPayloadAtChunk :: Int -> Double -> Value
+overlayPayloadAtChunk chunkId value = object
+  [ "storage" .= ("sparse" :: Text)
+  , "chunks" .=
+      [ object
+          [ "chunk_id" .= chunkId
+          , "tiles" .=
+              [ object
+                  [ "tile" .= (0 :: Int)
+                  , "fields" .= [value]
+                  ]
+              ]
+          ]
+      ]
+  ]
+
+terrainChunkKeys :: Value -> Text -> [Text]
+terrainChunkKeys (Object payload) section = case KM.lookup (AesonKey.fromText section) payload of
+  Just (Object chunks) -> map AesonKey.toText (KM.keys chunks)
+  _ -> []
+terrainChunkKeys _ _ = []
+
+overlayPayloadChunkIds :: Value -> Text -> [Int]
+overlayPayloadChunkIds (Object overlays) name =
+  maybe [] overlayChunkIdsFromPayload (KM.lookup (AesonKey.fromText name) overlays)
+overlayPayloadChunkIds _ _ = []
+
+overlayChunkIdsFromPayload :: Value -> [Int]
+overlayChunkIdsFromPayload (Object payload) = case KM.lookup "chunks" payload of
+  Just (Array chunks) -> mapMaybeChunkId (Vector.toList chunks)
+  _ -> []
+overlayChunkIdsFromPayload _ = []
+
+mapMaybeChunkId :: [Value] -> [Int]
+mapMaybeChunkId [] = []
+mapMaybeChunkId (Object chunk:rest) = case KM.lookup "chunk_id" chunk >>= decodeInt of
+  Just chunkId -> chunkId : mapMaybeChunkId rest
+  Nothing -> mapMaybeChunkId rest
+mapMaybeChunkId (_:rest) = mapMaybeChunkId rest
+
+decodeInt :: Value -> Maybe Int
+decodeInt value = case Aeson.fromJSON value of
+  Aeson.Success decoded -> Just decoded
+  Aeson.Error _ -> Nothing
+
 generatorStageWorld :: TerrainWorld
 generatorStageWorld = emptyWorld (WorldConfig { wcChunkSize = 64 }) defaultHexGridMeta
 
@@ -3433,20 +3694,7 @@ overlaySchemaNamed :: Text -> OverlaySchema
 overlaySchemaNamed name = testOverlaySchema { osName = name }
 
 overlayPayloadWithValue :: Double -> Value
-overlayPayloadWithValue value = object
-  [ "storage" .= ("sparse" :: Text)
-  , "chunks" .=
-      [ object
-          [ "chunk_id" .= (0 :: Int)
-          , "tiles" .=
-              [ object
-                  [ "tile" .= (0 :: Int)
-                  , "fields" .= [value]
-                  ]
-              ]
-          ]
-      ]
-  ]
+overlayPayloadWithValue = overlayPayloadAtChunk 0
 
 withTransportServer :: Text -> (TransportServer -> IO a) -> IO a
 withTransportServer pluginName = bracket acquire tsClose
