@@ -110,6 +110,7 @@ library
       Topo.Plugin.RPC.Manifest
       Topo.Plugin.RPC.Protocol
       Topo.Plugin.RPC.Scope
+      Topo.Plugin.RPC.Stream
       Topo.Plugin.RPC.Transport
       Topo.Command.Types
       Topo.Config
@@ -216,6 +217,7 @@ test-suite topo-test
       Spec.PluginDocs
       Spec.PluginIntegration
       Spec.PluginRPC
+      Spec.PluginStream
       Spec.Precipitation
       Spec.Provenance
       Spec.River
@@ -253,6 +255,7 @@ test-suite topo-test
       QuickCheck
     , aeson
     , base
+    , base64-bytestring
     , binary
     , bytestring
     , containers

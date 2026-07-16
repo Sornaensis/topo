@@ -126,6 +126,7 @@ import Topo.Plugin.RPC
   , externalDataSourceStatusDegradesStartup
   , newRPCConnection
   , newRPCConnectionWithLimits
+  , manifestProtocolVersion
   , peekRPCFailureEvent
   , rpcShutdown
   , sameRPCConnection
@@ -688,7 +689,10 @@ connectLoadedPluginOnce executablePath lp = mask $ \restore -> do
   let policy = lpStartPolicy lp
       startupTimeoutMs = rspStartupTimeoutMs policy
       startupTimeoutMicros = policyTimeoutMicros startupTimeoutMs
-  launchResult <- launchPluginTransport executablePath (lpDirectory lp) (lpName lp) startupTimeoutMs
+  launchResult <- case manifestProtocolVersion (lpManifest lp) of
+    Left err -> pure (Left ("plugin protocol negotiation failed: " <> err, Nothing))
+    Right selectedProtocol -> launchPluginTransport executablePath
+      (lpDirectory lp) (lpName lp) selectedProtocol startupTimeoutMs
   case launchResult of
     Left (err, mProcessHandle) -> do
       now <- getCurrentTime
@@ -700,8 +704,9 @@ connectLoadedPluginOnce executablePath lp = mask $ \restore -> do
         , lpRestartHistory = pruneRestartHistory policy now (lpRestartHistory lp)
         }
     Right launch -> do
-      let initialConnection = newRPCConnectionWithLimits (lprPayloadLimits launch)
-            (lpManifest lp) (lprTransport launch) (lpParams lp)
+      let initialConnection = (newRPCConnectionWithLimits (lprPayloadLimits launch)
+            (lpManifest lp) (lprTransport launch) (lpParams lp))
+            { rpcProtocolVersion = lprProtocolVersion launch }
           runtime = newOwnedPluginRuntime generation (Just initialConnection) (lprOwnedProcess launch)
       connectResult <- try @SomeException
         (restore (connectLaunchedPlugin lp policy startupTimeoutMicros runtime launch))

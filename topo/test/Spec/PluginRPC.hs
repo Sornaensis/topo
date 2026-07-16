@@ -90,6 +90,7 @@ import Topo.Plugin.RPC
 import Topo.Plugin.RPC.Manifest
 import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.Scope
+import Topo.Plugin.RPC.Stream
 import Topo.Plugin.RPC.ExternalDataSource
 import Topo.Pipeline (PipelineStage(..))
 import qualified Topo.Plugin as PluginCore
@@ -171,6 +172,12 @@ instance Arbitrary RPCMessageType where
     , MsgExternalDataSourceStatusRequest
     , MsgExternalDataSourceStatus
     , MsgExternalDataSourceOperationResult
+    , MsgStreamOpen
+    , MsgStreamData
+    , MsgStreamWindow
+    , MsgStreamEnd
+    , MsgStreamCancel
+    , MsgStreamError
     ]
 
 instance Arbitrary RPCEnvelope where
@@ -439,8 +446,8 @@ isExternalGrantResourceError _ = False
 manifestRuntimeJSON :: Value
 manifestRuntimeJSON = object
   [ "protocol" .= object
-      [ "min" .= currentProtocolVersion
-      , "max" .= currentProtocolVersion
+      [ "min" .= minimumSupportedProtocolVersion
+      , "max" .= minimumSupportedProtocolVersion
       ]
   ]
 
@@ -772,8 +779,8 @@ spec = describe "Plugin.RPC" $ do
       case Aeson.fromJSON manifestV3ProviderExample of
         Aeson.Success m -> do
           rmManifestVersion m `shouldBe` manifestV3
-          rmrProtocolMin (rmRuntime m) `shouldBe` currentProtocolVersion
-          rmrProtocolMax (rmRuntime m) `shouldBe` currentProtocolVersion
+          rmrProtocolMin (rmRuntime m) `shouldBe` minimumSupportedProtocolVersion
+          rmrProtocolMax (rmRuntime m) `shouldBe` minimumSupportedProtocolVersion
           ruiDisplayName (rmUiHints m) `shouldBe` Just "Civilization"
           case rmExternalDataSources m of
             [source] -> do
@@ -2105,6 +2112,40 @@ spec = describe "Plugin.RPC" $ do
         heartbeat <- takeHeartbeatResult done
         hbStatus heartbeat `shouldBe` "ok"
 
+    it "selects protocol 5 and narrows stream_v1 during handshake" $
+      withConnectedTransports "rpc-handshake-stream-v1" $ \host plugin -> do
+        let manifest = baseManifest
+              { rmRuntime = RPCManifestRuntime 4 5 Nothing Nothing }
+            conn = newRPCConnection manifest host Map.empty
+            peerProposal = (defaultStreamProposal 4096)
+              { spMaxConcurrentStreams = 2, spReceiveWindowBytes = 1024 }
+        rpcProtocolVersion conn `shouldBe` 5
+        done <- newEmptyMVar
+        _ <- forkIO (performHandshakeWithAuth conn Nothing Nothing >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        envType request `shouldBe` MsgHandshake
+        case envPayload request of
+          Object fields -> KM.member "stream_v1" fields `shouldBe` True
+          _ -> expectationFailure "protocol 5 handshake payload was not an object"
+        let ackBase = Aeson.toJSON (HandshakeAck 5 Nothing [] Nothing Nothing)
+            ackPayload = case ackBase of
+              Object fields -> Object (KM.insert "stream_v1" (Aeson.toJSON peerProposal) fields)
+              value -> value
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgHandshakeAck
+          , envPayload = ackPayload
+          , envRequestId = envRequestId request
+          }
+        result <- timeout transportTestTimeoutMicros (takeMVar done)
+        case result of
+          Just (Right conn') -> case rpcStreamV1 conn' of
+            Just negotiated -> do
+              nsvMaxFrameBytes negotiated `shouldBe` 4096
+              nsvMaxConcurrentStreams negotiated `shouldBe` 2
+              nsvReceiveWindowBytes negotiated `shouldBe` 1024
+            Nothing -> expectationFailure "protocol 5 did not retain stream negotiation"
+          _ -> expectationFailure "expected stream handshake success"
+
     it "accepts a plugin handshake with a matching launch session proof" $
       withConnectedTransports "rpc-handshake-auth-ok" $ \host plugin -> do
         let conn = newRPCConnection baseManifest host Map.empty
@@ -2125,7 +2166,7 @@ spec = describe "Plugin.RPC" $ do
         sendEnvelopeTo plugin RPCEnvelope
           { envType = MsgHandshakeAck
           , envPayload = Aeson.toJSON (HandshakeAck
-              currentProtocolVersion
+              minimumSupportedProtocolVersion
               Nothing
               []
               (Just "session-ok")
@@ -2134,7 +2175,7 @@ spec = describe "Plugin.RPC" $ do
           }
         result <- timeout transportTestTimeoutMicros (takeMVar done)
         case result of
-          Just (Right conn') -> rpcProtocolVersion conn' `shouldBe` currentProtocolVersion
+          Just (Right conn') -> rpcProtocolVersion conn' `shouldBe` minimumSupportedProtocolVersion
           _ -> expectationFailure "expected authenticated handshake success"
 
     it "rejects missing launch session proof during handshake" $
@@ -2151,7 +2192,7 @@ spec = describe "Plugin.RPC" $ do
         envType request `shouldBe` MsgHandshake
         sendEnvelopeTo plugin RPCEnvelope
           { envType = MsgHandshakeAck
-          , envPayload = Aeson.toJSON (HandshakeAck currentProtocolVersion Nothing [] Nothing Nothing)
+          , envPayload = Aeson.toJSON (HandshakeAck minimumSupportedProtocolVersion Nothing [] Nothing Nothing)
           , envRequestId = envRequestId request
           }
         result <- timeout transportTestTimeoutMicros (takeMVar done)
@@ -2174,7 +2215,7 @@ spec = describe "Plugin.RPC" $ do
         sendEnvelopeTo plugin RPCEnvelope
           { envType = MsgHandshakeAck
           , envPayload = Aeson.toJSON (HandshakeAck
-              currentProtocolVersion
+              minimumSupportedProtocolVersion
               Nothing
               []
               (Just "session-wrong")
@@ -2200,7 +2241,7 @@ spec = describe "Plugin.RPC" $ do
         envType request `shouldBe` MsgHandshake
         sendEnvelopeTo plugin RPCEnvelope
           { envType = MsgHandshakeAck
-          , envPayload = Aeson.toJSON (HandshakeAck currentProtocolVersion Nothing [] (Just "session-proof") (Just "wrong-proof"))
+          , envPayload = Aeson.toJSON (HandshakeAck minimumSupportedProtocolVersion Nothing [] (Just "session-proof") (Just "wrong-proof"))
           , envRequestId = envRequestId request
           }
         result <- timeout transportTestTimeoutMicros (takeMVar done)
@@ -3203,7 +3244,7 @@ performTestHandshakeAckWithDataDirectory :: Text -> RPCManifest -> Maybe Text ->
 performTestHandshakeAckWithDataDirectory name manifest mDataDirectory resources =
   withConnectedTransports name $ \host plugin -> do
     let conn = newRPCConnection manifest host Map.empty
-        ack = HandshakeAck currentProtocolVersion mDataDirectory resources Nothing Nothing
+        ack = HandshakeAck minimumSupportedProtocolVersion mDataDirectory resources Nothing Nothing
     done <- newEmptyMVar
     _ <- forkIO (performHandshakeWithAuth conn Nothing Nothing >>= putMVar done)
     request <- recvEnvelopeFrom plugin

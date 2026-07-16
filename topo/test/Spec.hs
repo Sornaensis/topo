@@ -55,6 +55,7 @@ import qualified Spec.DirectionalSlope
 import qualified Spec.TerrainFormModifiers
 import qualified Spec.PluginDependency
 import qualified Spec.PluginRPC
+import qualified Spec.PluginStream
 import qualified Spec.PluginDocs
 import qualified Spec.PluginIntegration
 import qualified Spec.DataResource
@@ -125,6 +126,7 @@ main = do
     Spec.TerrainFormModifiers.spec
     Spec.PluginDependency.spec
     Spec.PluginRPC.spec
+    Spec.PluginStream.spec
     Spec.PluginDocs.spec
     Spec.PluginIntegration.spec
     Spec.DataResource.spec

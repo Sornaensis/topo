@@ -37,7 +37,10 @@ module Topo.Plugin.RPC.Protocol
   , HandshakeAck(..)
   , HealthStatus(..)
     -- * Protocol version and launch authentication
+  , minimumSupportedProtocolVersion
   , currentProtocolVersion
+  , maximumSupportedProtocolVersion
+  , selectProtocolVersion
   , handshakeAuthProof
     -- * Encoding / decoding
   , encodeMessage
@@ -102,6 +105,12 @@ data RPCMessageType
   | MsgExternalDataSourceStatusRequest
   | MsgExternalDataSourceStatus
   | MsgExternalDataSourceOperationResult
+  | MsgStreamOpen
+  | MsgStreamData
+  | MsgStreamWindow
+  | MsgStreamEnd
+  | MsgStreamCancel
+  | MsgStreamError
   deriving (Eq, Ord, Show, Read, Generic)
 
 instance FromJSON RPCMessageType where
@@ -137,6 +146,12 @@ instance FromJSON RPCMessageType where
     "external_data_source_ack"               -> pure MsgExternalDataSourceOperationResult
     "external_data_source_grant_result"      -> pure MsgExternalDataSourceOperationResult
     "external_data_source_grant_ack"         -> pure MsgExternalDataSourceOperationResult
+    "stream_open"                            -> pure MsgStreamOpen
+    "stream_data"                            -> pure MsgStreamData
+    "stream_window"                          -> pure MsgStreamWindow
+    "stream_end"                             -> pure MsgStreamEnd
+    "stream_cancel"                          -> pure MsgStreamCancel
+    "stream_error"                           -> pure MsgStreamError
     "external_data_source_revoke_result"     -> pure MsgExternalDataSourceOperationResult
     "external_data_source_revoke_ack"        -> pure MsgExternalDataSourceOperationResult
     "external_data_source_revocation_result" -> pure MsgExternalDataSourceOperationResult
@@ -167,6 +182,12 @@ instance ToJSON RPCMessageType where
   toJSON MsgExternalDataSourceStatusRequest   = "external_data_source_status_request"
   toJSON MsgExternalDataSourceStatus          = "external_data_source_status"
   toJSON MsgExternalDataSourceOperationResult = "external_data_source_operation_result"
+  toJSON MsgStreamOpen                        = "stream_open"
+  toJSON MsgStreamData                        = "stream_data"
+  toJSON MsgStreamWindow                      = "stream_window"
+  toJSON MsgStreamEnd                         = "stream_end"
+  toJSON MsgStreamCancel                      = "stream_cancel"
+  toJSON MsgStreamError                       = "stream_error"
 
 ------------------------------------------------------------------------
 -- Envelope
@@ -437,15 +458,34 @@ instance ToJSON PluginError where
 -- Protocol version
 ------------------------------------------------------------------------
 
--- | Current protocol version.
---
--- Version 4 adds a launch-auth challenge to the startup handshake.  The host
--- sends a nonce in 'Handshake' and requires a 'HandshakeAck' session id plus an
--- HMAC-SHA256 proof derived from the launch auth token before marking a plugin
--- ready.  This is a deliberate major-version bump because older protocol v3
--- peers cannot prove they received the launch environment.
+-- | Lowest protocol supported by this host. Version 4 retains its unchanged
+-- single-frame envelopes and launch-auth handshake.
+minimumSupportedProtocolVersion :: Int
+minimumSupportedProtocolVersion = 4
+
+-- | Default compatibility protocol used by SDKs without stream support.
+-- Keeping this at 4 prevents a source-compatible SDK from advertising v5
+-- until it implements both paths.
 currentProtocolVersion :: Int
 currentProtocolVersion = 4
+
+-- | Highest host protocol. Version 5 adds negotiated @stream_v1@ application
+-- records while preserving the v4 framing.
+maximumSupportedProtocolVersion :: Int
+maximumSupportedProtocolVersion = 5
+
+-- | Select the highest host/manifest overlap before launching a process.
+selectProtocolVersion :: Int -> Int -> Either Text Int
+selectProtocolVersion peerMin peerMax
+  | peerMin > peerMax = Left "plugin protocol range minimum exceeds maximum"
+  | overlapMin > overlapMax = Left
+      ("plugin protocol range does not overlap host range "
+       <> Text.pack (show minimumSupportedProtocolVersion) <> ".."
+       <> Text.pack (show maximumSupportedProtocolVersion))
+  | otherwise = Right overlapMax
+  where
+    overlapMin = max minimumSupportedProtocolVersion peerMin
+    overlapMax = min maximumSupportedProtocolVersion peerMax
 
 -- | Compute the protocol v4 launch-auth proof.
 --
@@ -460,7 +500,7 @@ handshakeAuthProof sessionId authToken challenge =
     key = TextEncoding.encodeUtf8 authToken
     message = TextEncoding.encodeUtf8 (Text.intercalate "\n"
       [ "topo-plugin-launch-auth-v1"
-      , Text.pack (show currentProtocolVersion)
+      , Text.pack (show minimumSupportedProtocolVersion)
       , sessionId
       , challenge
       ])

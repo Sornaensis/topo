@@ -10,8 +10,8 @@ simulation nodes.
 ## Responsibilities
 
 - Own `RPCConnection`, the host's active session state for one plugin process.
-- Perform the protocol-4 handshake, including launch auth verification for
-  production launches, and maintain negotiated data-resource metadata.
+- Select the highest protocol-4/5 manifest overlap before launch, verify its
+  handshake echo and launch auth, and maintain negotiated data/stream metadata.
 - Send correlated generator, simulation, health, heartbeat, data-service, and
   external data-source status requests.
 - Send one-way shutdown, world-change, external grant, and revocation messages.
@@ -41,14 +41,16 @@ A normal host session follows this order:
    integration points.
 7. Use `rpcShutdown` and `closeTransport` during orderly shutdown.
 
-`newRPCConnection` starts with `currentProtocolVersion`, no runtime resources,
+`newRPCConnection` starts with the highest manifest/host protocol overlap, no runtime resources,
 default request timeout from `rmStartPolicy`, the default 64 MiB/48 MiB payload
 limits, and an empty runtime-failure slot. `newRPCConnectionWithLimits` preserves
 the same behavior while allowing embedded hosts to use an explicitly constructed
 `RPCPayloadLimits`. Production sessions receive the host-selected frame limit
 from the process launcher.
-`performHandshake` updates `rpcProtocolVersion`, `rpcDataDirectory`, and
-`rpcResources` after a successful `handshake_ack`.
+`performHandshake` updates `rpcProtocolVersion`, `rpcStreamV1`,
+`rpcDataDirectory`, and `rpcResources` after a successful `handshake_ack`.
+Protocol 4 leaves `rpcStreamV1` absent; protocol 5 requires a bounded
+`stream_v1` offer and stores the narrowed intersection.
 
 ## `RPCConnection` fields
 
@@ -58,7 +60,8 @@ from the process launcher.
 | `rpcTransport` | Connected transport handle. |
 | `rpcParams` | Current plugin parameter map sent on generator/simulation calls. |
 | `rpcPayloadLimits` | Symmetric frame and decoded terrain budgets used by every send, receive, and terrain decode. |
-| `rpcProtocolVersion` | Negotiated protocol version, currently expected to be `4`. |
+| `rpcProtocolVersion` | Highest manifest/host overlap (4 or 5), echoed by handshake. |
+| `rpcStreamV1` | Narrowed stream limits/features for v5; absent for v4. |
 | `rpcDataDirectory` | Resolved plugin data directory returned by handshake. |
 | `rpcResources` | Data-resource schemas returned by handshake. |
 | `rpcRequestTimeoutMicros` | Request timeout derived from `startPolicy.request_timeout_ms`. |

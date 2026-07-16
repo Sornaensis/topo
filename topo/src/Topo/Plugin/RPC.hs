@@ -77,6 +77,7 @@ module Topo.Plugin.RPC
   , module Topo.Plugin.RPC.Transport
   , module Topo.Plugin.RPC.Protocol
   , module Topo.Plugin.RPC.Scope
+  , module Topo.Plugin.RPC.Stream
   , module Topo.Plugin.RPC.DataService
   , module Topo.Plugin.RPC.ExternalDataSource
   ) where
@@ -142,6 +143,7 @@ import Topo.Plugin.RPC.Manifest
 import qualified Topo.Plugin.RPC.Payload as Payload
 import Topo.Plugin.RPC.Protocol
 import Topo.Plugin.RPC.Scope
+import Topo.Plugin.RPC.Stream
 import Topo.Plugin.RPC.Transport
 import Topo.Plugin.RPC.DataService
 import Topo.Plugin.RPC.ExternalDataSource
@@ -284,7 +286,9 @@ data RPCConnection = RPCConnection
   , rpcPayloadLimits   :: !RPCPayloadLimits
     -- ^ Symmetric framed and decoded payload limits for this session.
   , rpcProtocolVersion  :: !Int
-    -- ^ Negotiated protocol version from handshake.
+    -- ^ Highest manifest/host overlap, echoed by the handshake.
+  , rpcStreamV1 :: !(Maybe NegotiatedStreamV1)
+    -- ^ Negotiated v5 streaming limits; absent on the unchanged v4 path.
   , rpcDataDirectory    :: !(Maybe FilePath)
     -- ^ Validated relative archive directory from the handshake. This is never
     -- used as a source path; the host derives the source from its launch data
@@ -323,7 +327,9 @@ newRPCConnectionWithLimits payloadLimits manifest transport params = unsafePerfo
     , rpcTransport       = transport
     , rpcParams          = sanitizedParams
     , rpcPayloadLimits   = payloadLimits
-    , rpcProtocolVersion = currentProtocolVersion
+    , rpcProtocolVersion = either (const minimumSupportedProtocolVersion) id
+        (manifestProtocolVersion manifest)
+    , rpcStreamV1 = Nothing
     , rpcDataDirectory   = Nothing
     , rpcResources       = []
     , rpcRequestTimeoutMicros = timeoutMicrosFromMs (rspRequestTimeoutMs (rmStartPolicy manifest))
@@ -536,7 +542,16 @@ dispatchIncomingEnvelope session envelope =
       case envRequestId envelope of
         Nothing -> pure Nothing
         Just _ -> dispatchFinalEnvelope session envelope >> pure Nothing
+    MsgStreamOpen -> unsupportedStreamFrame
+    MsgStreamData -> unsupportedStreamFrame
+    MsgStreamWindow -> unsupportedStreamFrame
+    MsgStreamEnd -> unsupportedStreamFrame
+    MsgStreamCancel -> unsupportedStreamFrame
+    MsgStreamError -> unsupportedStreamFrame
     _ -> dispatchFinalEnvelope session envelope >> pure Nothing
+  where
+    unsupportedStreamFrame = pure (Just (RPCProtocolError
+      "stream frame reached an RPC session without a registered stream adapter"))
 
 dispatchFinalEnvelope :: RPCSession -> RPCEnvelope -> IO ()
 dispatchFinalEnvelope session envelope = do
@@ -705,7 +720,10 @@ invokeGeneratorWithProgress
   -> (PluginProgress -> IO ())
   -> (PluginLog -> IO ())
   -> IO (Either RPCError GeneratorResult)
-invokeGeneratorWithProgress conn seed terrainData onProgress onLog = do
+invokeGeneratorWithProgress conn seed terrainData onProgress onLog
+  | rpcProtocolVersion conn >= 5 = pure (Left (RPCProtocolError
+      "protocol 5 generator invocation requires an explicit scoped stream adapter"))
+  | otherwise = do
   let manifest = rpcManifest conn
       scopedTerrainData = generatorTerrainInputPayload manifest terrainData
       envelope = RPCEnvelope
@@ -737,7 +755,10 @@ invokeSimulation
   -> (PluginProgress -> IO ())
   -> (PluginLog -> IO ())
   -> IO (Either RPCError SimulationResult)
-invokeSimulation conn ctx overlay onProgress onLog = do
+invokeSimulation conn ctx overlay onProgress onLog
+  | rpcProtocolVersion conn >= 5 = pure (Left (RPCProtocolError
+      "protocol 5 simulation invocation requires an explicit scoped stream adapter"))
+  | otherwise = do
   let manifest = rpcManifest conn
       policy = simulationPayloadPolicy manifest
       terrainPayloadResult
@@ -826,14 +847,22 @@ performHandshakeWithAuth
   -- ^ Expected launch credentials and challenge for production startup.
   -> IO (Either RPCError RPCConnection)
 performHandshakeWithAuth conn worldPath mAuth = do
-  let envelope = RPCEnvelope
+  let selectedProtocol = rpcProtocolVersion conn
+      streamProposal = defaultStreamProposal
+        (fromIntegral (rplMaxFrameSizeBytes (rpcPayloadLimits conn)))
+      handshakeValue = Aeson.toJSON Handshake
+        { hsProtocolVersion  = selectedProtocol
+        , hsWorldPath        = worldPath
+        , hsHostCapabilities = ["query", "mutate"] <> ["launch_auth" | Just _ <- [mAuth]]
+        , hsAuthChallenge    = hacChallenge <$> mAuth
+        }
+      negotiatedHandshake = case handshakeValue of
+        Object fields | selectedProtocol >= 5 -> Object
+          (KM.insert "stream_v1" (Aeson.toJSON streamProposal) fields)
+        value -> value
+      envelope = RPCEnvelope
         { envType = MsgHandshake
-        , envPayload = Aeson.toJSON Handshake
-          { hsProtocolVersion  = currentProtocolVersion
-          , hsWorldPath        = worldPath
-          , hsHostCapabilities = ["query", "mutate"] <> ["launch_auth" | Just _ <- [mAuth]]
-          , hsAuthChallenge    = hacChallenge <$> mAuth
-          }
+        , envPayload = negotiatedHandshake
         , envRequestId = Nothing
         }
   result <- rpcCall
@@ -848,10 +877,10 @@ performHandshakeWithAuth conn worldPath mAuth = do
       MsgHandshakeAck ->
         case Aeson.fromJSON (envPayload env) of
           Aeson.Success ack
-            | haProtocolVersion ack /= currentProtocolVersion ->
+            | haProtocolVersion ack /= selectedProtocol ->
                 pure (Left (RPCProtocolError
-                  ("plugin protocol version mismatch: host="
-                   <> Text.pack (show currentProtocolVersion)
+                  ("plugin protocol version mismatch: selected="
+                   <> Text.pack (show selectedProtocol)
                    <> ", plugin="
                    <> Text.pack (show (haProtocolVersion ack)))))
             | Just authErr <- validateHandshakeAuth mAuth ack ->
@@ -862,17 +891,38 @@ performHandshakeWithAuth conn worldPath mAuth = do
                   ("invalid handshake data resources: " <> renderManifestErrors resourceErrors)))
             | otherwise -> case validateHandshakeDataDirectory (rpcManifest conn) (haDataDirectory ack) of
                 Left dirErr -> pure (Left (RPCProtocolError dirErr))
-                Right normalizedDataDirectory -> pure (Right conn
-                  { rpcProtocolVersion = haProtocolVersion ack
-                  , rpcDataDirectory   = fmap Text.unpack normalizedDataDirectory
-                  , rpcResources       = haResources ack
-                  })
+                Right normalizedDataDirectory ->
+                  case negotiateHandshakeStream selectedProtocol streamProposal (envPayload env) of
+                    Left streamErr -> pure (Left (RPCProtocolError streamErr))
+                    Right negotiated -> pure (Right conn
+                      { rpcProtocolVersion = haProtocolVersion ack
+                      , rpcStreamV1 = negotiated
+                      , rpcDataDirectory   = fmap Text.unpack normalizedDataDirectory
+                      , rpcResources       = haResources ack
+                      })
           Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
       MsgError ->
         pure (Left (decodePluginErrorPayload (envPayload env)))
       other ->
         pure (Left (RPCProtocolError
           ("unexpected response to handshake: " <> Text.pack (show other))))
+
+negotiateHandshakeStream
+  :: Int
+  -> StreamProposal
+  -> Value
+  -> Either Text (Maybe NegotiatedStreamV1)
+negotiateHandshakeStream protocolVersion localProposal payload
+  | protocolVersion <= 4 = Right Nothing
+  | otherwise = do
+      peerValue <- case payload of
+        Object fields -> maybe (Left "protocol 5 handshake_ack omits stream_v1") Right
+          (KM.lookup "stream_v1" fields)
+        _ -> Left "protocol 5 handshake_ack payload is not an object"
+      peerProposal <- case Aeson.fromJSON peerValue of
+        Aeson.Error err -> Left ("invalid stream_v1 handshake acknowledgement: " <> Text.pack err)
+        Aeson.Success proposal -> Right proposal
+      Just <$> negotiateStreamV1 localProposal peerProposal
 
 validateHandshakeAuth :: Maybe HandshakeAuthChallenge -> HandshakeAck -> Maybe Text
 validateHandshakeAuth Nothing _ = Nothing

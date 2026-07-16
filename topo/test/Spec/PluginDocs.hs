@@ -124,6 +124,12 @@ rpcMessageTypes =
   , MsgExternalDataSourceStatusRequest
   , MsgExternalDataSourceStatus
   , MsgExternalDataSourceOperationResult
+  , MsgStreamOpen
+  , MsgStreamData
+  , MsgStreamWindow
+  , MsgStreamEnd
+  , MsgStreamCancel
+  , MsgStreamError
   ]
 
 rpcMessageTags :: [Text]

@@ -19,6 +19,8 @@ The compiled contract lives in these modules:
   request, and status report payloads.
 - `Topo.Plugin.RPC.Payload` — terrain/world payload JSON and base64 chunk
   helpers.
+- `Topo.Plugin.RPC.Stream` — protocol-v5 `stream_v1` negotiation, typed records,
+  flow control, integrity, scope binding, and cleanup state machine.
 - `Topo.Plugin.RPC.Transport` — platform endpoint selection and length-prefixed
   frames.
 
@@ -29,10 +31,10 @@ payloads.
 
 ## Protocol version
 
-The current RPC protocol version is **4** (`currentProtocolVersion`). Manifest
-v3 advertises compatible protocol bounds in `runtime.protocol.min` and
-`runtime.protocol.max`; the host rejects plugins whose range does not include
-protocol 4.
+The host supports protocol versions **4 through 5** and selects the highest
+manifest/host overlap before launch. `TOPO_PLUGIN_PROTOCOL`, `handshake`, and
+`handshake_ack` must all carry that selected value. A v4-only manifest therefore
+continues to use its unchanged single-frame path.
 
 Protocol 4 includes the protocol 3 envelope, heartbeat, health, bounded-frame,
 data-service, and external data-source message groups, plus required production
@@ -144,6 +146,12 @@ messages, but new plugins should emit the canonical tags below.
 | `external_data_source_operation_result` | Plugin → Host | `RPCExternalDataSourceOperationResult` | ACK/result for grant or revoke application |
 | `external_data_source_status_request` | Host → Plugin | `RPCExternalDataSourceStatusRequest` | `external_data_source_status` or `error` |
 | `external_data_source_status` | Plugin → Host | `RPCExternalDataSourceStatusReport` | Final status response |
+| `stream_open` | Bidirectional | `StreamOpen` | Opens a parent-bound stream |
+| `stream_data` | Bidirectional | `StreamRecord` | One ordered independently coded record |
+| `stream_window` | Bidirectional | Stream ID, request ID, byte credit | Grants uncompressed receive credit |
+| `stream_end` | Bidirectional | `StreamEnd` | Verifies final totals and SHA-256 |
+| `stream_cancel` | Bidirectional | `StreamCancel` | Idempotently cancels stream and parent request |
+| `stream_error` | Bidirectional | `StreamProtocolError` | Reports request-local stream failure |
 
 ## Lifecycle payloads
 
@@ -181,7 +189,9 @@ Returned by the plugin:
 }
 ```
 
-The protocol version must equal 4. `data_directory`, when present, must be a
+The protocol version must exactly echo the pre-launch selection. Protocol 5
+also requires both handshake payloads to contain a `stream_v1` offer; the host
+intersects features and takes the lower value for every bound. `data_directory`, when present, must be a
 safe relative archive directory that matches or narrows manifest v3
 `dataDirectory`; absolute paths, drive prefixes, empty segments, `.`, and `..`
 are rejected. The host records this value as the world-save destination but
@@ -420,6 +430,51 @@ compact `error` carrying its message type, request ID, actual encoded bytes, and
 limit, and that callback/request is aborted without emitting a second response.
 If even the compact error or an underlying transport write fails, a structured
 `SDKSessionError` surfaces and the session transport closes.
+
+## Protocol 5 `stream_v1`
+
+Protocol 5 retains the v4 frame and envelope. Identity coding is mandatory and
+default. The `zstd` wire value is reserved but is not currently enabled because
+the compression backend cannot yet prove an exact single-frame boundary. Limits cover
+frame bytes, concurrent streams/requests, uncompressed bytes/items, aggregate
+staged bytes, receive-window bytes, and idle time. A peer can narrow but never
+widen the host offer.
+
+Every parent invocation and `stream_open` carries the same non-empty resolved
+scope ID. Payload version 1 requires `metadata` to be `{}`; future metadata keys
+must be versioned and scope-validated rather than used as an unchecked side
+channel. The receiver validates the terrain section and chunk against that
+exact snapshot/delta grant before base64 decode, decompression, or credit-backed
+allocation. Host stream IDs are odd, plugin IDs even, zero is reserved, and IDs
+are never reused on a connection. Every stream frame retains the parent request
+ID.
+
+Example open/data/window/end sequence (JSON frame payloads; each is still
+preceded by the 4-byte LE frame length):
+
+```json
+{"id":42,"type":"stream_open","payload":{"stream_id":2,"request_id":42,"scope_id":"<scope-sha256>","payload_kind":"terrain_snapshot","payload_version":1,"sections":["terrain"],"chunk_ids":[7],"metadata":{},"codec":"identity","total_items":1,"total_bytes":3,"sha256":"<final-sha256>"}}
+{"id":42,"type":"stream_window","payload":{"stream_id":2,"request_id":42,"credit":3}}
+{"id":42,"type":"stream_data","payload":{"stream_id":2,"request_id":42,"seq":0,"key":{"section":"terrain","chunk_id":7,"part":0,"offset":0},"compressed_length":3,"uncompressed_length":3,"data":"YWJj","sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}}
+{"id":42,"type":"stream_end","payload":{"stream_id":2,"request_id":42,"total_items":1,"total_bytes":3,"sha256":"<final-canonical-sha256>"}}
+```
+
+Sequence numbers start at zero and are contiguous. Canonical keys strictly
+increase; duplicate logical keys, reordering, data before credit, over-credit
+data, unknown/terminal IDs, declared/actual length mismatches, and record/final
+digest mismatches are rejected. Credit measures uncompressed bytes and is
+replenished only after a record is consumed or safely staged. A future zstd
+implementation must use independent records with declared lengths and reject
+expansion, truncation, trailing/multi-frame content, and aggregate-limit bypass
+before the codec can be advertised.
+A parent result is not final until all referenced streams end and are consumed.
+Timeout, callback failure, cancel/error, disconnect, or malformed stream removes
+registries and staged data, so partial content is never exposed as success. Live
+adapters must call `receiveStreamEnvelopeWithFrameBytes` with the original length
+prefix (not a re-encoded JSON size) and bind the state-machine effects to the
+serialized writer/receiver. Until such an adapter is registered, the high-level
+RPC invocation API fails closed for protocol 5 rather than sending an unscoped
+request or treating a stream frame as a final result.
 
 ## Backend-neutral external data-source payloads
 

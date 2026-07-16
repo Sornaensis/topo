@@ -93,7 +93,6 @@ import Topo.Plugin.RPC
   , claimRPCSupervisorMonitor
   , releaseRPCSupervisorMonitor
   )
-import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
 import Topo.Plugin.RPC.Transport
   ( Transport
   , TransportConfig(..)
@@ -304,12 +303,14 @@ data LaunchPluginResult = LaunchPluginResult
   , lprSessionId :: !Text
   , lprAuthToken :: !Text
   , lprPayloadLimits :: !RPCPayloadLimits
+  , lprProtocolVersion :: !Int
   }
 
 launchPluginTransport
   :: FilePath
   -> FilePath
   -> Text
+  -> Int
   -> Int
   -> IO (Either (Text, Maybe OwnedPluginProcess) LaunchPluginResult)
 launchPluginTransport = launchPluginTransportViaEndpoint
@@ -321,13 +322,14 @@ launchPluginTransportViaEndpoint
   -> FilePath
   -> Text
   -> Int
+  -> Int
   -> IO (Either (Text, Maybe OwnedPluginProcess) LaunchPluginResult)
-launchPluginTransportViaEndpoint executablePath workingDir pluginName startupTimeoutMillis = do
+launchPluginTransportViaEndpoint executablePath workingDir pluginName protocolVersion startupTimeoutMillis = do
   limitsResult <- readRPCPayloadLimitsFromEnvironment
   case limitsResult of
     Left err -> pure (Left ("invalid RPC payload limits: " <> err, Nothing))
     Right limits -> launchPluginTransportViaEndpointWithLimits
-      limits executablePath workingDir pluginName startupTimeoutMillis
+      limits executablePath workingDir pluginName protocolVersion startupTimeoutMillis
 
 launchPluginTransportViaEndpointWithLimits
   :: RPCPayloadLimits
@@ -335,8 +337,9 @@ launchPluginTransportViaEndpointWithLimits
   -> FilePath
   -> Text
   -> Int
+  -> Int
   -> IO (Either (Text, Maybe OwnedPluginProcess) LaunchPluginResult)
-launchPluginTransportViaEndpointWithLimits limits executablePath workingDir pluginName startupTimeoutMillis = mask $ \restore -> do
+launchPluginTransportViaEndpointWithLimits limits executablePath workingDir pluginName protocolVersion startupTimeoutMillis = mask $ \restore -> do
   listenerFailure <- startupFailureInjected "listener"
   serverResult <- if listenerFailure
     then pure (Left (TransportConnectionFailed "forced listener creation failure"))
@@ -361,7 +364,7 @@ launchPluginTransportViaEndpointWithLimits limits executablePath workingDir plug
               if processFailure
                 then throwIO (userError "forced process creation failure")
                 else pure ()
-              launchEnvironment <- endpointEnvironment limits (tsEndpoint server) pluginName workingDir
+              launchEnvironment <- endpointEnvironment limits protocolVersion (tsEndpoint server) pluginName workingDir
               processHandle <- createContainedPluginProcess
                 preparedContainment
                 executablePath
@@ -424,6 +427,7 @@ finishOwnedLaunch _restore server launchEnvironment ownershipResult =
               , lprSessionId = leSessionId launchEnvironment
               , lprAuthToken = leAuthToken launchEnvironment
               , lprPayloadLimits = lePayloadLimits launchEnvironment
+              , lprProtocolVersion = leProtocolVersion launchEnvironment
               })
 
 data LaunchEnvironment = LaunchEnvironment
@@ -431,10 +435,11 @@ data LaunchEnvironment = LaunchEnvironment
   , leSessionId :: !Text
   , leAuthToken :: !Text
   , lePayloadLimits :: !RPCPayloadLimits
+  , leProtocolVersion :: !Int
   }
 
-endpointEnvironment :: RPCPayloadLimits -> TransportEndpoint -> Text -> FilePath -> IO LaunchEnvironment
-endpointEnvironment limits endpoint pluginName workingDir = do
+endpointEnvironment :: RPCPayloadLimits -> Int -> TransportEndpoint -> Text -> FilePath -> IO LaunchEnvironment
+endpointEnvironment limits protocolVersion endpoint pluginName workingDir = do
   inherited <- getEnvironment
   launchSession <- Text.pack <$> freshLaunchSecret "session"
   authToken <- Text.pack <$> freshLaunchSecret "auth"
@@ -443,7 +448,7 @@ endpointEnvironment limits endpoint pluginName workingDir = do
   let dataRoot = workingDir </> "data"
       launchVars =
         [ (pluginIdEnv, Text.unpack pluginName)
-        , (pluginProtocolEnv, show currentProtocolVersion)
+        , (pluginProtocolEnv, show protocolVersion)
         , (pluginEndpointEnv, teAddress endpoint)
         , (pluginEndpointKindEnv, Text.unpack (endpointKindText (teKind endpoint)))
         , (pluginSessionEnv, Text.unpack launchSession)
@@ -464,6 +469,7 @@ endpointEnvironment limits endpoint pluginName workingDir = do
     , leSessionId = launchSession
     , leAuthToken = authToken
     , lePayloadLimits = limits
+    , leProtocolVersion = protocolVersion
     }
 
 isAllowedInheritedRuntimeEnvKey :: String -> Bool

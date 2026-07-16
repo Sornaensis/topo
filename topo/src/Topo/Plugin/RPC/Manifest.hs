@@ -34,6 +34,7 @@ module Topo.Plugin.RPC.Manifest
   , manifestV3
   , RPCManifestRuntime(..)
   , defaultRPCManifestRuntime
+  , manifestProtocolVersion
   , RPCUIHints(..)
   , defaultRPCUIHints
   , RPCGeneratorDecl(..)
@@ -132,7 +133,8 @@ import Topo.Plugin.DataResource
   , DataResourceSchema(..)
   , validateDataResource
   )
-import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
+import Topo.Plugin.RPC.Protocol
+  ( maximumSupportedProtocolVersion, minimumSupportedProtocolVersion, selectProtocolVersion )
 import Topo.Plugin.RPC.Scope
   ( RPCChunkSelector(..)
   , RPCInvocationScopeDecl(..)
@@ -592,11 +594,17 @@ data RPCManifestRuntime = RPCManifestRuntime
 
 defaultRPCManifestRuntime :: RPCManifestRuntime
 defaultRPCManifestRuntime = RPCManifestRuntime
-  { rmrProtocolMin = currentProtocolVersion
-  , rmrProtocolMax = currentProtocolVersion
+  { rmrProtocolMin = minimumSupportedProtocolVersion
+  , rmrProtocolMax = minimumSupportedProtocolVersion
   , rmrTopoMin = Nothing
   , rmrTopoMax = Nothing
   }
+
+-- | Highest protocol in the manifest/host overlap. Callers use this before
+-- launch and require the handshake acknowledgement to echo the same value.
+manifestProtocolVersion :: RPCManifest -> Either Text Int
+manifestProtocolVersion manifest = selectProtocolVersion
+  (rmrProtocolMin (rmRuntime manifest)) (rmrProtocolMax (rmRuntime manifest))
 
 instance FromJSON RPCManifestRuntime where
   parseJSON = withObject "RPCManifestRuntime" $ \o -> do
@@ -1586,7 +1594,7 @@ manifestV3ProviderExample = object
   , "name" .= ("civilization" :: Text)
   , "version" .= ("1.0.0" :: Text)
   , "runtime" .= object
-      [ "protocol" .= object ["min" .= currentProtocolVersion, "max" .= currentProtocolVersion]
+      [ "protocol" .= object ["min" .= minimumSupportedProtocolVersion, "max" .= minimumSupportedProtocolVersion]
       , "topo" .= object ["min" .= ("1.0" :: Text)]
       ]
   , "description" .= ("Civilization simulation overlay and settlement catalogue" :: Text)
@@ -1749,7 +1757,7 @@ manifestV3ConsumerExample = object
   , "name" .= ("trade-routes" :: Text)
   , "version" .= ("0.3.0" :: Text)
   , "runtime" .= object
-      [ "protocol" .= object ["min" .= currentProtocolVersion, "max" .= currentProtocolVersion]
+      [ "protocol" .= object ["min" .= minimumSupportedProtocolVersion, "max" .= minimumSupportedProtocolVersion]
       ]
   , "description" .= ("Trade route simulation that consumes settlement data" :: Text)
   , "ui" .= object
@@ -2216,8 +2224,8 @@ validatePluginName name =
 validateRuntime :: RPCManifestRuntime -> [ManifestError]
 validateRuntime runtime = concat
   [ [ ManifestProtocolRangeInvalid pmin pmax | pmin > pmax ]
-  , [ ManifestProtocolUnsupported currentProtocolVersion pmin pmax
-    | currentProtocolVersion < pmin || currentProtocolVersion > pmax
+  , [ ManifestProtocolUnsupported maximumSupportedProtocolVersion pmin pmax
+    | pmax < minimumSupportedProtocolVersion || pmin > maximumSupportedProtocolVersion
     ]
   , [ ManifestInvalidField "runtime.topo.min" "topo minimum version must be non-empty when present."
     | Just value <- [rmrTopoMin runtime]

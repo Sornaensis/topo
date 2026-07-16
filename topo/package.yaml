@@ -104,6 +104,7 @@ library:
     - Topo.Plugin.RPC.Manifest
     - Topo.Plugin.RPC.Protocol
     - Topo.Plugin.RPC.Scope
+    - Topo.Plugin.RPC.Stream
     - Topo.Plugin.RPC.Transport
     - Topo.Command.Types
     - Topo.Config
@@ -148,6 +149,7 @@ tests:
       - base
       - topo
       - aeson
+      - base64-bytestring
       - binary
       - bytestring
       - hspec

@@ -232,6 +232,7 @@ import Topo.Plugin.RPC.Protocol
   , decodeMessage
   , encodeMessage
   , handshakeAuthProof
+  , maximumSupportedProtocolVersion
   )
 import Topo.Plugin.RPC.Transport
   ( Transport(..)
@@ -5870,7 +5871,7 @@ missingRuntimeManifestFor name = BSC.pack $
 
 invalidProtocolManifestFor :: String -> BS.ByteString
 invalidProtocolManifestFor name = BSC.pack $
-  let unsupported = show (currentProtocolVersion + 1)
+  let unsupported = show (maximumSupportedProtocolVersion + 1)
   in "{\n"
     <> "  \"manifestVersion\": 3,\n"
     <> "  \"name\": \"" <> name <> "\",\n"

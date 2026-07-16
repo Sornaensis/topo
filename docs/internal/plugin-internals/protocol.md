@@ -3,7 +3,7 @@
 > **Module:** `Topo.Plugin.RPC.Protocol`
 > **Companion modules:** `Topo.Plugin.RPC.DataService`,
 > `Topo.Plugin.RPC.ExternalDataSource`, `Topo.Plugin.RPC.Payload`,
-> `Topo.Plugin.RPC.Transport`
+> `Topo.Plugin.RPC.Stream`, `Topo.Plugin.RPC.Transport`
 
 This document records the compiled host↔plugin RPC contract. It is not a
 separate specification: the source of truth is the Haskell types and JSON
@@ -14,9 +14,11 @@ payloads.
 
 ## Version and envelope
 
-`currentProtocolVersion` is **4**. The corresponding manifest contract is
-manifest v3, whose `runtime.protocol.min`/`max` range must include `4`.
-Protocol 4 is a major-version bump for production launch authentication: the
+The supported host range is **4..5**. `currentProtocolVersion` remains the
+v4 compatibility default, while `maximumSupportedProtocolVersion` is 5. The host selects the highest manifest overlap before
+launch and requires the environment and both handshake messages to echo it.
+Protocol 4 remains byte-for-byte compatible and is the default for SDKs without
+stream support. Protocol 4 was a major-version bump for production launch authentication: the
 host sends an `auth_challenge` nonce during startup and requires the plugin to
 return the launch `session_id` and an HMAC-SHA256 `auth_proof` before the
 supervisor can mark the plugin ready.
@@ -67,6 +69,12 @@ emit the canonical tags below.
 | `MsgExternalDataSourceOperationResult` | `external_data_source_operation_result` | Plugin → Host | `RPCExternalDataSourceOperationResult` |
 | `MsgExternalDataSourceStatusRequest` | `external_data_source_status_request` | Host → Plugin | `RPCExternalDataSourceStatusRequest` |
 | `MsgExternalDataSourceStatus` | `external_data_source_status` | Plugin → Host | `RPCExternalDataSourceStatusReport` |
+| `MsgStreamOpen` | `stream_open` | Bidirectional | `StreamOpen` |
+| `MsgStreamData` | `stream_data` | Bidirectional | `StreamRecord` |
+| `MsgStreamWindow` | `stream_window` | Bidirectional | Uncompressed byte credit |
+| `MsgStreamEnd` | `stream_end` | Bidirectional | `StreamEnd` |
+| `MsgStreamCancel` | `stream_cancel` | Bidirectional | `StreamCancel` |
+| `MsgStreamError` | `stream_error` | Bidirectional | `StreamProtocolError` |
 
 ## Core payload types
 
@@ -126,6 +134,33 @@ proof is `handshakeAuthProof` over the launch session id,
 `TOPO_PLUGIN_AUTH_TOKEN`, and challenge; the token is not sent on the wire.
 `WorldChanged` carries a new optional advisory `world_path` and expects no
 response.
+
+For selected protocol 5, both handshake payloads contain `stream_v1` proposals.
+`negotiateStreamV1` requires identity and intersects codecs while taking the
+minimum of every frame, registry, aggregate, item, byte, window, and idle bound.
+
+## Protocol-v5 stream state
+
+`Topo.Plugin.RPC.Stream` is a reusable bidirectional demultiplexer. Host IDs are
+odd, plugin IDs even, zero is reserved, and the used-ID set prevents reuse.
+Every frame repeats its parent request ID. `stream_open` binds its exact resolved
+scope and payload kind (`terrain_snapshot` or `terrain_delta`); section/chunk
+membership is checked before base64 decode or decompression. Data sequences are
+contiguous from zero and canonical `(section, chunk_id, part, offset)` keys
+strictly increase.
+
+Receive windows grant uncompressed bytes. Data before credit or beyond credit is
+connection state corruption. Record lengths and SHA-256 are verified after
+independent identity decode; zstd remains reserved until exact single-frame
+boundary validation is available. Final canonical SHA-256 and byte/item totals
+must match both open declarations and `stream_end`. Concurrent stream/request,
+per-stream decoded, item, aggregate staged, deadline, and idle limits are all
+bounded. Request-local integrity/scope/quota failures cancel that parent;
+unknown IDs, sequence corruption, role violations, and credit corruption close
+the connection. Cancellation is idempotent, and timeout, callback failure,
+peer error/cancel, disconnect, or malformed input deterministically releases
+registries and staged records. Parent results remain unobservable until all
+referenced streams end successfully and are consumed.
 
 ## Data-service protocol
 
