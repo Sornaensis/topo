@@ -241,7 +241,14 @@ handleEvent inputContext event = do
             _ -> do
               uiSnap' <- getUiSnapshot uiHandle
               let editor = uiEditor uiSnap'
-              if editorActive editor
+                  inputBarrierActive =
+                    uiMenuMode uiSnap' /= MenuNone
+                      || (uiShowConfig uiSnap'
+                          && uiConfigTab uiSnap' == ConfigData
+                          && dbsDeleteConfirm (uiDataBrowser uiSnap'))
+              if inputBarrierActive
+                then handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
+                else if editorActive editor
                 then do
                   -- Check editor toolbar widgets first
                   let SDL.P (V2 bx by) = SDL.mouseButtonEventPos btnEvent

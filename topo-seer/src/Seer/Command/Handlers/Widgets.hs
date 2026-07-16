@@ -9,12 +9,17 @@ module Seer.Command.Handlers.Widgets
   ( handleClickWidget
   , handleListWidgets
   , handleGetWidgetState
+  , WidgetClickSupport(..)
+  , WidgetCapability(..)
+  , widgetCapabilities
+  , widgetCapability
   , dataBrowserWidgetIds
   , widgetState
   ) where
 
 import Control.Monad (when)
 import Data.Aeson (Value(..), object, (.=), (.:))
+import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.Types as Aeson
 import Data.List (find)
 import Data.Map.Strict (Map)
@@ -74,6 +79,7 @@ import Seer.Config.SliderRegistry (SliderDef(..), SliderPart(..), sliderDefsForT
 import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
 import Seer.Config.SliderUi (sliderValueForId)
 import Seer.Service.Types (ServiceError(..), ServiceResponse(..), ServiceResult)
+import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Command.Types (SeerResponse(..), okResponse, errResponse)
 import Topo.Pipeline.Stage (parseStageId, stageCanonicalName, allBuiltinStageIds)
 import qualified Seer.DataBrowser.AppService as DataBrowser
@@ -87,12 +93,15 @@ import Seer.DataBrowser.Model
   , dataBrowserPendingEnvelopeValue
   )
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
-import Seer.Editor.Types (EditorState(..))
+import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..))
+import UI.Component (ComponentId(..), componentForWidget)
 import UI.Components.PipelineControls (pipelineParamToggleValue)
 import UI.Layout (layoutFor)
+import UI.WidgetId (widgetIdFromText, widgetIdToText)
 import UI.WidgetTree
   ( Widget(..)
   , WidgetId(..)
+  , buildActiveWidgets
   , buildDataBrowserWidgets
   , buildDataDetailWidgetsForState
   )
@@ -102,8 +111,8 @@ import UI.WidgetTree
 -- ---------------------------------------------------------------------------
 
 -- | Convert a 'WidgetId' to a colon-separated text representation.
-widgetIdToText :: WidgetId -> Text
-widgetIdToText wid = case wid of
+legacyWidgetIdToText :: WidgetId -> Text
+legacyWidgetIdToText wid = case wid of
   -- Nullary constructors
   WidgetGenerate               -> "WidgetGenerate"
   WidgetLeftToggle             -> "WidgetLeftToggle"
@@ -235,8 +244,8 @@ widgetIdToText wid = case wid of
   WidgetEditorCycleNext i      -> "WidgetEditorCycleNext:" <> Text.pack (show i)
 
 -- | Parse a colon-separated text representation back to 'WidgetId'.
-parseWidgetId :: Text -> Maybe WidgetId
-parseWidgetId t
+legacyParseWidgetId :: Text -> Maybe WidgetId
+legacyParseWidgetId t
   | Just wid <- Map.lookup t nullaryWidgetMap = Just wid
   -- SliderId params
   | Just rest <- Text.stripPrefix "WidgetSliderMinus:" t
@@ -422,7 +431,7 @@ handleClickWidget ctx reqId params = do
     Nothing ->
       pure $ errResponse reqId "missing or invalid 'widget_id' parameter"
     Just widText ->
-      case parseWidgetId widText of
+      case widgetIdFromText widText of
         Nothing ->
           pure $ errResponse reqId ("unknown widget_id: " <> widText)
         Just wid -> do
@@ -888,11 +897,470 @@ swapWithNext target (a:b:rest)
 -- list_widgets
 -- ---------------------------------------------------------------------------
 
+-- | How a live widget can be driven by remote automation.
+data WidgetClickSupport
+  = WidgetClickable
+  | WidgetArgumentRequired
+  | WidgetLocalOnly
+  | WidgetNonClickable
+  | WidgetCompatibilityOnly
+  deriving (Eq, Show)
+
+data WidgetCapability = WidgetCapability
+  { wcWidgetId :: !WidgetId
+  , wcComponent :: !Text
+  , wcCategory :: !Text
+  , wcActive :: !(Maybe Bool)
+  , wcVisible :: !Bool
+  , wcEnabled :: !Bool
+  , wcPreconditions :: ![Text]
+  , wcSupport :: !WidgetClickSupport
+  , wcRequiredArgument :: !(Maybe Value)
+  , wcAlternative :: !(Maybe Text)
+  } deriving (Eq, Show)
+
+widgetCapabilities :: UiState -> [WidgetCapability]
+widgetCapabilities uiSnap =
+  map (widgetCapability uiSnap . widgetId) activeWidgets
+  where
+    commandLayout = layoutFor (V2 1200 900) 0
+    activeWidgets = buildActiveWidgets uiSnap commandLayout
+
+widgetCapability :: UiState -> WidgetId -> WidgetCapability
+widgetCapability uiSnap wid = WidgetCapability
+  { wcWidgetId = wid
+  , wcComponent = unComponentId (componentForWidget wid)
+  , wcCategory = widgetCategory wid
+  , wcActive = widgetActive uiSnap wid
+  , wcVisible = visible
+  , wcEnabled = visible && null unmet
+  , wcPreconditions = unmet
+  , wcSupport = support
+  , wcRequiredArgument = requiredArgument
+  , wcAlternative = alternative
+  }
+  where
+    visible = wid `elem` map widgetId (buildActiveWidgets uiSnap commandLayout)
+    commandLayout = layoutFor (V2 1200 900) 0
+    stateConditions = widgetPreconditions uiSnap wid
+    unmet
+      | visible = stateConditions
+      | otherwise = "widget is not visible in the current UI state" : stateConditions
+    (support, requiredArgument, alternative) = widgetSupport wid
+
+widgetSupport :: WidgetId -> (WidgetClickSupport, Maybe Value, Maybe Text)
+widgetSupport wid = case wid of
+  WidgetViewElevation -> compatibility
+  WidgetViewBiome -> compatibility
+  WidgetViewClimate -> compatibility
+  WidgetViewWeather -> compatibility
+  WidgetViewMoisture -> compatibility
+  WidgetViewPrecip -> compatibility
+  WidgetViewPrecipCurrent -> compatibility
+  WidgetViewVegetation -> compatibility
+  WidgetViewTerrainForm -> compatibility
+  WidgetViewPlateId -> compatibility
+  WidgetViewPlateBoundary -> compatibility
+  WidgetViewPlateHardness -> compatibility
+  WidgetViewPlateCrust -> compatibility
+  WidgetViewPlateAge -> compatibility
+  WidgetViewPlateHeight -> compatibility
+  WidgetViewPlateVelocity -> compatibility
+  WidgetViewCloud -> compatibility
+  WidgetViewCloudTypical -> compatibility
+  WidgetPresetLoadItem -> required "item_index" "zero-based filtered preset index"
+  WidgetWorldLoadItem -> required "item_index" "zero-based filtered world index"
+  WidgetMenuExit -> (WidgetLocalOnly, Nothing, Nothing)
+  WidgetPluginParamSlider _ _ -> nonClickable "set_plugin_param"
+  WidgetSeedValue -> nonClickable "set_seed"
+  WidgetSeedRandom -> nonClickable "set_seed"
+  WidgetViewOverlayPrev -> nonClickable "cycle_overlay"
+  WidgetViewOverlayNext -> nonClickable "cycle_overlay"
+  WidgetViewFieldPrev -> nonClickable "cycle_overlay_field"
+  WidgetViewFieldNext -> nonClickable "cycle_overlay_field"
+  WidgetOverlayManager -> nonClickable "get_overlays"
+  WidgetOverlaySchema -> nonClickable "get_overlay_schema"
+  WidgetOverlayProvenance -> nonClickable "get_overlay_provenance"
+  WidgetOverlayExport -> nonClickable "export_overlay_data"
+  WidgetOverlayImportValidate -> nonClickable "validate_overlay_import"
+  WidgetLogHeader -> nonClickable "set_log_collapsed"
+  WidgetMenuSave -> nonClickable "save_world"
+  WidgetMenuLoad -> nonClickable "load_world"
+  WidgetConfigPresetSave -> nonClickable "save_preset"
+  WidgetConfigPresetLoad -> nonClickable "load_preset"
+  WidgetPresetSaveOk -> nonClickable "dialog_confirm"
+  WidgetPresetSaveCancel -> nonClickable "dialog_cancel"
+  WidgetPresetLoadOk -> nonClickable "dialog_confirm"
+  WidgetPresetLoadCancel -> nonClickable "dialog_cancel"
+  WidgetWorldSaveOk -> nonClickable "dialog_confirm"
+  WidgetWorldSaveCancel -> nonClickable "dialog_cancel"
+  WidgetWorldLoadOk -> nonClickable "dialog_confirm"
+  WidgetWorldLoadCancel -> nonClickable "dialog_cancel"
+  WidgetEditorTool _ -> nonClickable "editor_set_tool"
+  WidgetEditorRadiusMinus -> nonClickable "editor_set_brush"
+  WidgetEditorRadiusPlus -> nonClickable "editor_set_brush"
+  WidgetEditorClose -> nonClickable "editor_toggle"
+  WidgetEditorReopen -> nonClickable "editor_toggle"
+  WidgetEditorParamMinus _ -> nonClickable "editor_set_brush"
+  WidgetEditorParamPlus _ -> nonClickable "editor_set_brush"
+  WidgetEditorCyclePrev _ -> nonClickable "editor_set_brush"
+  WidgetEditorCycleNext _ -> nonClickable "editor_set_brush"
+  WidgetEditorFalloffPrev -> nonClickable "editor_set_brush"
+  WidgetEditorFalloffNext -> nonClickable "editor_set_brush"
+  _ -> (WidgetClickable, Nothing, Nothing)
+  where
+    compatibility = (WidgetCompatibilityOnly, Nothing, Just "set_view_mode")
+    nonClickable operation = (WidgetNonClickable, Nothing, Just operation)
+    required :: Text -> Text -> (WidgetClickSupport, Maybe Value, Maybe Text)
+    required name description =
+      ( WidgetArgumentRequired
+      , Just (object
+          [ "name" .= name
+          , "type" .= ("integer" :: Text)
+          , "minimum" .= (0 :: Int)
+          , "description" .= description
+          ])
+      , Nothing
+      )
+
+widgetPreconditions :: UiState -> WidgetId -> [Text]
+widgetPreconditions uiSnap wid = case wid of
+  WidgetGenerate | uiGenerating uiSnap -> ["world generation is already in progress"]
+  WidgetConfigReset | uiGenerating uiSnap -> ["world generation is in progress"]
+  WidgetConfigRevert | uiGenerating uiSnap -> ["world generation is in progress"]
+  WidgetConfigTabData
+    | dbsPendingRequest dbs /= Nothing -> ["a Data Browser request is already pending"]
+  WidgetViewBasisAverage | not (weatherBasisEnabled uiSnap) -> [weatherBasisRequirement]
+  WidgetViewBasisCurrent | not (weatherBasisEnabled uiSnap) -> [weatherBasisRequirement]
+  WidgetSimTick -> simulationConditions
+  WidgetSimAutoTick -> simulationConditions
+  WidgetPluginMoveUp name
+    | name `notElem` uiPluginNames uiSnap -> ["plugin is not loaded"]
+    | take 1 (uiPluginNames uiSnap) == [name] -> ["plugin is already first"]
+  WidgetPluginMoveDown name
+    | name `notElem` uiPluginNames uiSnap -> ["plugin is not loaded"]
+    | take 1 (reverse (uiPluginNames uiSnap)) == [name] -> ["plugin is already last"]
+  WidgetPluginToggle name
+    | name `notElem` uiPluginNames uiSnap -> ["plugin is not loaded"]
+  WidgetPluginExpand name
+    | name `notElem` uiPluginNames uiSnap -> ["plugin is not loaded"]
+  WidgetPluginParamSlider pluginName _
+    | pluginName `notElem` uiPluginNames uiSnap -> ["plugin is not loaded"]
+  WidgetPluginParamCheck pluginName _
+    | pluginName `notElem` uiPluginNames uiSnap -> ["plugin is not loaded"]
+  WidgetPresetSaveOk
+    | Text.null (Text.strip (uiPresetInput uiSnap)) -> ["preset name is required"]
+  WidgetPresetLoadOk
+    | not presetSelectionValid -> ["select a filtered preset"]
+  WidgetPresetLoadItem
+    | null filteredPresets -> ["no presets match the current filter"]
+  WidgetWorldSaveOk
+    | Text.null (Text.strip (uiWorldSaveInput uiSnap)) -> ["world name is required"]
+  WidgetWorldLoadOk
+    | not worldSelectionValid -> ["select a filtered world"]
+  WidgetWorldLoadItem
+    | null filteredWorlds -> ["no worlds match the current filter"]
+  WidgetDataPagePrev _ _
+    | dbsPageOffset dbs <= 0 -> ["already at the first page"]
+  WidgetDataPageNext _ _
+    | Just total <- dbsTotalCount dbs
+    , dbsPageOffset dbs + length (dbsRecords dbs) >= total -> ["already at the last page"]
+  WidgetDataEditSave
+    | not (null (dbsValidationErrors dbs)) -> ["data browser validation errors must be resolved"]
+  WidgetEditorRadiusMinus
+    | brushRadius (editorBrush editor) <= 0 -> ["editor radius is at its minimum"]
+  WidgetEditorRadiusPlus
+    | brushRadius (editorBrush editor) >= 6 -> ["editor radius is at its maximum"]
+  WidgetEditorParamMinus slot
+    | editorParamAtMinimum editor slot -> ["editor parameter is at its minimum"]
+  WidgetEditorParamPlus slot
+    | editorParamAtMaximum editor slot -> ["editor parameter is at its maximum"]
+  WidgetSliderMinus sliderId
+    | sliderValueForId uiSnap sliderId <= 0 -> ["slider is at its minimum"]
+  WidgetSliderPlus sliderId
+    | sliderValueForId uiSnap sliderId >= 1 -> ["slider is at its maximum"]
+  _ -> []
+  where
+    dbs = uiDataBrowser uiSnap
+    editor = uiEditor uiSnap
+    filteredPresets = filter (matches (uiPresetFilter uiSnap)) (uiPresetList uiSnap)
+    presetSelectionValid =
+      uiPresetSelected uiSnap >= 0 && uiPresetSelected uiSnap < length filteredPresets
+    filteredWorlds = filter (matches (uiWorldFilter uiSnap) . wsmName) (uiWorldList uiSnap)
+    worldSelectionValid =
+      uiWorldSelected uiSnap >= 0 && uiWorldSelected uiSnap < length filteredWorlds
+    matches query candidate =
+      Text.toLower query `Text.isInfixOf` Text.toLower candidate
+    editorParamAtMinimum currentEditor slot = case editorTool currentEditor of
+      ToolRaise -> slot == 0 && strength <= 0.005
+      ToolLower -> slot == 0 && strength <= 0.005
+      ToolSmooth -> slot == 0 && editorSmoothPasses currentEditor <= 1
+      ToolFlatten -> slot == 0 && strength <= 0.01
+      ToolNoise
+        | slot == 0 -> editorNoiseFrequency currentEditor <= 0.5
+        | slot == 1 -> strength <= 0.005
+      ToolSetHardness -> slot == 0 && editorHardnessTarget currentEditor <= 0
+      ToolErode -> slot == 0 && editorErodePasses currentEditor <= 1
+      _ -> False
+      where
+        strength = brushStrength (editorBrush currentEditor)
+    editorParamAtMaximum currentEditor slot = case editorTool currentEditor of
+      ToolRaise -> slot == 0 && strength >= 0.2
+      ToolLower -> slot == 0 && strength >= 0.2
+      ToolSmooth -> slot == 0 && editorSmoothPasses currentEditor >= 5
+      ToolFlatten -> slot == 0 && strength >= 0.5
+      ToolNoise
+        | slot == 0 -> editorNoiseFrequency currentEditor >= 4
+        | slot == 1 -> strength >= 0.2
+      ToolSetHardness -> slot == 0 && editorHardnessTarget currentEditor >= 1
+      ToolErode -> slot == 0 && editorErodePasses currentEditor >= 20
+      _ -> False
+      where
+        strength = brushStrength (editorBrush currentEditor)
+    weatherBasisRequirement = "weather basis requires an active built-in weather overlay"
+    simulationConditions =
+      [ "world generation is in progress" | uiGenerating uiSnap ]
+      ++ [ "simulation requires a generated or loaded world" | uiWorldConfig uiSnap == Nothing ]
+
+widgetActive :: UiState -> WidgetId -> Maybe Bool
+widgetActive uiSnap wid = case wid of
+  WidgetLeftToggle -> Just (uiShowLeftPanel uiSnap)
+  WidgetLeftTabTopo -> Just (uiLeftTab uiSnap == LeftTopo)
+  WidgetLeftTabView -> Just (uiLeftTab uiSnap == LeftView)
+  WidgetConfigToggle -> Just (uiShowConfig uiSnap)
+  WidgetConfigTabTerrain -> configTabActive ConfigTerrain
+  WidgetConfigTabPlanet -> configTabActive ConfigPlanet
+  WidgetConfigTabClimate -> configTabActive ConfigClimate
+  WidgetConfigTabWeather -> configTabActive ConfigWeather
+  WidgetConfigTabBiome -> configTabActive ConfigBiome
+  WidgetConfigTabErosion -> configTabActive ConfigErosion
+  WidgetConfigTabPipeline -> configTabActive ConfigPipeline
+  WidgetConfigTabData -> configTabActive ConfigData
+  WidgetViewBaseElevation -> baseActive BaseViewElevation
+  WidgetViewBaseBiome -> baseActive BaseViewBiome
+  WidgetViewBaseMoisture -> baseActive BaseViewMoisture
+  WidgetViewBaseVegetation -> baseActive BaseViewVegetation
+  WidgetViewBaseTerrainForm -> baseActive BaseViewTerrainForm
+  WidgetViewBasePlateId -> baseActive BaseViewPlateId
+  WidgetViewBasePlateBoundary -> baseActive BaseViewPlateBoundary
+  WidgetViewBasePlateHardness -> baseActive BaseViewPlateHardness
+  WidgetViewBasePlateCrust -> baseActive BaseViewPlateCrust
+  WidgetViewBasePlateAge -> baseActive BaseViewPlateAge
+  WidgetViewBasePlateHeight -> baseActive BaseViewPlateHeight
+  WidgetViewBasePlateVelocity -> baseActive BaseViewPlateVelocity
+  WidgetViewOverlayNone -> overlayActive Nothing
+  WidgetViewOverlayTemperature -> overlayActive (Just SkyOverlayWeatherTemperature)
+  WidgetViewOverlayPrecipitation -> overlayActive (Just SkyOverlayPrecipitation)
+  WidgetViewOverlayCloud -> overlayActive (Just SkyOverlayCloud)
+  WidgetViewBasisAverage -> basisActive WeatherBasisAverage
+  WidgetViewBasisCurrent -> basisActive WeatherBasisCurrent
+  WidgetDayNightToggle -> Just (uiDayNightEnabled uiSnap)
+  WidgetPipelineToggle name -> case parseStageId name of
+    Just stageId -> Just (not (Set.member stageId (uiDisabledStages uiSnap)))
+    Nothing -> Nothing
+  WidgetPluginToggle name -> Just (not (Set.member name (uiDisabledPlugins uiSnap)))
+  WidgetPluginParamCheck pluginName paramName ->
+    Just (pluginBoolValue pluginName paramName)
+  WidgetSimAutoTick -> Just (uiSimAutoTick uiSnap)
+  WidgetDataPluginSelect pluginName ->
+    Just (dbsSelectedPlugin dbs == Just pluginName)
+  WidgetDataResourceSelect pluginName resourceName ->
+    Just (dbsSelectedPlugin dbs == Just pluginName
+      && dbsSelectedResource dbs == Just resourceName)
+  WidgetDataRecordSelect index -> Just (dbsSelectedRowIndex dbs == Just index)
+  WidgetDataFieldToggle path -> Just (Set.member path (dbsExpandedFields dbs))
+  WidgetDataEditToggle -> Just (dbsEditMode dbs)
+  WidgetEditorTool index -> Just (index == fromEnum (editorTool (uiEditor uiSnap)))
+  WidgetViewElevation -> legacyActive ViewElevation
+  WidgetViewBiome -> legacyActive ViewBiome
+  WidgetViewClimate -> legacyActive ViewClimate
+  WidgetViewWeather -> legacyActive ViewWeather
+  WidgetViewMoisture -> legacyActive ViewMoisture
+  WidgetViewPrecip -> legacyActive ViewPrecip
+  WidgetViewPrecipCurrent -> legacyActive ViewPrecipCurrent
+  WidgetViewVegetation -> legacyActive ViewVegetation
+  WidgetViewTerrainForm -> legacyActive ViewTerrainForm
+  WidgetViewPlateId -> legacyActive ViewPlateId
+  WidgetViewPlateBoundary -> legacyActive ViewPlateBoundary
+  WidgetViewPlateHardness -> legacyActive ViewPlateHardness
+  WidgetViewPlateCrust -> legacyActive ViewPlateCrust
+  WidgetViewPlateAge -> legacyActive ViewPlateAge
+  WidgetViewPlateHeight -> legacyActive ViewPlateHeight
+  WidgetViewPlateVelocity -> legacyActive ViewPlateVelocity
+  WidgetViewCloud -> legacyActive ViewCloud
+  WidgetViewCloudTypical -> legacyActive ViewCloudTypical
+  _ -> Nothing
+  where
+    dbs = uiDataBrowser uiSnap
+    selection = effectiveViewSelection uiSnap
+    configTabActive tab = Just (uiConfigTab uiSnap == tab)
+    baseActive mode = Just (lvsBaseView selection == mode)
+    overlayActive mode = Just (lvsSkyOverlay selection == mode)
+    basisActive basis = Just
+      (weatherBasisEnabled uiSnap && lvsWeatherBasis selection == basis)
+    legacyActive mode = Just (uiViewMode uiSnap == mode)
+    pluginBoolValue pluginName paramName = case
+        Map.lookup pluginName (uiPluginParams uiSnap) >>= Map.lookup paramName of
+      Just (Bool current) -> current
+      _ -> False
+
+widgetCategory :: WidgetId -> Text
+widgetCategory wid = case wid of
+  WidgetLeftToggle -> "navigation"
+  WidgetLeftTabTopo -> "navigation"
+  WidgetLeftTabView -> "navigation"
+  WidgetGenerate -> "generation"
+  WidgetSeedValue -> "generation"
+  WidgetSeedRandom -> "generation"
+  WidgetChunkMinus -> "generation"
+  WidgetChunkPlus -> "generation"
+  WidgetSliderMinus _ -> "sliders"
+  WidgetSliderPlus _ -> "sliders"
+  WidgetPipelineToggle _ -> "pipeline"
+  WidgetSimTick -> "simulation"
+  WidgetSimAutoTick -> "simulation"
+  WidgetPluginMoveUp _ -> "plugins"
+  WidgetPluginMoveDown _ -> "plugins"
+  WidgetPluginToggle _ -> "plugins"
+  WidgetPluginExpand _ -> "plugins"
+  WidgetPluginParamSlider _ _ -> "plugins"
+  WidgetPluginParamCheck _ _ -> "plugins"
+  WidgetDataPluginSelect _ -> "data_browser"
+  WidgetDataResourceSelect _ _ -> "data_browser"
+  WidgetDataPagePrev _ _ -> "data_browser"
+  WidgetDataPageNext _ _ -> "data_browser"
+  WidgetDataRecordSelect _ -> "data_browser"
+  WidgetDataDetailDismiss -> "data_browser"
+  WidgetDataFieldToggle _ -> "data_browser"
+  WidgetDataEditToggle -> "data_browser"
+  WidgetDataEditSave -> "data_browser"
+  WidgetDataEditCancel -> "data_browser"
+  WidgetDataCreateNew -> "data_browser"
+  WidgetDataDeleteBtn -> "data_browser"
+  WidgetDataDeleteConfirm -> "data_browser"
+  WidgetDataDeleteCancel -> "data_browser"
+  WidgetDataFieldTextClick _ -> "data_browser"
+  WidgetDataFieldStepMinus _ -> "data_browser"
+  WidgetDataFieldStepPlus _ -> "data_browser"
+  WidgetDataFieldBoolToggle _ -> "data_browser"
+  WidgetDataFieldEnumPrev _ -> "data_browser"
+  WidgetDataFieldEnumNext _ -> "data_browser"
+  WidgetEditorTool _ -> "editor"
+  WidgetEditorRadiusMinus -> "editor"
+  WidgetEditorRadiusPlus -> "editor"
+  WidgetEditorClose -> "editor"
+  WidgetEditorReopen -> "editor"
+  WidgetEditorParamMinus _ -> "editor"
+  WidgetEditorParamPlus _ -> "editor"
+  WidgetEditorCyclePrev _ -> "editor"
+  WidgetEditorCycleNext _ -> "editor"
+  WidgetEditorFalloffPrev -> "editor"
+  WidgetEditorFalloffNext -> "editor"
+  WidgetMenuSave -> "menu"
+  WidgetMenuLoad -> "menu"
+  WidgetMenuExit -> "menu"
+  WidgetPresetSaveOk -> "menu"
+  WidgetPresetSaveCancel -> "menu"
+  WidgetPresetLoadOk -> "menu"
+  WidgetPresetLoadCancel -> "menu"
+  WidgetPresetLoadItem -> "menu"
+  WidgetWorldSaveOk -> "menu"
+  WidgetWorldSaveCancel -> "menu"
+  WidgetWorldLoadOk -> "menu"
+  WidgetWorldLoadCancel -> "menu"
+  WidgetWorldLoadItem -> "menu"
+  WidgetLogDebug -> "log"
+  WidgetLogInfo -> "log"
+  WidgetLogWarn -> "log"
+  WidgetLogError -> "log"
+  WidgetLogHeader -> "log"
+  wid' | isViewWidget wid' -> "view_modes"
+  _ -> "config"
+  where
+    isViewWidget candidate = case candidate of
+      WidgetViewBaseElevation -> True
+      WidgetViewBaseBiome -> True
+      WidgetViewBaseMoisture -> True
+      WidgetViewBaseVegetation -> True
+      WidgetViewBaseTerrainForm -> True
+      WidgetViewBasePlateId -> True
+      WidgetViewBasePlateBoundary -> True
+      WidgetViewBasePlateHardness -> True
+      WidgetViewBasePlateCrust -> True
+      WidgetViewBasePlateAge -> True
+      WidgetViewBasePlateHeight -> True
+      WidgetViewBasePlateVelocity -> True
+      WidgetViewOverlayNone -> True
+      WidgetViewOverlayTemperature -> True
+      WidgetViewOverlayPrecipitation -> True
+      WidgetViewOverlayCloud -> True
+      WidgetViewBasisAverage -> True
+      WidgetViewBasisCurrent -> True
+      WidgetDayNightToggle -> True
+      WidgetViewOverlayPrev -> True
+      WidgetViewOverlayNext -> True
+      WidgetViewFieldPrev -> True
+      WidgetViewFieldNext -> True
+      WidgetOverlayManager -> True
+      WidgetOverlaySchema -> True
+      WidgetOverlayProvenance -> True
+      WidgetOverlayExport -> True
+      WidgetOverlayImportValidate -> True
+      _ -> False
+
+widgetSupportText :: WidgetClickSupport -> Text
+widgetSupportText support = case support of
+  WidgetClickable -> "clickable"
+  WidgetArgumentRequired -> "argument_required"
+  WidgetLocalOnly -> "local_only"
+  WidgetNonClickable -> "non_clickable"
+  WidgetCompatibilityOnly -> "compatibility_only"
+
+widgetCapabilityValue :: WidgetCapability -> Value
+widgetCapabilityValue capability = object $
+  [ "widget_id" .= widgetIdToText (wcWidgetId capability)
+  , "component" .= wcComponent capability
+  , "category" .= wcCategory capability
+  , "visible" .= wcVisible capability
+  , "enabled" .= wcEnabled capability
+  , "preconditions" .= wcPreconditions capability
+  , "support" .= widgetSupportText (wcSupport capability)
+  , "required_argument" .= wcRequiredArgument capability
+  , "alternative" .= wcAlternative capability
+  ] ++ maybe [] (\active -> ["active" .= active]) (wcActive capability)
+
+-- | Handle @list_widgets@ from the canonical live widget tree.
+handleListWidgets :: CommandContext -> Int -> Value -> IO SeerResponse
+handleListWidgets ctx reqId _params = do
+  uiSnap <- readUiSnapshotRef (ccUiSnapshotRef ctx)
+  let capabilities = widgetCapabilities uiSnap
+      ids = map (widgetIdToText . wcWidgetId) capabilities
+      categoryIds category =
+        [ widgetIdToText (wcWidgetId capability)
+        | capability <- capabilities
+        , wcCategory capability == category
+        ]
+  pure $ okResponse reqId $ object
+    [ "widgets" .= ids
+    , "widget_count" .= length ids
+    , "capabilities" .= map widgetCapabilityValue capabilities
+    , "data_browser_state" .= object (dataBrowserAsyncStateFields (uiDataBrowser uiSnap))
+    , "categories" .= object
+        [ AesonKey.fromText category .= categoryIds category
+        | category <- [ "navigation", "generation", "config", "view_modes"
+                      , "log", "simulation", "sliders", "pipeline", "plugins"
+                      , "data_browser", "editor", "menu"
+                      ]
+        ]
+    ]
+
+-- | Historical manual inventory retained temporarily as a compatibility
+-- reference; the public handler above is exclusively live-tree-derived.
+legacyHandleListWidgets :: CommandContext -> Int -> Value -> IO SeerResponse
 -- | Handle @list_widgets@ — return all widget IDs grouped by category.
 --
 -- Returns widgets logically available given current UI state.
-handleListWidgets :: CommandContext -> Int -> Value -> IO SeerResponse
-handleListWidgets ctx reqId _params = do
+legacyHandleListWidgets ctx reqId _params = do
   uiSnap <- readUiSnapshotRef (ccUiSnapshotRef ctx)
   let leftOpen   = uiShowLeftPanel uiSnap
       leftTopo   = leftOpen && uiLeftTab uiSnap == LeftTopo
@@ -1068,7 +1536,7 @@ handleGetWidgetState ctx reqId params = do
     Nothing ->
       pure $ errResponse reqId "missing or invalid 'widget_id' parameter"
     Just widText ->
-      case parseWidgetId widText of
+      case widgetIdFromText widText of
         Nothing ->
           pure $ errResponse reqId ("unknown widget_id: " <> widText)
         Just wid -> do
@@ -1082,7 +1550,18 @@ widgetState :: UiState -> WidgetId -> Value
 widgetState uiSnap wid = object $ base ++ browserState ++ specific
   where
     dbs = uiDataBrowser uiSnap
-    base = [ "widget_id" .= widgetIdToText wid ]
+    capability = widgetCapability uiSnap wid
+    base =
+      [ "widget_id" .= widgetIdToText wid
+      , "component" .= wcComponent capability
+      , "category" .= wcCategory capability
+      , "visible" .= wcVisible capability
+      , "enabled" .= wcEnabled capability
+      , "preconditions" .= wcPreconditions capability
+      , "support" .= widgetSupportText (wcSupport capability)
+      , "required_argument" .= wcRequiredArgument capability
+      , "alternative" .= wcAlternative capability
+      ] ++ maybe [] (\active -> ["active" .= active]) (wcActive capability)
     browserState
       | isDataBrowserWidget wid = dataBrowserAsyncStateFields dbs
       | otherwise = []
@@ -1127,10 +1606,10 @@ widgetState uiSnap wid = object $ base ++ browserState ++ specific
       WidgetViewBasisCurrent -> basisState WeatherBasisCurrent
       WidgetPipelineToggle name ->
         case parseStageId name of
-          Just sid -> [ "enabled" .= not (Set.member sid (uiDisabledStages uiSnap)) ]
+          Just sid -> [ "active" .= not (Set.member sid (uiDisabledStages uiSnap)) ]
           Nothing  -> []
       WidgetPluginToggle name ->
-        [ "enabled" .= not (Set.member name (uiDisabledPlugins uiSnap)) ]
+        [ "active" .= not (Set.member name (uiDisabledPlugins uiSnap)) ]
       WidgetPluginExpand name ->
         [ "expanded" .= Map.findWithDefault False name (uiPluginExpanded uiSnap) ]
       WidgetDataEditToggle ->
@@ -1142,9 +1621,7 @@ widgetState uiSnap wid = object $ base ++ browserState ++ specific
     baseActive baseMode = [ "active" .= (lvsBaseView selection == baseMode) ]
     overlayActive overlayMode = [ "active" .= (lvsSkyOverlay selection == overlayMode) ]
     basisState basis =
-      [ "active" .= (lvsWeatherBasis selection == basis && weatherBasisEnabled uiSnap)
-      , "enabled" .= weatherBasisEnabled uiSnap
-      ]
+      [ "active" .= (lvsWeatherBasis selection == basis && weatherBasisEnabled uiSnap) ]
 
 dataBrowserAsyncStateFields :: DataBrowserState -> [Aeson.Pair]
 dataBrowserAsyncStateFields dbs =

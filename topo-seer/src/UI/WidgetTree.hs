@@ -3,6 +3,8 @@ module UI.WidgetTree
   ( WidgetId(..)
   , Widget(..)
   , buildWidgets
+  , buildActiveWidgets
+  , buildMenuWidgets
   , buildEditorWidgets
   , buildEditorReopenWidget
   , buildViewModeWidgets
@@ -16,12 +18,17 @@ module UI.WidgetTree
   ) where
 
 import Actor.UI.State
-  ( DataBrowserState(..)
+  ( ConfigTab(..)
+  , DataBrowserState(..)
+  , LeftTab(..)
+  , UiMenuMode(..)
+  , UiState(..)
   , dataBrowserListError
   , dataBrowserMutationError
   , dataBrowserMutationPending
   , dataBrowserReadPending
   )
+import Data.List (nubBy)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -30,7 +37,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Linear (V2(..))
 import Seer.Config.SliderRegistry (SliderTab(..), SliderDef(..), allSliderDefs, sliderDefsForTab, sliderMinusWidgetId, sliderPlusWidgetId)
-import Seer.Editor.Types (EditorTool(..))
+import Seer.Editor.Types (EditorState(..), EditorTool(..))
+import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataFieldDef(..), DataFieldType(..), DataConstructorDef(..), DataOperations(..))
 import Topo.Plugin.RPC.Manifest (RPCParamSpec)
 import UI.Components.PipelineControls (pipelinePluginWidgetRects, pipelineStageWidgetRects)
@@ -42,6 +50,166 @@ data Widget = Widget
   { widgetId :: !WidgetId
   , widgetRect :: !Rect
   } deriving (Eq, Show)
+
+-- | Canonical live widget surface used by automation. This composes the same
+-- builders as SDL hit testing and applies its panel/tab/modal visibility
+-- barriers. Geometry is retained so callers can assert hit-test parity.
+buildActiveWidgets :: UiState -> Layout -> [Widget]
+buildActiveWidgets ui layout
+  | uiMenuMode ui /= MenuNone = buildMenuWidgets ui layout
+  | dataDeleteConfirmationVisible = uniqueWidgets detailWidgets
+  | otherwise = uniqueWidgets $ filter (visibleWidget ui) liveWidgets
+  where
+    editor = uiEditor ui
+    dataDeleteConfirmationVisible =
+      uiShowConfig ui
+        && uiConfigTab ui == ConfigData
+        && dbsDeleteConfirm (uiDataBrowser ui)
+    detailWidgets
+      | uiShowConfig ui && uiConfigTab ui == ConfigData =
+          buildDataDetailWidgetsForState (uiDataResources ui) (uiDataBrowser ui) layout
+      | otherwise = []
+    editorWidgets
+      | editorActive editor = buildEditorWidgets layout (editorTool editor)
+      | otherwise = buildEditorReopenWidget layout
+    liveWidgets =
+      buildWidgets layout
+        ++ buildPluginWidgets
+             (uiPluginNames ui)
+             (uiPluginExpanded ui)
+             (uiPluginParamSpecs ui)
+             (uiPluginDiagnosticLines ui)
+             layout
+        ++ buildDataBrowserWidgets (uiDataResources ui) (uiDataBrowser ui) layout
+        ++ detailWidgets
+        ++ editorWidgets
+
+-- | Active menu/dialog targets. A menu is an input barrier, so background
+-- widgets are deliberately absent.
+buildMenuWidgets :: UiState -> Layout -> [Widget]
+buildMenuWidgets ui layout = case uiMenuMode ui of
+  MenuNone -> []
+  MenuEscape ->
+    [ Widget WidgetMenuSave (menuSaveRect layout)
+    , Widget WidgetMenuLoad (menuLoadRect layout)
+    , Widget WidgetMenuExit (menuExitRect layout)
+    ]
+  MenuPresetSave ->
+    [ Widget WidgetPresetSaveOk (presetSaveOkRect layout)
+    , Widget WidgetPresetSaveCancel (presetSaveCancelRect layout)
+    ]
+  MenuPresetLoad ->
+    [ Widget WidgetPresetLoadOk (presetLoadOkRect layout)
+    , Widget WidgetPresetLoadCancel (presetLoadCancelRect layout)
+    ] ++ [ Widget WidgetPresetLoadItem (presetLoadListRect layout)
+         | any (matches (uiPresetFilter ui)) (uiPresetList ui)
+         ]
+  MenuWorldSave ->
+    [ Widget WidgetWorldSaveOk (worldSaveOkRect layout)
+    , Widget WidgetWorldSaveCancel (worldSaveCancelRect layout)
+    ]
+  MenuWorldLoad ->
+    [ Widget WidgetWorldLoadOk (worldLoadOkRect layout)
+    , Widget WidgetWorldLoadCancel (worldLoadCancelRect layout)
+    ] ++ [ Widget WidgetWorldLoadItem (worldLoadListRect layout)
+         | any (matches (uiWorldFilter ui) . wsmName) (uiWorldList ui)
+         ]
+  where
+    matches query candidate =
+      T.toLower query `T.isInfixOf` T.toLower candidate
+
+uniqueWidgets :: [Widget] -> [Widget]
+uniqueWidgets = nubBy (\left right -> widgetId left == widgetId right)
+
+visibleWidget :: UiState -> Widget -> Bool
+visibleWidget ui widget = case widgetId widget of
+  WidgetLeftToggle -> True
+  WidgetLeftTabTopo -> leftOpen
+  WidgetLeftTabView -> leftOpen
+  WidgetGenerate -> leftTopo
+  WidgetSeedValue -> leftTopo
+  WidgetSeedRandom -> leftTopo
+  WidgetChunkMinus -> leftTopo
+  WidgetChunkPlus -> leftTopo
+  WidgetConfigToggle -> True
+  WidgetConfigTabTerrain -> configOpen
+  WidgetConfigTabPlanet -> configOpen
+  WidgetConfigTabClimate -> configOpen
+  WidgetConfigTabWeather -> configOpen
+  WidgetConfigTabBiome -> configOpen
+  WidgetConfigTabErosion -> configOpen
+  WidgetConfigTabPipeline -> configOpen
+  WidgetConfigTabData -> configOpen
+  WidgetConfigPresetSave -> configOpen
+  WidgetConfigPresetLoad -> configOpen
+  WidgetConfigReset -> configOpen
+  WidgetConfigRevert -> configOpen
+  WidgetSliderMinus sliderId -> sliderVisible sliderId
+  WidgetSliderPlus sliderId -> sliderVisible sliderId
+  WidgetPipelineToggle _ -> pipelineOpen
+  WidgetSimTick -> pipelineOpen
+  WidgetSimAutoTick -> pipelineOpen
+  WidgetPluginMoveUp _ -> pipelineOpen
+  WidgetPluginMoveDown _ -> pipelineOpen
+  WidgetPluginToggle _ -> pipelineOpen
+  WidgetPluginExpand _ -> pipelineOpen
+  WidgetPluginParamSlider _ _ -> pipelineOpen
+  WidgetPluginParamCheck _ _ -> pipelineOpen
+  WidgetDataPluginSelect _ -> dataOpen
+  WidgetDataResourceSelect _ _ -> dataOpen
+  WidgetDataPagePrev _ _ -> dataOpen
+  WidgetDataPageNext _ _ -> dataOpen
+  WidgetDataRecordSelect _ -> dataOpen
+  WidgetDataDetailDismiss -> dataOpen
+  WidgetDataFieldToggle _ -> dataOpen
+  WidgetDataEditToggle -> dataOpen
+  WidgetDataEditSave -> dataOpen
+  WidgetDataEditCancel -> dataOpen
+  WidgetDataCreateNew -> dataOpen
+  WidgetDataDeleteBtn -> dataOpen
+  WidgetDataDeleteConfirm -> dataOpen
+  WidgetDataDeleteCancel -> dataOpen
+  WidgetDataFieldTextClick _ -> dataOpen
+  WidgetDataFieldStepMinus _ -> dataOpen
+  WidgetDataFieldStepPlus _ -> dataOpen
+  WidgetDataFieldBoolToggle _ -> dataOpen
+  WidgetDataFieldEnumPrev _ -> dataOpen
+  WidgetDataFieldEnumNext _ -> dataOpen
+  WidgetEditorTool _ -> editorActive (uiEditor ui)
+  WidgetEditorRadiusMinus -> editorActive (uiEditor ui)
+  WidgetEditorRadiusPlus -> editorActive (uiEditor ui)
+  WidgetEditorClose -> editorActive (uiEditor ui)
+  WidgetEditorReopen -> not (editorActive (uiEditor ui))
+  WidgetEditorParamMinus _ -> editorActive (uiEditor ui)
+  WidgetEditorParamPlus _ -> editorActive (uiEditor ui)
+  WidgetEditorCyclePrev _ -> editorActive (uiEditor ui)
+  WidgetEditorCycleNext _ -> editorActive (uiEditor ui)
+  WidgetEditorFalloffPrev -> editorActive (uiEditor ui)
+  WidgetEditorFalloffNext -> editorActive (uiEditor ui)
+  wid | isLeftViewWidget wid -> leftView
+  WidgetLogDebug -> True
+  WidgetLogInfo -> True
+  WidgetLogWarn -> True
+  WidgetLogError -> True
+  WidgetLogHeader -> True
+  _ -> False
+  where
+    leftOpen = uiShowLeftPanel ui
+    leftTopo = leftOpen && uiLeftTab ui == LeftTopo
+    leftView = leftOpen && uiLeftTab ui == LeftView
+    configOpen = uiShowConfig ui
+    pipelineOpen = configOpen && uiConfigTab ui == ConfigPipeline
+    dataOpen = configOpen && uiConfigTab ui == ConfigData
+    sliderVisible sliderId = configOpen && any ((== sliderId) . sliderIdOf) activeSliderDefs
+    sliderIdOf = sliderId
+    activeSliderDefs = case uiConfigTab ui of
+      ConfigTerrain -> sliderDefsForTab SliderTabTerrain
+      ConfigPlanet -> sliderDefsForTab SliderTabPlanet
+      ConfigClimate -> sliderDefsForTab SliderTabClimate
+      ConfigWeather -> sliderDefsForTab SliderTabWeather
+      ConfigBiome -> sliderDefsForTab SliderTabBiome
+      ConfigErosion -> sliderDefsForTab SliderTabErosion
+      _ -> []
 
 buildWidgets :: Layout -> [Widget]
 buildWidgets layout =
@@ -291,6 +459,10 @@ buildDataDetailWidgets
   -> [Widget]
 buildDataDetailWidgets rowIndex fields expanded validationRowCount editMode showEditToggle canDelete deleteConfirmShown interactionLocked layout
   | interactionLocked = []
+  | deleteConfirmShown =
+      [ Widget WidgetDataDeleteConfirm (deleteConfirmOkRect layout)
+      , Widget WidgetDataDeleteCancel (deleteConfirmCancelRect layout)
+      ]
   | otherwise =
   let flatFields = enumerateVisibleFields "" fields expanded
       fieldCount = length flatFields
@@ -323,12 +495,6 @@ buildDataDetailWidgets rowIndex fields expanded validationRowCount editMode show
         | canDelete && not editMode =
             [ Widget WidgetDataDeleteBtn
                      (dataDetailDeleteRect rowIndex rowCount layout) ]
-        | otherwise = []
-      deleteConfirmWidgets
-        | deleteConfirmShown =
-            [ Widget WidgetDataDeleteConfirm (deleteConfirmOkRect layout)
-            , Widget WidgetDataDeleteCancel (deleteConfirmCancelRect layout)
-            ]
         | otherwise = []
       -- Per-field input widgets (only in edit mode)
       fieldInputWidgets
@@ -376,7 +542,7 @@ buildDataDetailWidgets rowIndex fields expanded validationRowCount editMode show
                 , Widget (WidgetDataFieldStepPlus path)
                          (dataDetailFieldStepPlusRect rowIndex rowCount fIdx layout)
                 ]
-  in deleteConfirmWidgets ++ editToggleWidget ++ deleteWidget ++ saveWidget ++ cancelWidget
+  in editToggleWidget ++ deleteWidget ++ saveWidget ++ cancelWidget
        ++ fieldInputWidgets ++ toggleWidgets ++ [dismissWidget]
 
 -- | Enumerate the visible field rows, returning @(dotPath, isExpandable)@.
@@ -506,8 +672,8 @@ buildEditorWidgets layout tool =
           ]
       | otherwise = []
     paramBarWidgets = case tool of
-      ToolRaise -> numericSlot 0 ++ numericSlot 1
-      ToolLower -> numericSlot 0 ++ numericSlot 1
+      ToolRaise -> numericSlot 0
+      ToolLower -> numericSlot 0
       ToolSmooth -> numericSlot 0
       ToolFlatten -> numericSlot 0
       ToolNoise -> numericSlot 0 ++ numericSlot 1

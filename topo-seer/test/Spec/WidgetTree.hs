@@ -6,12 +6,14 @@ module Spec.WidgetTree (spec) where
 import Actor.UI
   ( ConfigTab(..)
   , DataBrowserState(..)
+  , UiMenuMode(..)
   , UiState(..)
   , configRowCount
   , emptyDataBrowserState
   , emptyUiState
   )
 import Data.Aeson (Value(..))
+import Data.List (nub)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -25,9 +27,16 @@ import Seer.DataBrowser.Model
   , DataBrowserRequestId(..)
   , DataBrowserWorkerRequest(..)
   )
-import Seer.Command.Handlers.Widgets (dataBrowserWidgetIds, widgetState)
+import Seer.Command.Handlers.Widgets
+  ( WidgetCapability(..)
+  , WidgetClickSupport(..)
+  , dataBrowserWidgetIds
+  , widgetCapabilities
+  , widgetCapability
+  , widgetState
+  )
 import Seer.Config.SliderSpec (SliderId(..))
-import Seer.Editor.Types (EditorTool(..))
+import Seer.Editor.Types (EditorState(..), EditorTool(..))
 import Test.Hspec
 import Topo.Pipeline.Stage (allBuiltinStageIds)
 import Topo.Plugin.DataResource
@@ -42,7 +51,9 @@ import Topo.Plugin.DataResource
   , defaultDataResourceVersion
   )
 import Topo.Plugin.RPC.DataService (DataRecord(..))
+import Topo.Plugin.RPC.Manifest (RPCParamSpec(..), RPCParamType(..))
 import UI.Layout
+import UI.WidgetId (widgetIdFromText, widgetIdToText)
 import UI.WidgetTree
 import UI.Widgets (Rect(..), containsPoint)
 
@@ -57,6 +68,134 @@ rectBottom (Rect (V2 _ y, V2 _ h)) = y + h
 
 spec :: Spec
 spec = describe "UI.WidgetTree" $ do
+  it "round-trips canonical widget IDs with adversarial text arguments" $ do
+    let ids =
+          [ WidgetGenerate
+          , WidgetSliderMinus SliderWaterLevel
+          , WidgetPluginExpand "plugin:with:%:separators"
+          , WidgetPluginParamSlider "" "density:μ"
+          , WidgetDataResourceSelect "@catalog" ""
+          , WidgetDataFieldToggle "profile:name:%"
+          , WidgetEditorTool 8
+          ]
+        encoded = map widgetIdToText ids
+    map widgetIdFromText encoded `shouldBe` map Just ids
+    encoded `shouldSatisfy` any (Text.isPrefixOf "@1:")
+    widgetIdFromText "WidgetPluginParamSlider:legacy:param"
+      `shouldBe` Just (WidgetPluginParamSlider "legacy" "param")
+    widgetIdFromText "WidgetPluginExpand:@1foo"
+      `shouldBe` Just (WidgetPluginExpand "@1foo")
+    widgetIdFromText "WidgetPluginExpand:@11#a"
+      `shouldBe` Just (WidgetPluginExpand "@11#a")
+    widgetIdFromText "WidgetViewElevation" `shouldBe` Just WidgetViewElevation
+
+  it "derives a unique, codec-round-trippable active inventory" $ do
+    let widgets = buildActiveWidgets emptyUiState wideWidgetLayout
+        ids = map widgetId widgets
+    length ids `shouldBe` length (nub ids)
+    map (widgetIdFromText . widgetIdToText) ids `shouldBe` map Just ids
+    ids `shouldNotContain` [WidgetViewElevation]
+
+  it "advertises exactly the live slider controls for all six slider tabs" $ do
+    let tabs =
+          [ ConfigTerrain, ConfigPlanet, ConfigClimate
+          , ConfigWeather, ConfigBiome, ConfigErosion
+          ]
+        sliderIdsFor tab =
+          [ wid
+          | Widget wid _ <- buildActiveWidgets
+              emptyUiState { uiShowConfig = True, uiConfigTab = tab }
+              wideWidgetLayout
+          , isSliderWidget wid
+          ]
+    map (length . sliderIdsFor) tabs
+      `shouldBe` [2 * configRowCount tab emptyUiState | tab <- tabs]
+
+  it "includes expanded plugin parameters and all tool-dependent editor controls" $ do
+    let pipelineUi = emptyUiState
+          { uiShowConfig = True
+          , uiConfigTab = ConfigPipeline
+          , uiPluginNames = ["plugin:one"]
+          , uiPluginExpanded = Map.singleton "plugin:one" True
+          , uiPluginParamSpecs = Map.singleton "plugin:one" [boolParamSpec, numericParamSpec]
+          }
+        pipelineIds = map widgetId (buildActiveWidgets pipelineUi wideWidgetLayout)
+    pipelineIds `shouldContain`
+      [ WidgetPluginParamCheck "plugin:one" "enabled"
+      , WidgetPluginParamSlider "plugin:one" "density:value"
+      ]
+    mapM_ (assertEditorSurface wideWidgetLayout) [minBound .. maxBound]
+
+  it "treats every menu as a background-input barrier" $ do
+    let idsFor mode state = map widgetId $ buildActiveWidgets
+          state { uiMenuMode = mode } wideWidgetLayout
+    idsFor MenuEscape emptyUiState
+      `shouldBe` [WidgetMenuSave, WidgetMenuLoad, WidgetMenuExit]
+    idsFor MenuPresetSave emptyUiState
+      `shouldBe` [WidgetPresetSaveOk, WidgetPresetSaveCancel]
+    idsFor MenuPresetLoad emptyUiState { uiPresetList = ["alpha"] }
+      `shouldBe` [WidgetPresetLoadOk, WidgetPresetLoadCancel, WidgetPresetLoadItem]
+    idsFor MenuWorldSave emptyUiState
+      `shouldBe` [WidgetWorldSaveOk, WidgetWorldSaveCancel]
+    idsFor MenuWorldLoad emptyUiState
+      `shouldBe` [WidgetWorldLoadOk, WidgetWorldLoadCancel]
+
+  it "treats Data Browser delete confirmation as a full widget barrier" $ do
+    let dbs = browserState
+          { dbsSelectedRowIndex = Just 0
+          , dbsDeleteConfirm = True
+          }
+        ids = map widgetId (buildActiveWidgets (browserUi dbs) wideWidgetLayout)
+    ids `shouldBe` [WidgetDataDeleteConfirm, WidgetDataDeleteCancel]
+    let hiddenIds = map widgetId $ buildActiveWidgets
+          (browserUi dbs) { uiShowConfig = False } wideWidgetLayout
+    hiddenIds `shouldNotContain` [WidgetDataDeleteConfirm, WidgetDataDeleteCancel]
+    hiddenIds `shouldContain` [WidgetLeftToggle]
+
+  it "reports capability support and representative state preconditions truthfully" $ do
+    let basis = widgetCapability emptyUiState WidgetViewBasisAverage
+        pluginUi = emptyUiState
+          { uiShowConfig = True
+          , uiConfigTab = ConfigPipeline
+          , uiPluginNames = ["first", "last"]
+          , uiPluginParams = Map.singleton "first" (Map.singleton "enabled" (Bool True))
+          }
+        firstUp = widgetCapability pluginUi (WidgetPluginMoveUp "first")
+        lastDown = widgetCapability pluginUi (WidgetPluginMoveDown "last")
+        pluginSlider = widgetCapability pluginUi (WidgetPluginParamSlider "first" "density")
+        pluginCheck = widgetCapability pluginUi (WidgetPluginParamCheck "first" "enabled")
+        legacyView = widgetCapability emptyUiState WidgetViewElevation
+        simTick = widgetCapability pluginUi WidgetSimTick
+        smoothEditor = (uiEditor emptyUiState)
+          { editorActive = True, editorTool = ToolSmooth, editorSmoothPasses = 1 }
+        smoothMinus = widgetCapability
+          emptyUiState { uiEditor = smoothEditor }
+          (WidgetEditorParamMinus 0)
+        pending = DataBrowserPendingEnvelope
+          (DataBrowserRequestId 90)
+          DataBrowserLoadCatalogOperation
+          DataBrowserLoadCatalogRequest
+        pendingDataTab = widgetCapability
+          emptyUiState { uiDataBrowser = emptyDataBrowserState
+            { dbsPendingRequest = Just pending, dbsLoading = True } }
+          WidgetConfigTabData
+    wcEnabled basis `shouldBe` False
+    wcPreconditions basis `shouldContain` ["weather basis requires an active built-in weather overlay"]
+    wcEnabled firstUp `shouldBe` False
+    wcEnabled lastDown `shouldBe` False
+    wcSupport pluginSlider `shouldBe` WidgetNonClickable
+    wcAlternative pluginSlider `shouldBe` Just "set_plugin_param"
+    wcActive pluginCheck `shouldBe` Just True
+    wcVisible legacyView `shouldBe` False
+    wcSupport legacyView `shouldBe` WidgetCompatibilityOnly
+    wcEnabled simTick `shouldBe` False
+    wcEnabled smoothMinus `shouldBe` False
+    wcPreconditions smoothMinus `shouldContain` ["editor parameter is at its minimum"]
+    wcEnabled pendingDataTab `shouldBe` False
+    wcPreconditions pendingDataTab `shouldContain` ["a Data Browser request is already pending"]
+    map wcWidgetId (widgetCapabilities pluginUi)
+      `shouldBe` map widgetId (buildActiveWidgets pluginUi wideWidgetLayout)
+
   it "hit tests generate button in left panel" $ do
     let layout = layoutFor (V2 800 600) 160
         widgets = buildWidgets layout
@@ -344,8 +483,8 @@ spec = describe "UI.WidgetTree" $ do
             , dbsLoading = True
             })
     map idsFor (zip [10..] readOperations) `shouldSatisfy` all (\ids ->
-      "WidgetDataResourceSelect:atlas:cities" `elem` ids
-        && "WidgetDataResourceSelect:atlas:towns" `elem` ids
+      widgetIdToText (WidgetDataResourceSelect "atlas" "cities") `elem` ids
+        && widgetIdToText (WidgetDataResourceSelect "atlas" "towns") `elem` ids
         && "WidgetDataRecordSelect:0" `notElem` ids
         && "WidgetDataCreateNew" `notElem` ids)
     map idsFor (zip [20..] mutationOperations) `shouldBe` [[], [], []]
@@ -358,7 +497,7 @@ spec = describe "UI.WidgetTree" $ do
           , dbsEditValues = Map.singleton "name" (String "Alpha")
           }
     let editWidgetIds = dataBrowserWidgetIds (browserUi editDbs)
-    editWidgetIds `shouldContain` ["WidgetDataFieldTextClick:name"]
+    editWidgetIds `shouldContain` [widgetIdToText (WidgetDataFieldTextClick "name")]
     editWidgetIds `shouldContain` ["WidgetDataEditSave"]
 
     let pending = DataBrowserPendingEnvelope
@@ -472,9 +611,9 @@ spec = describe "UI.WidgetTree" $ do
     let layout = layoutFor (V2 1200 800) 160
         widgets = buildEditorWidgets layout ToolRaise
     -- 9 tool buttons + 3 (radius−, radius+, close)
-    -- + 4 param bar widgets (2 numeric slots for ToolRaise)
+    -- + 2 param bar widgets (1 numeric slot for ToolRaise)
     -- + 2 falloff widgets (ToolRaise has falloff)
-    length widgets `shouldBe` 18
+    length widgets `shouldBe` 16
 
   it "hit tests editor reopen button" $ do
     let layout = layoutFor (V2 1200 800) 160
@@ -482,6 +621,61 @@ spec = describe "UI.WidgetTree" $ do
     length widgets `shouldBe` 1
     hitTest widgets (rectHitPoint (editorReopenRect layout))
       `shouldBe` Just WidgetEditorReopen
+
+wideWidgetLayout :: Layout
+wideWidgetLayout = layoutFor (V2 1200 900) 0
+
+isSliderWidget :: WidgetId -> Bool
+isSliderWidget wid = case wid of
+  WidgetSliderMinus _ -> True
+  WidgetSliderPlus _ -> True
+  _ -> False
+
+isEditorWidget :: WidgetId -> Bool
+isEditorWidget wid = case wid of
+  WidgetEditorTool _ -> True
+  WidgetEditorRadiusMinus -> True
+  WidgetEditorRadiusPlus -> True
+  WidgetEditorClose -> True
+  WidgetEditorReopen -> True
+  WidgetEditorParamMinus _ -> True
+  WidgetEditorParamPlus _ -> True
+  WidgetEditorCyclePrev _ -> True
+  WidgetEditorCycleNext _ -> True
+  WidgetEditorFalloffPrev -> True
+  WidgetEditorFalloffNext -> True
+  _ -> False
+
+assertEditorSurface :: Layout -> EditorTool -> Expectation
+assertEditorSurface layout tool = do
+  let editor = (uiEditor emptyUiState) { editorActive = True, editorTool = tool }
+      actual =
+        [ wid
+        | Widget wid _ <- buildActiveWidgets emptyUiState { uiEditor = editor } layout
+        , isEditorWidget wid
+        ]
+      expected = map widgetId (buildEditorWidgets layout tool)
+  actual `shouldBe` expected
+
+boolParamSpec :: RPCParamSpec
+boolParamSpec = RPCParamSpec
+  { rpsName = "enabled"
+  , rpsLabel = "Enabled"
+  , rpsType = ParamBool
+  , rpsRange = Nothing
+  , rpsDefault = Bool False
+  , rpsTooltip = ""
+  }
+
+numericParamSpec :: RPCParamSpec
+numericParamSpec = RPCParamSpec
+  { rpsName = "density:value"
+  , rpsLabel = "Density"
+  , rpsType = ParamFloat
+  , rpsRange = Just (Number 0, Number 1)
+  , rpsDefault = Number 0.5
+  , rpsTooltip = ""
+  }
 
 browserState :: DataBrowserState
 browserState = emptyDataBrowserState

@@ -2338,23 +2338,73 @@ widgetClickResponseSchema = objectSchema "WidgetClickResponse"
   , ("operation", stringSchema)
   ]
 
+widgetArgumentSchema :: Value
+widgetArgumentSchema = inlineObjectSchema
+  [ "name", "type", "minimum", "description" ]
+  [ ("name", stringSchema)
+  , ("type", enumStringSchema ["integer"])
+  , ("minimum", integerSchema)
+  , ("description", stringSchema)
+  ]
+
+widgetCapabilitySchema :: JsonSchema
+widgetCapabilitySchema = objectSchema "WidgetCapability"
+  [ "widget_id", "component", "category", "visible", "enabled", "preconditions", "support" ]
+  [ ("widget_id", stringSchema)
+  , ("component", stringSchema)
+  , ("category", stringSchema)
+  , ("active", booleanSchema)
+  , ("visible", booleanSchema)
+  , ("enabled", booleanSchema)
+  , ("preconditions", arraySchema stringSchema)
+  , ("support", enumStringSchema
+      [ "clickable", "argument_required", "local_only"
+      , "non_clickable", "compatibility_only"
+      ])
+  , ("required_argument", nullableSchema widgetArgumentSchema)
+  , ("alternative", nullableSchema stringSchema)
+  ]
+
+widgetDataBrowserStateSchema :: Value
+widgetDataBrowserStateSchema = inlineObjectSchema
+  [ "loading" ]
+  [ ("loading", booleanSchema)
+  , ("pending", nullableSchema dataBrowserPendingSchema)
+  , ("async_error", nullableSchema dataBrowserAsyncErrorSchema)
+  ]
+
 widgetListResponseSchema :: JsonSchema
 widgetListResponseSchema = objectSchema "WidgetListResponse"
-  [ "widgets", "widget_count", "categories" ]
+  [ "widgets", "widget_count", "categories", "capabilities", "data_browser_state" ]
   [ ("widgets", arraySchema stringSchema)
   , ("widget_count", integerSchema)
   , ("categories", freeObjectSchema)
+  , ("capabilities", arraySchema (jsonSchemaValue widgetCapabilitySchema))
+  , ("data_browser_state", widgetDataBrowserStateSchema)
   ]
 
 widgetStateResponseSchema :: JsonSchema
 widgetStateResponseSchema = objectSchema "WidgetStateResponse"
-  [ "widget_id" ]
+  [ "widget_id", "component", "category", "visible", "enabled", "preconditions", "support" ]
   [ ("widget_id", stringSchema)
+  , ("component", stringSchema)
+  , ("category", stringSchema)
+  , ("visible", booleanSchema)
   , ("active", booleanSchema)
   , ("enabled", booleanSchema)
+  , ("preconditions", arraySchema stringSchema)
+  , ("support", enumStringSchema
+      [ "clickable", "argument_required", "local_only"
+      , "non_clickable", "compatibility_only"
+      ])
+  , ("required_argument", nullableSchema widgetArgumentSchema)
+  , ("alternative", nullableSchema stringSchema)
   , ("expanded", booleanSchema)
   , ("edit_mode", booleanSchema)
   , ("confirm_shown", booleanSchema)
+  , ("loading", booleanSchema)
+  , ("pending", nullableSchema dataBrowserPendingSchema)
+  , ("async_error", nullableSchema dataBrowserAsyncErrorSchema)
   ]
 
 dialogStateResponseSchema :: JsonSchema

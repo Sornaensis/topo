@@ -117,6 +117,7 @@ import Topo.Plugin.RPC.Transport
   , recvMessage
   , sendMessage
   )
+import UI.WidgetId (WidgetId(..), widgetIdToText)
 
 spec :: Spec
 spec = describe "DataResource CRUD service/API/UI e2e" $ do
@@ -355,10 +356,12 @@ exerciseCrudFixture app = do
   lookupNestedText ["error", "code"] (hresBody invalid) `shouldBe` Just "schema_validation_failed"
 
   widgetsBefore <- serviceOk app "list_widgets" Null
-  widgetTexts widgetsBefore `shouldContain` ["WidgetDataPluginSelect:" <> crudPluginName]
+  widgetTexts widgetsBefore `shouldContain`
+    [widgetIdToText (WidgetDataPluginSelect crudPluginName)]
 
   _ <- clickWidget app ("WidgetDataPluginSelect:" <> crudPluginName)
-  waitForWidgets app ("WidgetDataResourceSelect:" <> crudPluginName <> ":" <> crudResourceName)
+  waitForWidgets app (widgetIdToText
+    (WidgetDataResourceSelect crudPluginName crudResourceName))
 
   _ <- clickWidget app ("WidgetDataResourceSelect:" <> crudPluginName <> ":" <> crudResourceName)
   waitForState app "record_count" (Number 2)
@@ -404,7 +407,7 @@ withCrudFixtureApp action =
     setUiDataResources uiHandle resources
     setUiShowConfig uiHandle True
     setUiConfigTab uiHandle ConfigData
-    waitForWidgets app ("WidgetDataPluginSelect:" <> crudPluginName)
+    waitForWidgets app (widgetIdToText (WidgetDataPluginSelect crudPluginName))
     action app
 
 withCrudFixturePlugin :: RPCManifest -> [DataResourceSchema] -> (CrudFixtureApp -> IO a) -> IO a

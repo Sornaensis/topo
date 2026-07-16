@@ -1352,6 +1352,8 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/ui/view-mode", "post", "UiViewModeSetResponse")
           , ("/ui/view", "post", "UiViewSetResponse")
           , ("/ui/overlay", "put", "UiOverlaySetResponse")
+          , ("/ui/widgets", "get", "WidgetListResponse")
+          , ("/ui/widget-state", "get", "WidgetStateResponse")
           , ("/terrain/hex", "get", "TerrainHexResponse")
           ] :: [(Text, Text, Text)]
         requestRefs =
@@ -1393,6 +1395,25 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldBe` Just ["renderer", "headless"]
     componentPropertyDescription doc "ScreenshotTakeRequest" "path"
       `shouldSatisfy` maybe False (Text.isInfixOf "sandbox-relative")
+    componentPropertyNames doc "WidgetListResponse"
+      `shouldSatisfy` maybe False (\actual -> all (`elem` actual)
+        ["widgets", "widget_count", "categories", "capabilities", "data_browser_state"])
+    componentPropertyNames doc "WidgetStateResponse"
+      `shouldSatisfy` maybe False (\actual -> all (`elem` actual)
+        [ "widget_id", "component", "category", "active", "visible", "enabled", "preconditions"
+        , "support", "required_argument", "alternative", "loading", "pending", "async_error"
+        ])
+    componentPropertyEnum doc "WidgetStateResponse" "support"
+      `shouldBe` Just
+        [ "clickable", "argument_required", "local_only"
+        , "non_clickable", "compatibility_only"
+        ]
+    (inlinePropertyNames =<< componentProperty doc "WidgetStateResponse" "required_argument")
+      `shouldBe` Just ["description", "minimum", "name", "type"]
+    (inlinePropertyNames =<< componentProperty doc "WidgetStateResponse" "pending")
+      `shouldBe` Just ["operation", "request_id", "target"]
+    (inlinePropertyNames =<< componentProperty doc "WidgetStateResponse" "async_error")
+      `shouldBe` Just ["message", "operation", "request_id", "target"]
     componentPropertyNames doc "StateViewsResponse"
       `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["view", "base_modes", "overlay_modes", "weather_bases", "overlay_names", "legacy_modes"])
     let layeredViewProps = inlinePropertyNames =<< componentProperty doc "StateViewsResponse" "view"

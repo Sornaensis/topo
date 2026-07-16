@@ -160,24 +160,32 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       (leftViewWidgets, otherWidgets) = partition (isLeftViewWidget . widgetId) nonSliderWidgets
       (pipelineWidgets, afterPipelineWidgets) = partition (isPipelineScrollWidget . widgetId) otherWidgets
       (dataBrowserWidgets, nonScrollWidgets) = partition (isDataBrowserScrollWidget . widgetId) afterPipelineWidgets
+      dataDeleteConfirmationVisible =
+        uiShowConfig uiSnap
+          && uiConfigTab uiSnap == ConfigData
+          && dbsDeleteConfirm dbs_
       detailHit = hitTest detailWidgets point
-      hitWidget = detailHit <|>
-        if inConfigScroll
-          then case hitTest configSliderWidgets scrollPoint
-              <|> hitTest pipelineWidgets scrollPoint
-              <|> hitTest dataBrowserWidgets scrollPoint of
-            Just wid -> Just wid
-            Nothing ->
-              let viewHit = if inLeftViewContent then hitTest leftViewWidgets leftViewAdjPoint else Nothing
-              in viewHit <|> hitTest nonScrollWidgets point
-          else if inLeftViewContent
-            then hitTest leftViewWidgets leftViewAdjPoint <|> hitTest nonScrollWidgets point
-            else hitTest nonScrollWidgets point
+      hitWidget
+        | dataDeleteConfirmationVisible = detailHit
+        | otherwise = detailHit <|>
+            if inConfigScroll
+              then case hitTest configSliderWidgets scrollPoint
+                  <|> hitTest pipelineWidgets scrollPoint
+                  <|> hitTest dataBrowserWidgets scrollPoint of
+                Just wid -> Just wid
+                Nothing ->
+                  let viewHit = if inLeftViewContent then hitTest leftViewWidgets leftViewAdjPoint else Nothing
+                  in viewHit <|> hitTest nonScrollWidgets point
+              else if inLeftViewContent
+                then hitTest leftViewWidgets leftViewAdjPoint <|> hitTest nonScrollWidgets point
+                else hitTest nonScrollWidgets point
       configWidgetAllowed tab widget =
         case sliderDefForWidget (widgetId widget) of
           Just sliderDef -> tab == configTabForSliderTab (sliderTab sliderDef)
           Nothing -> bespokeConfigWidgetAllowed tab (widgetId widget)
-  if inScrollBar
+  if uiMenuMode uiSnap /= MenuNone
+    then handleMenuClick layout widgets point
+    else if inScrollBar && not dataDeleteConfirmationVisible
     then do
       let rowHeight = 24
           gap = 10
@@ -200,9 +208,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
           whenLeftTopo action = when (uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftTopo) action
           whenLeftView action = when (uiShowLeftPanel uiSnap && uiLeftTab uiSnap == LeftView) action
           whenConfigVisible action = when (uiShowConfig uiSnap) action
-      if uiMenuMode uiSnap /= MenuNone
-        then handleMenuClick layout widgets point
-        else case hitWidget of
+      case hitWidget of
           { Just WidgetGenerate -> whenLeftTopo (runService "generate" Null)
           ; Just WidgetLeftToggle -> setUiShowLeftPanel uiHandle (not (uiShowLeftPanel uiSnap))
           ; Just WidgetLeftTabTopo -> whenLeftPanel (setUiLeftTab uiHandle LeftTopo)

@@ -56,6 +56,8 @@ module Seer.Service.UI
   , UiClickWidgetResponse(..)
   , UiListWidgetsRequest(..)
   , UiWidgetGroup(..)
+  , UiWidgetArgument(..)
+  , UiWidgetCapability(..)
   , UiListWidgetsResponse(..)
   , UiGetWidgetStateRequest(..)
   , UiWidgetStateResponse(..)
@@ -403,10 +405,32 @@ data UiWidgetGroup = UiWidgetGroup
   , uiWidgetGroupIds :: ![Text]
   } deriving (Eq, Show)
 
+data UiWidgetArgument = UiWidgetArgument
+  { uiWidgetArgumentName :: !Text
+  , uiWidgetArgumentType :: !Text
+  , uiWidgetArgumentMinimum :: !Int
+  , uiWidgetArgumentDescription :: !Text
+  } deriving (Eq, Show)
+
+data UiWidgetCapability = UiWidgetCapability
+  { uiWidgetCapabilityId :: !Text
+  , uiWidgetCapabilityComponent :: !Text
+  , uiWidgetCapabilityCategory :: !Text
+  , uiWidgetCapabilityActive :: !(Maybe Bool)
+  , uiWidgetCapabilityVisible :: !Bool
+  , uiWidgetCapabilityEnabled :: !Bool
+  , uiWidgetCapabilityPreconditions :: ![Text]
+  , uiWidgetCapabilitySupport :: !Text
+  , uiWidgetCapabilityRequiredArgument :: !(Maybe UiWidgetArgument)
+  , uiWidgetCapabilityAlternative :: !(Maybe Text)
+  } deriving (Eq, Show)
+
 data UiListWidgetsResponse = UiListWidgetsResponse
   { uiWidgetIds :: ![Text]
   , uiWidgetCount :: !Int
   , uiWidgetGroups :: ![UiWidgetGroup]
+  , uiWidgetCapabilities :: ![UiWidgetCapability]
+  , uiWidgetDataBrowserState :: !(Maybe Value)
   } deriving (Eq, Show)
 
 newtype UiGetWidgetStateRequest = UiGetWidgetStateRequest
@@ -415,11 +439,21 @@ newtype UiGetWidgetStateRequest = UiGetWidgetStateRequest
 
 data UiWidgetStateResponse = UiWidgetStateResponse
   { uiWidgetStateId :: !Text
+  , uiWidgetStateComponent :: !(Maybe Text)
+  , uiWidgetStateCategory :: !(Maybe Text)
+  , uiWidgetStateVisible :: !(Maybe Bool)
   , uiWidgetStateActive :: !(Maybe Bool)
   , uiWidgetStateEnabled :: !(Maybe Bool)
+  , uiWidgetStatePreconditions :: ![Text]
+  , uiWidgetStateSupport :: !(Maybe Text)
+  , uiWidgetStateRequiredArgument :: !(Maybe UiWidgetArgument)
+  , uiWidgetStateAlternative :: !(Maybe Text)
   , uiWidgetStateExpanded :: !(Maybe Bool)
   , uiWidgetStateEditMode :: !(Maybe Bool)
   , uiWidgetStateConfirmShown :: !(Maybe Bool)
+  , uiWidgetStateLoading :: !(Maybe Bool)
+  , uiWidgetStatePending :: !(Maybe Value)
+  , uiWidgetStateAsyncError :: !(Maybe Value)
   , uiWidgetStateExtra :: !(Maybe Value)
   } deriving (Eq, Show)
 
