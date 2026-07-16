@@ -64,8 +64,10 @@ type RawCommandHandler = CommandContext -> Int -> Value -> IO SeerResponse
 
 -- | Transitional AppService implementation backed by existing command handlers.
 commandAppService :: AppService
-commandAppService = AppService
-  { appState = StateService
+commandAppService = app
+  where
+    app = AppService
+      { appState = StateService
       { stateGetState = commandServiceHandler stateGetStateOperation HState.handleGetState
       , stateGetViewModes = commandServiceHandler stateGetViewModesOperation HState.handleGetViewModes
       , stateGetViews = commandServiceHandler stateGetViewsOperation HState.handleGetViews
@@ -179,11 +181,20 @@ commandAppService = AppService
       , uiGetWidgetState = commandServiceHandler uiGetWidgetStateOperation HWidgets.handleGetWidgetState
       , uiGetDialogState = commandServiceHandler uiGetDialogStateOperation HInput.handleGetDialogState
       , uiSetDialogText = commandServiceHandler uiSetDialogTextOperation HInput.handleSetDialogText
-      , uiDialogConfirm = commandServiceHandler uiDialogConfirmOperation HInput.handleDialogConfirm
-      , uiDialogCancel = commandServiceHandler uiDialogCancelOperation HInput.handleDialogCancel
-      , uiSendKey = commandServiceHandler uiSendKeyOperation HInput.handleSendKey
+      , uiDialogConfirm = commandServiceHandler uiDialogConfirmOperation
+          (HInput.handleDialogConfirmWithRunner (nestedInputRunner app))
+      , uiDialogCancel = commandServiceHandler uiDialogCancelOperation
+          (HInput.handleDialogCancelWithRunner (nestedInputRunner app))
+      , uiSendKey = commandServiceHandler uiSendKeyOperation
+          (HInput.handleSendKeyWithRunner (nestedInputRunner app))
       }
   }
+
+-- The shared input executor may invoke another AppService operation (for
+-- example save_preset on Enter).  Injecting this runner avoids a dependency
+-- from the input layer back to this adapter.
+nestedInputRunner :: AppService -> CommandContext -> Text -> Value -> IO ServiceResult
+nestedInputRunner app ctx = runAppServiceOperation app ctx
 
 -- | Dispatch a command envelope through an AppService implementation.
 dispatchAppServiceCommand :: AppService -> CommandContext -> SeerCommand -> IO SeerResponse

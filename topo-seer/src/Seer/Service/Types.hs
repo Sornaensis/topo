@@ -485,7 +485,7 @@ appServiceRequestValidators =
       ])
   , ("get_widget_state", fields "get_widget_state" [requiredText "widget_id"])
   , ("set_dialog_text", fields "set_dialog_text" [requiredText "text", optionalText "target"])
-  , ("send_key", fields "send_key" [requiredText "key"])
+  , ("send_key", fields "send_key" [requiredText "key", optionalArray "modifiers"])
   ]
   where
     fields = validateFields

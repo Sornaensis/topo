@@ -14,7 +14,7 @@ module Spec.CommandDispatch (spec) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, newMVar, takeMVar)
 import Control.Exception (bracket, catch, finally)
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Aeson (Value(..), object, (.=), Key)
@@ -31,7 +31,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector.Unboxed as U
-import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
+import System.Directory (createDirectoryIfMissing, doesFileExist, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
 import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, replyTo, shutdownActorSystem)
@@ -60,11 +60,14 @@ import Actor.Terrain (Terrain, TerrainReplyOps)
 import Actor.UI
   ( BaseViewMode(..)
   , ConfigTab(..)
+  , DataBrowserState(..)
+  , emptyDataBrowserState
   , LayeredViewState(..)
   , LeftTab(..)
   , SkyOverlayMode(..)
   , Ui
   , UiState(..)
+  , UiMenuMode(..)
   , ViewMode(..)
   , WeatherBasis(..)
   , defaultLayeredViewState
@@ -78,12 +81,26 @@ import Actor.UI
   )
 import Actor.UI.Setters
   ( setUiConfigTab
+  , setUiContextHex
+  , setUiContextPos
+  , setUiDataBrowser
   , setUiLeftTab
+  , setUiMenuMode
+  , setUiPresetFilter
+  , setUiPresetInput
+  , setUiPresetList
+  , setUiPresetSelected
+  , setUiSeedEditing
+  , setUiSeedInput
   , setUiPluginExpanded
   , setUiPluginNames
   , setUiPluginParamSpecs
   , setUiShowConfig
   , setUiShowLeftPanel
+  , setUiWorldFilter
+  , setUiWorldList
+  , setUiWorldSaveInput
+  , setUiWorldSelected
   )
 import Actor.UiActions (ActorHandles(..), UiActions)
 import Actor.UiActions.Command (UiAction(..), UiActionRequest(..), runUiAction)
@@ -94,11 +111,12 @@ import Seer.DataBrowser.Executor
   ( newDataBrowserExecutor
   , shutdownDataBrowserExecutor
   )
+import Seer.Config.Snapshot (snapshotDir)
 import Seer.Editor.History (emptyHistory)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
 import Seer.System.Cache (RenderCacheState, initialRenderCacheState)
 import Seer.System.Snapshot (SnapshotPollEnv(..), pollRenderSnapshot)
-import Seer.Editor.Types (EditorState(..), EditorTool(..))
+import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..))
 import Seer.Screenshot.Request
   ( ScreenshotDelivery(..)
   , ScreenshotResultError(..)
@@ -111,7 +129,8 @@ import Seer.Screenshot.Request
   )
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy(..))
 import Seer.Service.Screenshot (rendererScreenshotHandlerWithDeadline)
-import Seer.World.Persist (deleteNamedWorld)
+import Seer.World.Persist (deleteNamedWorld, listWorlds)
+import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Seer.Service.AppService
   ( AppService(..)
   , ConfigListPresetsRequest(..)
@@ -308,6 +327,177 @@ spec = describe "CommandDispatch" $ do
         serviceCaseSetup testCase ctx
         result <- runService ctx (serviceCaseMethod testCase) (serviceCaseParams testCase)
         assertServiceOutcome testCase result
+
+  describe "shared keyboard intents" $ do
+    it "uses filtered modal navigation and shared modal text semantics" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+      setUiPresetList uiH ["alpha", "beta", "alpine"]
+      setUiPresetFilter uiH "alp"
+      setUiPresetSelected uiH 0
+      setUiMenuMode uiH MenuPresetLoad
+      _ <- getUiSnapshot uiH
+
+      forM_ ["down", "up", "down"] $ \key -> do
+        rsp <- dispatch ctx "send_key" (object ["key" .= (key :: Text)])
+        srSuccess rsp `shouldBe` True
+      uiAfterNav <- getUiSnapshot uiH
+      uiPresetSelected uiAfterNav `shouldBe` 1
+
+      setUiPresetInput uiH "name"
+      setUiMenuMode uiH MenuPresetSave
+      _ <- dispatch ctx "send_key" (object ["key" .= ("space" :: Text)])
+      _ <- dispatch ctx "send_key" (object ["key" .= ("X" :: Text)])
+      _ <- dispatch ctx "send_key" (object ["key" .= ("[" :: Text)])
+      uiAfterText <- getUiSnapshot uiH
+      uiPresetInput uiAfterText `shouldBe` "name X["
+
+      setUiPresetList uiH []
+      setUiPresetFilter uiH "missing"
+      setUiPresetSelected uiH 0
+      setUiMenuMode uiH MenuPresetLoad
+      rejected <- dispatch ctx "dialog_confirm" Null
+      srSuccess rejected `shouldBe` False
+      uiAfterRejected <- getUiSnapshot uiH
+      uiMenuMode uiAfterRejected `shouldBe` MenuPresetLoad
+
+    it "executes real preset persistence before closing confirmation dialogs" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+          presetName = "pi-input-intent-confirm"
+      dir <- snapshotDir
+      let presetPath = dir </> Text.unpack presetName <> ".json"
+          cleanup = do
+            exists <- doesFileExist presetPath
+            when exists (removeFile presetPath)
+      cleanup
+      (do
+          setUiPresetInput uiH presetName
+          setUiMenuMode uiH MenuPresetSave
+          _ <- getUiSnapshot uiH
+          rsp <- dispatch ctx "dialog_confirm" Null
+          srSuccess rsp `shouldBe` True
+          doesFileExist presetPath `shouldReturn` True
+          ui <- getUiSnapshot uiH
+          uiMenuMode ui `shouldBe` MenuNone)
+        `finally` cleanup
+
+    it "executes real world save and load operations before closing dialogs" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+          worldName = "__topo_input_intent_confirm__"
+      _ <- deleteNamedWorld worldName
+      (do
+          _ <- writeReadyTerrainData ctx
+          setUiWorldSaveInput uiH worldName
+          setUiMenuMode uiH MenuWorldSave
+          saveRsp <- dispatch ctx "dialog_confirm" Null
+          srSuccess saveRsp `shouldBe` True
+          uiAfterSave <- getUiSnapshot uiH
+          uiMenuMode uiAfterSave `shouldBe` MenuNone
+
+          worlds <- listWorlds
+          map wsmName worlds `shouldSatisfy` (worldName `elem`)
+          setUiWorldList uiH worlds
+          setUiWorldFilter uiH worldName
+          setUiWorldSelected uiH 0
+          setUiMenuMode uiH MenuWorldLoad
+          loadRsp <- dispatch ctx "dialog_confirm" Null
+          srSuccess loadRsp `shouldBe` True
+          uiAfterLoad <- getUiSnapshot uiH
+          uiMenuMode uiAfterLoad `shouldBe` MenuNone
+          uiWorldName uiAfterLoad `shouldBe` worldName)
+        `finally` (deleteNamedWorld worldName >> pure ())
+
+    it "parses and commits seed input through the real set_seed operation" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+      setUiSeedInput uiH "-123"
+      setUiSeedEditing uiH True
+      _ <- getUiSnapshot uiH
+      rsp <- dispatch ctx "dialog_confirm" Null
+      srSuccess rsp `shouldBe` True
+      ui <- getUiSnapshot uiH
+      uiSeed ui `shouldBe` 123
+      uiSeedEditing ui `shouldBe` False
+
+    it "applies editor, global, layered-view, modifier, and no-effect outcomes" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+      forM_
+        [ ("c", object ["key" .= ("C" :: Text)], Just "applied")
+        , ("view", object ["key" .= ("2" :: Text)], Just "applied")
+        , ("space", object ["key" .= ("space" :: Text)], Just "no_effect")
+        ] $ \(_, params, expectedOutcome) -> do
+          rsp <- dispatch ctx "send_key" params
+          srSuccess rsp `shouldBe` True
+          lookupKey "outcome" (srResult rsp) `shouldBe` (String <$> expectedOutcome)
+      uiGlobal <- getUiSnapshot uiH
+      uiShowConfig uiGlobal `shouldBe` True
+      lvsBaseView (effectiveViewSelection uiGlobal) `shouldBe` BaseViewBiome
+
+      _ <- dispatch ctx "editor_toggle" (object ["active" .= True])
+      toolRsp <- dispatch ctx "send_key" (object ["key" .= ("3" :: Text)])
+      srSuccess toolRsp `shouldBe` True
+      undoRsp <- dispatch ctx "send_key" (object
+        [ "key" .= ("Z" :: Text)
+        , "modifiers" .= (["ctrl"] :: [Text])
+        ])
+      srSuccess undoRsp `shouldBe` True
+      redoRsp <- dispatch ctx "send_key" (object
+        [ "key" .= ("y" :: Text)
+        , "modifiers" .= (["control"] :: [Text])
+        ])
+      srSuccess redoRsp `shouldBe` True
+      lookupKey "modifiers" (srResult redoRsp) `shouldBe` Just (Aeson.toJSON (["ctrl"] :: [Text]))
+      beforeRadius <- brushRadius . editorBrush . uiEditor <$> getUiSnapshot uiH
+      _ <- dispatch ctx "send_key" (object ["key" .= ("]" :: Text)])
+      afterIncrease <- brushRadius . editorBrush . uiEditor <$> getUiSnapshot uiH
+      afterIncrease `shouldBe` min 6 (beforeRadius + 1)
+      _ <- dispatch ctx "send_key" (object ["key" .= ("[" :: Text)])
+      afterDecrease <- brushRadius . editorBrush . uiEditor <$> getUiSnapshot uiH
+      afterDecrease `shouldBe` max 0 (afterIncrease - 1)
+      _ <- dispatch ctx "send_key" (object ["key" .= ("escape" :: Text)])
+      uiEditorState <- getUiSnapshot uiH
+      editorTool (uiEditor uiEditorState) `shouldBe` ToolSmooth
+      editorActive (uiEditor uiEditorState) `shouldBe` False
+
+    it "preserves Data Browser reducer ownership for cursor editing" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+          editing = emptyDataBrowserState
+            { dbsCreateMode = True
+            , dbsFocusedField = Just "name"
+            , dbsEditValues = Map.singleton "name" (String "abcd")
+            , dbsTextCursor = 4
+            }
+      forM_
+        [ ("home", 4, "abcd", 0)
+        , ("right", 1, "abcd", 2)
+        , ("delete", 1, "acd", 1)
+        , ("backspace", 2, "acd", 1)
+        , ("end", 0, "abcd", 4)
+        ] $ \(key, initialCursor, expectedText, expectedCursor) -> do
+          setUiDataBrowser uiH editing { dbsTextCursor = initialCursor }
+          before <- getUiSnapshot uiH
+          dbsCreateMode (uiDataBrowser before) `shouldBe` True
+          dbsFocusedField (uiDataBrowser before) `shouldBe` Just "name"
+          rsp <- dispatch ctx "send_key" (object ["key" .= (key :: Text)])
+          srSuccess rsp `shouldBe` True
+          after <- getUiSnapshot uiH
+          Map.lookup "name" (dbsEditValues (uiDataBrowser after)) `shouldBe` Just (String expectedText)
+          dbsTextCursor (uiDataBrowser after) `shouldBe` expectedCursor
+
+    it "matches the Escape context/menu cascade" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+      setUiContextHex uiH (Just (2, 3))
+      setUiContextPos uiH (Just (10, 20))
+      setUiMenuMode uiH MenuNone
+      _ <- getUiSnapshot uiH
+      first <- dispatch ctx "send_key" (object ["key" .= ("escape" :: Text)])
+      srSuccess first `shouldBe` True
+      ui1 <- getUiSnapshot uiH
+      uiContextHex ui1 `shouldBe` Nothing
+      uiContextPos ui1 `shouldBe` Nothing
+      uiMenuMode ui1 `shouldBe` MenuEscape
+      second <- dispatch ctx "dialog_cancel" Null
+      srSuccess second `shouldBe` True
+      ui2 <- getUiSnapshot uiH
+      uiMenuMode ui2 `shouldBe` MenuNone
 
   -- -------------------------------------------------------------------
   -- get_state

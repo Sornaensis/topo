@@ -71,6 +71,7 @@ library:
     - Seer.Input
     - Seer.Input.Actions
     - Seer.Input.Events
+    - Seer.Input.Intent
     - Seer.Command.AppServiceAdapter
     - Seer.Command.Channel
     - Seer.Command.Dispatch

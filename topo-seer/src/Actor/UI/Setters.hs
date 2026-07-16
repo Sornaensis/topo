@@ -270,6 +270,7 @@ module Actor.UI.Setters
   , setUiSimTickCount
   , setUiSeedEditing
   , setUiSeedInput
+  , setUiDataBrowser
   , setUiOverlayNames
   , setUiOverlayFields
   , setUiDataResources
@@ -298,6 +299,7 @@ import Actor.UI.State
   , PipelineStageRunState
   , LeftTab
   , SkyOverlayMode
+  , DataBrowserState
   , Ui
   , UiMenuMode
   , UiUpdate(..)
@@ -594,6 +596,8 @@ setUiSimTickRate = sendUnary SetSimTickRate
 setUiSimTickCount = sendUnary SetSimTickCount
 setUiSeedEditing = sendUnary SetSeedEditing
 setUiSeedInput = sendUnary SetSeedInput
+setUiDataBrowser :: UiHandle -> DataBrowserState -> IO ()
+setUiDataBrowser = sendUnary SetDataBrowser
 setUiOverlayNames = sendUnary SetOverlayNames
 setUiOverlayFields = sendUnary SetOverlayFields
 

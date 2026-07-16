@@ -507,8 +507,9 @@ data UiDialogActionResponse = UiDialogActionResponse
   , uiDialogActionSelectedIndex :: !(Maybe Int)
   } deriving (Eq, Show)
 
-newtype UiSendKeyRequest = UiSendKeyRequest
-  { uiSendKeyName :: Text
+data UiSendKeyRequest = UiSendKeyRequest
+  { uiSendKeyName :: !Text
+  , uiSendKeyModifiers :: ![Text]
   } deriving (Eq, Show)
 
 data UiSendKeyResponse = UiSendKeyResponse
@@ -521,6 +522,8 @@ data UiSendKeyResponse = UiSendKeyResponse
   , uiSendKeyResponseAction :: !(Maybe Text)
   , uiSendKeyResponseMenuMode :: !(Maybe Text)
   , uiSendKeyResponseName :: !(Maybe Text)
+  , uiSendKeyResponseModifiers :: ![Text]
+  , uiSendKeyResponseOutcome :: !Text
   } deriving (Eq, Show)
 
 uiServiceGroup :: ServiceGroupSpec

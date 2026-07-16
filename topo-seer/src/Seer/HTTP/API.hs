@@ -2452,27 +2452,32 @@ dialogActionResponseSchema :: JsonSchema
 dialogActionResponseSchema = objectSchema "DialogActionResponse"
   [ "action" ]
   [ ("action", stringSchema)
-  , ("name", stringSchema)
-  , ("selected", integerSchema)
-  , ("menu_mode", stringSchema)
+  , ("name", nullableSchema stringSchema)
+  , ("selected", nullableSchema integerSchema)
+  , ("menu_mode", nullableSchema stringSchema)
   ]
 
 keySendRequestSchema :: JsonSchema
 keySendRequestSchema = objectSchema "KeySendRequest"
   [ "key" ]
   [ ("key", stringSchema)
+  , ("modifiers", arraySchema (enumStringSchema ["ctrl", "shift", "alt", "meta"]))
   ]
 
 keySendResponseSchema :: JsonSchema
 keySendResponseSchema = objectSchema "KeySendResponse"
-  []
+  [ "key", "modifiers", "outcome", "action" ]
   [ ("key", stringSchema)
-  , ("selected", integerSchema)
-  , ("text", stringSchema)
-  , ("filter", stringSchema)
-  , ("field", stringSchema)
-  , ("cursor", integerSchema)
+  , ("modifiers", arraySchema (enumStringSchema ["ctrl", "shift", "alt", "meta"]))
+  , ("outcome", enumStringSchema ["applied", "no_effect"])
+  , ("selected", nullableSchema integerSchema)
+  , ("text", nullableSchema stringSchema)
+  , ("filter", nullableSchema stringSchema)
+  , ("field", nullableSchema stringSchema)
+  , ("cursor", nullableSchema integerSchema)
   , ("action", stringSchema)
+  , ("name", nullableSchema stringSchema)
+  , ("menu_mode", nullableSchema stringSchema)
   ]
 
 uiStatePanelsSchema :: Value

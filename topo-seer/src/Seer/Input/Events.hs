@@ -9,43 +9,28 @@ module Seer.Input.Events
   ) where
 
 import Actor.Data (getTerrainSnapshot)
-import Actor.Log (LogSnapshot(..), getLogSnapshot, setLogCollapsed, setLogScroll)
+import Actor.Log (LogSnapshot(..), getLogSnapshot, setLogScroll)
 import Actor.UI
   ( ConfigTab(..)
   , DataBrowserState(..)
-  , LayeredViewState(..)
   , LeftTab(..)
   , Ui
   , UiMenuMode(..)
-  , SkyOverlayMode(..)
   , UiState(..)
-  , effectiveViewSelection
   , getUiSnapshot
   , setUiConfigScroll
-  , setUiContextHex
-  , setUiContextPos
   , setUiHexTooltipPinned
   , setUiPanOffset
   , setUiHoverHex
   , setUiHoverWidget
-  , setUiShowConfig
-  , setUiMenuMode
-  , setUiPresetInput
-  , setUiPresetSelected
-  , setUiPresetFilter
-  , setUiWorldSaveInput
-  , setUiWorldSelected
-  , setUiWorldFilter
   , setUiZoom
   , setUiLeftViewScroll
   )
 import Control.Applicative ((<|>))
-import Control.Monad (void, when)
-import Data.Aeson (Value(..), object, (.=))
+import Control.Monad (when)
+import Data.Aeson (object, (.=))
 import Data.IORef (IORef, readIORef, writeIORef)
-import qualified Data.Map.Strict as Map
-import Data.Word (Word32, Word64)
-import qualified Data.Text as Text
+import Data.Word (Word32)
 import Linear (V2(..))
 import qualified SDL
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -60,32 +45,33 @@ import Seer.Input.Context
   , TooltipHover
   , enqueueInputAction
   )
-import Seer.Input.Modal (handleModalListKey, handleModalTextKey, handleModalTextInput)
-import Seer.Input.Seed (bumpSeed, handleSeedKey, handleSeedTextInput)
+import Seer.Input.Intent
+  ( InputIntentEnv(..)
+  , InputIntentResult(..)
+  , InputKey(..)
+  , KeyModifiers(..)
+  , executeKeyIntent
+  , executeTextIntent
+  )
 import Seer.Input.ViewControls
-  ( ViewHotkey(..)
-  , applyZoomAtCursor
+  ( applyZoomAtCursor
   , defaultZoomSettings
   , isViewportDrag
-  , nextBuiltinOverlay
-  , nextWeatherBasis
   , panViewportForDrag
   , pickTerrainHex
-  , viewHotkeyForKey
   )
 import Seer.DataBrowser.Executor (submitDataBrowserAction)
-import qualified Seer.DataBrowser.Lifecycle as DataBrowser
+import Seer.DataBrowser.Model (DataBrowserBeginResult(..))
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildSliderRowWidgets, hitTest)
 import UI.WidgetId (widgetIdToText)
-import UI.Widgets (Rect(..), containsPoint)
+import UI.Widgets (containsPoint)
 import Seer.Input.Actions (InputEnv(..), runInputService, submitAction)
 import qualified Seer.Input.Actions as InputActions
-import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..))
+import Seer.Editor.Types (EditorState(..), EditorTool(..))
 import Actor.UiActions (UiAction(..))
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Input.Widgets (handleClick)
-import Seer.World.Persist.Types (WorldSaveManifest(..))
 
 -- | Wall-clock delay (milliseconds) the cursor must remain still on a
 -- widget before the tooltip appears.
@@ -307,72 +293,22 @@ handleEvent inputContext event = do
                 clearEditorStrokeSession
             _ -> pure ()
     SDL.TextInputEvent textEvent -> do
-      uiSnap <- InputActions.getUiSnapshot inputEnv
-      let txt = SDL.textInputEventText textEvent
-      when (uiSeedEditing uiSnap) $
-        handleSeedTextInput uiHandle (getUiSnapshot uiHandle) txt
-      when (uiMenuMode uiSnap == MenuPresetSave) $
-        handleModalTextInput (uiPresetInput uiSnap) txt
-          (setUiPresetInput uiHandle)
-      when (uiMenuMode uiSnap == MenuWorldSave) $
-        handleModalTextInput (uiWorldSaveInput uiSnap) txt
-          (setUiWorldSaveInput uiHandle)
-      when (uiMenuMode uiSnap == MenuPresetLoad) $
-        handleModalTextInput (uiPresetFilter uiSnap) txt
-          (\f -> setUiPresetFilter uiHandle f >> setUiPresetSelected uiHandle 0)
-      when (uiMenuMode uiSnap == MenuWorldLoad) $
-        handleModalTextInput (uiWorldFilter uiSnap) txt
-          (\f -> setUiWorldFilter uiHandle f >> setUiWorldSelected uiHandle 0)
-      -- Data browser text editing is reduced against the latest Ui-owned state.
-      let dbs = uiDataBrowser uiSnap
-      case dbsFocusedField dbs of
-        Just _ | dbsEditMode dbs || dbsCreateMode dbs -> do
-          let filtered = Text.filter (\c -> c >= ' ') txt
-          when (not (Text.null filtered)) $
-            applyDataBrowserAction (DataBrowser.DataBrowserInsertText filtered)
-        _ -> pure ()
+      _ <- executeTextIntent intentEnv (SDL.textInputEventText textEvent)
+      pure ()
     SDL.KeyboardEvent keyboardEvent
-      | SDL.keyboardEventKeyMotion keyboardEvent == SDL.Pressed ->
-          do
-            uiSnap <- InputActions.getUiSnapshot inputEnv
-            let keycode = SDL.keysymKeycode (SDL.keyboardEventKeysym keyboardEvent)
-            if uiSeedEditing uiSnap
-              then handleSeedKey uiHandle (getUiSnapshot uiHandle) setSeedValue keycode
-              else let dbs = uiDataBrowser uiSnap
-                   in case dbsFocusedField dbs of
-                        Just path | dbsEditMode dbs || dbsCreateMode dbs ->
-                          handleDataFieldKey uiSnap dbs path keycode
-                        _ -> case uiMenuMode uiSnap of
-                              MenuPresetSave -> handlePresetSaveKey uiSnap keycode
-                              MenuPresetLoad -> handlePresetLoadKey uiSnap keycode
-                              MenuWorldSave  -> handleWorldSaveKey uiSnap keycode
-                              MenuWorldLoad  -> handleWorldLoadKey uiSnap keycode
-                              _ -> do
-                                uiSnap2 <- getUiSnapshot uiHandle
-                                let editor = uiEditor uiSnap2
-                                    mods = SDL.keysymModifier (SDL.keyboardEventKeysym keyboardEvent)
-                                    ctrl = SDL.keyModifierLeftCtrl mods || SDL.keyModifierRightCtrl mods
-                                if editorActive editor
-                                  then if ctrl
-                                    then case keycode of
-                                      SDL.KeycodeZ -> runEditorService "editor_undo" Null
-                                      SDL.KeycodeY -> runEditorService "editor_redo" Null
-                                      _ -> handleEditorKey editor keycode
-                                    else handleEditorKey editor keycode
-                                  else case keycode of
-                                    SDL.KeycodeEscape -> closeContextOrMenu
-                                    SDL.KeycodeG -> runInputService inputEnv "generate" Null >> pure ()
-                                    SDL.KeycodeC -> toggleConfig
-                                    SDL.KeycodeE -> toggleEditor
-                                    SDL.KeycodeUp -> bumpSeed (getUiSnapshot uiHandle) setSeedValue 1
-                                    SDL.KeycodeDown -> bumpSeed (getUiSnapshot uiHandle) setSeedValue (-1)
-                                    SDL.KeycodeL -> do
-                                      logSnap <- getLogSnapshot logHandle
-                                      setLogCollapsed logHandle (not (lsCollapsed logSnap))
-                                    _ ->
-                                      case viewHotkeyForKey keycode of
-                                        Just hotkey -> handleViewHotkey uiSnap2 hotkey
-                                        Nothing -> pure ()
+      | SDL.keyboardEventKeyMotion keyboardEvent == SDL.Pressed -> do
+          let keysym = SDL.keyboardEventKeysym keyboardEvent
+          case inputKeyForSdl (SDL.keysymKeycode keysym) of
+            Nothing -> pure ()
+            Just key -> do
+              uiSnap <- getUiSnapshot uiHandle
+              if sdlTextInputOwnsKey uiSnap key
+                then pure ()
+                else do
+                  result <- executeKeyIntent intentEnv (modifiersForSdl (SDL.keysymModifier keysym)) key
+                  case result of
+                    Right outcome | iirStopTextInput outcome -> SDL.stopTextInput
+                    _ -> pure ()
     _ -> pure ()
   where
     inputEnv :: InputEnv
@@ -388,29 +324,22 @@ handleEvent inputContext event = do
 
     dataHandle = ahDataHandle actorHandles
 
-    runService method params =
-      runInputService inputEnv method params >> pure ()
+    intentEnv = InputIntentEnv
+      { iieActorHandles = actorHandles
+      , iieGetUi = getUiSnapshot uiHandle
+      , iieGetLog = getLogSnapshot logHandle
+      , iieRunService = runInputService inputEnv
+      , iieApplyDataBrowser = applyDataBrowserIntent
+      }
 
-    applyDataBrowserAction action = void $ submitDataBrowserAction
-      (ieDataBrowserExecutor inputEnv)
-      (runInputService inputEnv)
-      action
-
-    setSeedValue :: Word64 -> IO ()
-    setSeedValue seed =
-      runService "set_seed" (object ["seed" .= seed])
-
-    runEditorService method params =
-      runService method params
-
-    setEditorActive active =
-      runEditorService "editor_toggle" (object ["active" .= active])
-
-    setEditorTool tool =
-      runEditorService "editor_set_tool" (object ["tool" .= editorToolName tool])
-
-    setEditorBrushRadius radius =
-      runEditorService "editor_set_brush" (object ["radius" .= radius])
+    applyDataBrowserIntent action = do
+      result <- submitDataBrowserAction
+        (ieDataBrowserExecutor inputEnv)
+        (runInputService inputEnv)
+        action
+      pure $ case result of
+        DataBrowserBeginRejected err -> Left err
+        _ -> Right ()
 
     submitEditorBrushStroke hex =
       -- Local drag strokes stay on the shared UiActions stroke stream so
@@ -421,80 +350,6 @@ handleEvent inputContext event = do
     clearEditorStrokeSession =
       submitAction inputEnv UiActionClearFlattenRef
 
-    editorToolName :: EditorTool -> Text.Text
-    editorToolName tool = case tool of
-      ToolRaise -> "raise"
-      ToolLower -> "lower"
-      ToolSmooth -> "smooth"
-      ToolFlatten -> "flatten"
-      ToolNoise -> "noise"
-      ToolPaintBiome -> "paint_biome"
-      ToolPaintForm -> "paint_form"
-      ToolSetHardness -> "set_hardness"
-      ToolErode -> "erode"
-
-    toggleConfig = do
-      uiSnap <- getUiSnapshot uiHandle
-      setUiShowConfig uiHandle (not (uiShowConfig uiSnap))
-    toggleEditor = do
-      uiSnap <- getUiSnapshot uiHandle
-      let editor = uiEditor uiSnap
-      setEditorActive (not (editorActive editor))
-
-    handleViewHotkey :: UiState -> ViewHotkey -> IO ()
-    handleViewHotkey uiSnap hotkey =
-      case hotkey of
-        ViewHotkeySetBase baseMode ->
-          submitAction inputEnv (UiActionSetBaseViewMode baseMode)
-        ViewHotkeySetOverlay overlayMode ->
-          submitAction inputEnv (UiActionSetSkyOverlayMode overlayMode)
-        ViewHotkeyCycleOverlay ->
-          submitAction inputEnv (UiActionSetSkyOverlayMode (nextBuiltinOverlay selection))
-        ViewHotkeyCycleWeatherBasis ->
-          when (weatherBasisEnabled selection) $
-            submitAction inputEnv (UiActionSetWeatherBasis (nextWeatherBasis (lvsWeatherBasis selection)))
-      where
-        selection = effectiveViewSelection uiSnap
-
-    weatherBasisEnabled :: LayeredViewState -> Bool
-    weatherBasisEnabled selection = case lvsSkyOverlay selection of
-      Just (SkyOverlayPlugin _ _) -> False
-      Just _ -> True
-      Nothing -> False
-
-    handleEditorKey :: EditorState -> SDL.Keycode -> IO ()
-    handleEditorKey editor keycode = case keycode of
-      SDL.KeycodeEscape ->
-        setEditorActive False
-      SDL.KeycodeE ->
-        setEditorActive False
-      SDL.Keycode1 ->
-        setEditorTool ToolRaise
-      SDL.Keycode2 ->
-        setEditorTool ToolLower
-      SDL.Keycode3 ->
-        setEditorTool ToolSmooth
-      SDL.Keycode4 ->
-        setEditorTool ToolFlatten
-      SDL.Keycode5 ->
-        setEditorTool ToolNoise
-      SDL.Keycode6 ->
-        setEditorTool ToolPaintBiome
-      SDL.Keycode7 ->
-        setEditorTool ToolPaintForm
-      SDL.Keycode8 ->
-        setEditorTool ToolSetHardness
-      SDL.Keycode9 ->
-        setEditorTool ToolErode
-      SDL.KeycodeLeftBracket ->
-        let brush = editorBrush editor
-            r = max 0 (brushRadius brush - 1)
-        in setEditorBrushRadius r
-      SDL.KeycodeRightBracket ->
-        let brush = editorBrush editor
-            r = min 6 (brushRadius brush + 1)
-        in setEditorBrushRadius r
-      _ -> pure ()
     handleEditorWidgetClick :: EditorState -> WidgetId -> IO ()
     handleEditorWidgetClick _editor = dispatchEditorWidget
 
@@ -504,128 +359,84 @@ handleEvent inputContext event = do
           (object ["widget_id" .= widgetIdToText wid])
         pure ()
 
-    -- | Handle keyboard events when a data browser text field is focused.
-    handleDataFieldKey :: UiState -> DataBrowserState -> Text.Text -> SDL.Keycode -> IO ()
-    handleDataFieldKey _uiSnap dbs path keycode = do
-      let cursor = dbsTextCursor dbs
-          currentText = case Map.lookup path (dbsEditValues dbs) of
-            Just (String t) -> t
-            _ -> ""
-          unfocus = applyDataBrowserAction DataBrowser.DataBrowserBlurField >> SDL.stopTextInput
-      case keycode of
-        SDL.KeycodeEscape -> unfocus
-        SDL.KeycodeReturn -> unfocus
-        SDL.KeycodeTab -> unfocus
-        SDL.KeycodeBackspace -> applyDataBrowserAction DataBrowser.DataBrowserBackspace
-        SDL.KeycodeDelete -> applyDataBrowserAction DataBrowser.DataBrowserDeleteText
-        SDL.KeycodeLeft -> applyDataBrowserAction (DataBrowser.DataBrowserSetTextCursor (cursor - 1))
-        SDL.KeycodeRight -> applyDataBrowserAction (DataBrowser.DataBrowserSetTextCursor (cursor + 1))
-        SDL.KeycodeHome -> applyDataBrowserAction (DataBrowser.DataBrowserSetTextCursor 0)
-        SDL.KeycodeEnd -> applyDataBrowserAction (DataBrowser.DataBrowserSetTextCursor (Text.length currentText))
-        _ -> pure ()
+-- SDL normalization is intentionally thin; all routing and semantics live in
+-- Seer.Input.Intent and are therefore shared with automation.
+inputKeyForSdl :: SDL.Keycode -> Maybe InputKey
+inputKeyForSdl key = case key of
+  SDL.KeycodeEscape -> Just KeyEscape
+  SDL.KeycodeReturn -> Just KeyEnter
+  SDL.KeycodeBackspace -> Just KeyBackspace
+  SDL.KeycodeDelete -> Just KeyDelete
+  SDL.KeycodeTab -> Just KeyTab
+  SDL.KeycodeUp -> Just KeyUp
+  SDL.KeycodeDown -> Just KeyDown
+  SDL.KeycodeLeft -> Just KeyLeft
+  SDL.KeycodeRight -> Just KeyRight
+  SDL.KeycodeHome -> Just KeyHome
+  SDL.KeycodeEnd -> Just KeyEnd
+  SDL.KeycodeSpace -> Just KeySpace
+  SDL.KeycodeLeftBracket -> Just KeyLeftBracket
+  SDL.KeycodeRightBracket -> Just KeyRightBracket
+  SDL.Keycode0 -> Just (KeyCharacter '0')
+  SDL.Keycode1 -> Just (KeyCharacter '1')
+  SDL.Keycode2 -> Just (KeyCharacter '2')
+  SDL.Keycode3 -> Just (KeyCharacter '3')
+  SDL.Keycode4 -> Just (KeyCharacter '4')
+  SDL.Keycode5 -> Just (KeyCharacter '5')
+  SDL.Keycode6 -> Just (KeyCharacter '6')
+  SDL.Keycode7 -> Just (KeyCharacter '7')
+  SDL.Keycode8 -> Just (KeyCharacter '8')
+  SDL.Keycode9 -> Just (KeyCharacter '9')
+  SDL.KeycodeA -> Just (KeyCharacter 'a')
+  SDL.KeycodeB -> Just (KeyCharacter 'b')
+  SDL.KeycodeC -> Just (KeyCharacter 'c')
+  SDL.KeycodeD -> Just (KeyCharacter 'd')
+  SDL.KeycodeE -> Just (KeyCharacter 'e')
+  SDL.KeycodeF -> Just (KeyCharacter 'f')
+  SDL.KeycodeG -> Just (KeyCharacter 'g')
+  SDL.KeycodeH -> Just (KeyCharacter 'h')
+  SDL.KeycodeI -> Just (KeyCharacter 'i')
+  SDL.KeycodeJ -> Just (KeyCharacter 'j')
+  SDL.KeycodeK -> Just (KeyCharacter 'k')
+  SDL.KeycodeL -> Just (KeyCharacter 'l')
+  SDL.KeycodeM -> Just (KeyCharacter 'm')
+  SDL.KeycodeN -> Just (KeyCharacter 'n')
+  SDL.KeycodeO -> Just (KeyCharacter 'o')
+  SDL.KeycodeP -> Just (KeyCharacter 'p')
+  SDL.KeycodeQ -> Just (KeyCharacter 'q')
+  SDL.KeycodeR -> Just (KeyCharacter 'r')
+  SDL.KeycodeS -> Just (KeyCharacter 's')
+  SDL.KeycodeT -> Just (KeyCharacter 't')
+  SDL.KeycodeU -> Just (KeyCharacter 'u')
+  SDL.KeycodeV -> Just (KeyCharacter 'v')
+  SDL.KeycodeW -> Just (KeyCharacter 'w')
+  SDL.KeycodeX -> Just (KeyCharacter 'x')
+  SDL.KeycodeY -> Just (KeyCharacter 'y')
+  SDL.KeycodeZ -> Just (KeyCharacter 'z')
+  _ -> Nothing
 
-    closeContextOrMenu = do
-      uiSnap <- getUiSnapshot uiHandle
-      let dbs = uiDataBrowser uiSnap
-      if dbsDeleteConfirm dbs
-        then applyDataBrowserAction DataBrowser.DataBrowserCancelDelete
-        else if dbsEditMode dbs || dbsCreateMode dbs
-          then do
-            applyDataBrowserAction DataBrowser.DataBrowserCancelEdit
-            SDL.stopTextInput
-          else case dbsSelectedRecord dbs of
-            Just _ -> applyDataBrowserAction DataBrowser.DataBrowserDismissRecord
-            Nothing ->
-              case uiContextHex uiSnap of
-                Just _ -> do
-                  setUiContextHex uiHandle Nothing
-                  setUiContextPos uiHandle Nothing
-                  setUiMenuMode uiHandle MenuEscape
-                Nothing ->
-                  case uiMenuMode uiSnap of
-                    MenuNone -> setUiMenuMode uiHandle MenuEscape
-                    _        -> setUiMenuMode uiHandle MenuNone
+sdlTextInputOwnsKey :: UiState -> InputKey -> Bool
+sdlTextInputOwnsKey ui key = isTextKey key && textScope
+  where
+    isTextKey (KeyCharacter _) = True
+    isTextKey KeySpace = True
+    isTextKey _ = False
+    dbs = uiDataBrowser ui
+    dataFieldFocused = case dbsFocusedField dbs of
+      Just _ -> dbsEditMode dbs || dbsCreateMode dbs
+      Nothing -> False
+    textScope = uiSeedEditing ui
+      || dataFieldFocused
+      || uiMenuMode ui `elem`
+          [MenuPresetSave, MenuPresetLoad, MenuWorldSave, MenuWorldLoad]
 
-    handlePresetSaveKey :: UiState -> SDL.Keycode -> IO ()
-    handlePresetSaveKey _uiSnap keycode =
-      handleModalTextKey keycode
-        -- onConfirm
-        (do uiSnap' <- getUiSnapshot uiHandle
-            let name = uiPresetInput uiSnap'
-            _ <- runInputService inputEnv "save_preset" (object ["name" .= name])
-            setUiMenuMode uiHandle MenuNone
-            SDL.stopTextInput)
-        -- onCancel
-        (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
-        -- onBackspace
-        (do uiSnap' <- getUiSnapshot uiHandle
-            setUiPresetInput uiHandle (Text.dropEnd 1 (uiPresetInput uiSnap')))
-
-    handlePresetLoadKey :: UiState -> SDL.Keycode -> IO ()
-    handlePresetLoadKey uiSnap keycode = do
-      let fText = Text.toLower (uiPresetFilter uiSnap)
-          filteredItems = filter (\n -> Text.isInfixOf fText (Text.toLower n)) (uiPresetList uiSnap)
-      case keycode of
-        SDL.KeycodeBackspace ->
-          setUiPresetFilter uiHandle (Text.dropEnd 1 (uiPresetFilter uiSnap))
-            >> setUiPresetSelected uiHandle 0
-        _ ->
-          handleModalListKey keycode
-            (uiPresetSelected uiSnap)
-            (length filteredItems - 1)
-            -- onConfirm
-            (do let sel = uiPresetSelected uiSnap
-                when (sel >= 0 && sel < length filteredItems) $ do
-                  let name = filteredItems !! sel
-                  _ <- runInputService inputEnv "load_preset" (object ["name" .= name])
-                  pure ()
-                setUiMenuMode uiHandle MenuNone)
-            -- onCancel
-            (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
-            -- setSelection
-            (setUiPresetSelected uiHandle)
-
-    handleWorldSaveKey :: UiState -> SDL.Keycode -> IO ()
-    handleWorldSaveKey _uiSnap keycode =
-      handleModalTextKey keycode
-        -- onConfirm
-        (do uiSnap' <- getUiSnapshot uiHandle
-            let name = uiWorldSaveInput uiSnap'
-            when (not (Text.null name)) $ do
-              _ <- runInputService inputEnv "save_world" (object ["name" .= name])
-              pure ()
-            setUiMenuMode uiHandle MenuNone
-            SDL.stopTextInput)
-        -- onCancel
-        (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
-        -- onBackspace
-        (do uiSnap' <- getUiSnapshot uiHandle
-            setUiWorldSaveInput uiHandle (Text.dropEnd 1 (uiWorldSaveInput uiSnap')))
-
-    handleWorldLoadKey :: UiState -> SDL.Keycode -> IO ()
-    handleWorldLoadKey uiSnap keycode = do
-      let fText = Text.toLower (uiWorldFilter uiSnap)
-          filteredItems = filter (\m -> Text.isInfixOf fText (Text.toLower (wsmName m))) (uiWorldList uiSnap)
-      case keycode of
-        SDL.KeycodeBackspace ->
-          setUiWorldFilter uiHandle (Text.dropEnd 1 (uiWorldFilter uiSnap))
-            >> setUiWorldSelected uiHandle 0
-        _ ->
-          handleModalListKey keycode
-            (uiWorldSelected uiSnap)
-            (length filteredItems - 1)
-            -- onConfirm
-            (do let sel = uiWorldSelected uiSnap
-                when (sel >= 0 && sel < length filteredItems) $ do
-                  let manifest = filteredItems !! sel
-                      name = wsmName manifest
-                  _ <- runInputService inputEnv "load_world" (object ["name" .= name])
-                  pure ()
-                setUiMenuMode uiHandle MenuNone)
-            -- onCancel
-            (setUiMenuMode uiHandle MenuNone >> SDL.stopTextInput)
-            -- setSelection
-            (setUiWorldSelected uiHandle)
+modifiersForSdl :: SDL.KeyModifier -> KeyModifiers
+modifiersForSdl mods = KeyModifiers
+  { kmCtrl = SDL.keyModifierLeftCtrl mods || SDL.keyModifierRightCtrl mods
+  , kmShift = SDL.keyModifierLeftShift mods || SDL.keyModifierRightShift mods
+  , kmAlt = SDL.keyModifierLeftAlt mods || SDL.keyModifierRightAlt mods
+  , kmMeta = SDL.keyModifierLeftGUI mods || SDL.keyModifierRightGUI mods
+  }
 
 -- | Per-frame tick for the tooltip hover delay.  Compares the stored
 -- wall-clock deadline against the current SDL tick time and promotes
