@@ -16,11 +16,9 @@ module Seer.Command.Handlers.Viewport
 
 import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson.Types as Aeson
-import qualified Data.IntMap.Strict as IntMap
-
-import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
+import Actor.Data (getTerrainSnapshot)
 import Actor.Terrain (TerrainReplyOps)
-import Actor.UI.Setters (setUiPanOffset, setUiZoom, setUiHoverHex, setUiContextHex, setUiHexTooltipPinned)
+import Actor.UI.Setters (setUiPanOffset, setUiZoom, setUiHoverHex, setUiContextHex, setUiContextPos, setUiHexTooltipPinned)
 import Actor.UI.State (UiState(..), readUiSnapshotRef)
 import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiActionSync)
 import Actor.UiActions.Command (enqueueViewportRefreshForCurrentUi)
@@ -28,39 +26,15 @@ import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Editor.Types (EditorState(..))
-import Seer.Render.ZoomStage (maxCameraZoom)
-import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
+import Seer.Input.ViewControls
+  ( applyZoomAtCursor
+  , defaultZoomSettings
+  , isViewportDrag
+  , panViewportForDrag
+  , pickTerrainHex
+  , zoomStepCount
+  )
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
-import UI.HexGeometry (screenPixelToAxial, renderHexRadiusPx)
-
--- --------------------------------------------------------------------------
--- Constants (matching Seer.Input.ViewControls)
--- --------------------------------------------------------------------------
-
-zoomMin, zoomMax :: Float
-zoomMin = 0.4
-zoomMax = maxCameraZoom
-
-zoomInFactor, zoomOutFactor :: Float
-zoomInFactor  = 1.1
-zoomOutFactor = 0.9
-
-clampZoom :: Float -> Float
-clampZoom = max zoomMin . min zoomMax
-
--- --------------------------------------------------------------------------
--- Coordinate helpers
--- --------------------------------------------------------------------------
-
--- | Check whether a hex @(q, r)@ exists in the current terrain.
-isTerrainHex :: TerrainSnapshot -> (Int, Int) -> Bool
-isTerrainHex snap (q, r) =
-  let size = tsChunkSize snap
-  in size > 0
-    && let cfg = WorldConfig { wcChunkSize = size }
-           (chunkCoord, _) = chunkCoordFromTile cfg (TileCoord q r)
-           ChunkId key = chunkIdFromCoord chunkCoord
-       in IntMap.member key (tsTerrainChunks snap)
 
 -- --------------------------------------------------------------------------
 -- Handlers
@@ -82,24 +56,13 @@ handleViewportScroll ctx reqId params = do
       let handles = ccActorHandles ctx
           uiH = ahUiHandle handles
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
-      let oldZoom = uiZoom ui
-          factor
-            | delta > 0 = zoomInFactor
-            | delta < 0 = zoomOutFactor
-            | otherwise = 1
-          -- Apply multiple steps for |delta| > 1
-          steps = abs delta
-          newZoom = clampZoom (oldZoom * factor ^ steps)
-          (ox, oy) = uiPanOffset ui
-          fx = fromIntegral mx :: Float
-          fy = fromIntegral my :: Float
-          newOffset =
-            ( ox + fx * (1 / newZoom - 1 / oldZoom)
-            , oy + fy * (1 / newZoom - 1 / oldZoom)
-            )
-      setUiZoom uiH newZoom
-      setUiPanOffset uiH newOffset
-      _ <- enqueueViewportRefreshForCurrentUi handles
+      let steps = zoomStepCount delta
+          (newZoom, newOffset) = applyZoomAtCursor defaultZoomSettings ui (mx, my) delta
+      when (delta /= 0) $ do
+        setUiZoom uiH newZoom
+        setUiPanOffset uiH newOffset
+        _ <- enqueueViewportRefreshForCurrentUi handles
+        pure ()
       let (nx, ny) = newOffset
       pure $ okResponse reqId $ object
         [ "zoom"   .= newZoom
@@ -126,8 +89,7 @@ handleViewportClick ctx reqId params = do
           uiH = ahUiHandle handles
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
       terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-      let (q, r) = screenPixelToAxial renderHexRadiusPx (uiPanOffset ui) (uiZoom ui) (px, py)
-          hexExists = isTerrainHex terrainSnap (q, r)
+      let ((q, r), hexExists) = pickTerrainHex terrainSnap ui (px, py)
       case button of
         "right" -> do
           setUiHexTooltipPinned uiH (not (uiHexTooltipPinned ui))
@@ -141,15 +103,11 @@ handleViewportClick ctx reqId params = do
               setUiHoverHex uiH (Just (q, r))
               setUiContextHex uiH (Just (q, r))
               setUiHexTooltipPinned uiH True
-              -- Editor brush stroke if editor active
+              -- viewport_click intentionally selects/pins in addition to
+              -- matching SDL's editor-only terrain paint policy.
               let editor = uiEditor ui
-              when (editorActive editor) $ do
-                let request = UiActionRequest
-                      { uarAction         = UiActionBrushStroke (q, r)
-                      , uarActorHandles   = handles
-                      , uarTerrainReplyTo = replyTo @TerrainReplyOps (ccUiActionsHandle ctx)
-                      }
-                submitUiActionSync (ccUiActionsHandle ctx) request
+              when (editorActive editor) $
+                submitDiscreteEditorStroke ctx (q, r)
               pure $ okResponse reqId $ object
                 [ "button"  .= ("left" :: String)
                 , "hex_q"   .= q
@@ -159,6 +117,9 @@ handleViewportClick ctx reqId params = do
                 ]
             else do
               setUiHoverHex uiH Nothing
+              setUiContextHex uiH Nothing
+              setUiContextPos uiH Nothing
+              setUiHexTooltipPinned uiH False
               pure $ okResponse reqId $ object
                 [ "button"  .= ("left" :: String)
                 , "hex_q"   .= q
@@ -171,8 +132,9 @@ handleViewportClick ctx reqId params = do
 --
 -- Params: @{ "x1": int, "y1": int, "x2": int, "y2": int }@
 --
--- Pans the camera by the screen-space delta divided by zoom, matching
--- the right-button drag behaviour in @Seer.Input.Events@.
+-- Movements beyond the shared SDL threshold pan by the screen-space delta
+-- divided by zoom. Sub-threshold gestures behave as a right click and toggle
+-- tooltip pinning without a viewport refresh.
 handleViewportDrag :: CommandContext -> Int -> Value -> IO SeerResponse
 handleViewportDrag ctx reqId params = do
   case Aeson.parseMaybe parseDrag params of
@@ -182,19 +144,24 @@ handleViewportDrag ctx reqId params = do
       let handles = ccActorHandles ctx
           uiH = ahUiHandle handles
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
-      let zoom = uiZoom ui
-          (ox, oy) = uiPanOffset ui
-          dx = fromIntegral (x2 - x1) :: Float
-          dy = fromIntegral (y2 - y1) :: Float
-          newOffset = (ox + dx / zoom, oy + dy / zoom)
-      setUiPanOffset uiH newOffset
-      _ <- enqueueViewportRefreshForCurrentUi handles
+      let start = (x1, y1)
+          end = (x2, y2)
+          dragged = isViewportDrag start end
+          newOffset = if dragged
+            then panViewportForDrag ui start end
+            else uiPanOffset ui
+      if dragged
+        then do
+          setUiPanOffset uiH newOffset
+          _ <- enqueueViewportRefreshForCurrentUi handles
+          pure ()
+        else setUiHexTooltipPinned uiH (not (uiHexTooltipPinned ui))
       let (nx, ny) = newOffset
       pure $ okResponse reqId $ object
         [ "pan_x"  .= nx
         , "pan_y"  .= ny
-        , "dx"     .= (x2 - x1)
-        , "dy"     .= (y2 - y1)
+        , "dx"     .= (toInteger x2 - toInteger x1)
+        , "dy"     .= (toInteger y2 - toInteger y1)
         ]
 
 -- | Handle @viewport_hover@ — simulate mouse hover at pixel coordinates.
@@ -213,8 +180,7 @@ handleViewportHover ctx reqId params = do
           uiH = ahUiHandle handles
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
       terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
-      let (q, r) = screenPixelToAxial renderHexRadiusPx (uiPanOffset ui) (uiZoom ui) (px, py)
-          hexExists = isTerrainHex terrainSnap (q, r)
+      let ((q, r), hexExists) = pickTerrainHex terrainSnap ui (px, py)
       if hexExists
         then do
           setUiHoverHex uiH (Just (q, r))
@@ -232,6 +198,17 @@ handleViewportHover ctx reqId params = do
             , "hex_r"  .= r
             , "valid"  .= False
             ]
+
+submitDiscreteEditorStroke :: CommandContext -> (Int, Int) -> IO ()
+submitDiscreteEditorStroke ctx hex =
+  mapM_ submit [UiActionClearFlattenRef, UiActionBrushStroke hex, UiActionClearFlattenRef]
+  where
+    handles = ccActorHandles ctx
+    submit action = submitUiActionSync (ccUiActionsHandle ctx) UiActionRequest
+      { uarAction = action
+      , uarActorHandles = handles
+      , uarTerrainReplyTo = replyTo @TerrainReplyOps (ccUiActionsHandle ctx)
+      }
 
 -- --------------------------------------------------------------------------
 -- Parsing helpers

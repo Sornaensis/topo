@@ -8,7 +8,7 @@ module Seer.Input.Events
   , tooltipDelayMs
   ) where
 
-import Actor.Data (TerrainSnapshot(..), getTerrainSnapshot)
+import Actor.Data (getTerrainSnapshot)
 import Actor.Log (LogSnapshot(..), getLogSnapshot, setLogCollapsed, setLogScroll)
 import Actor.UI
   ( ConfigTab(..)
@@ -19,7 +19,6 @@ import Actor.UI
   , UiMenuMode(..)
   , SkyOverlayMode(..)
   , UiState(..)
-  , WeatherBasis(..)
   , effectiveViewSelection
   , getUiSnapshot
   , setUiConfigScroll
@@ -47,7 +46,6 @@ import Data.IORef (IORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Word (Word32, Word64)
 import qualified Data.Text as Text
-import qualified Data.IntMap.Strict as IntMap
 import Linear (V2(..))
 import qualified SDL
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -68,11 +66,15 @@ import Seer.Input.ViewControls
   ( ViewHotkey(..)
   , applyZoomAtCursor
   , defaultZoomSettings
+  , isViewportDrag
+  , nextBuiltinOverlay
+  , nextWeatherBasis
+  , panViewportForDrag
+  , pickTerrainHex
   , viewHotkeyForKey
   )
 import Seer.DataBrowser.Executor (submitDataBrowserAction)
 import qualified Seer.DataBrowser.Lifecycle as DataBrowser
-import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildSliderRowWidgets, hitTest)
 import UI.WidgetId (widgetIdToText)
@@ -84,7 +86,6 @@ import Actor.UiActions (UiAction(..))
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Input.Widgets (handleClick)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import UI.HexGeometry (renderHexRadiusPx, screenPixelToAxial)
 
 -- | Wall-clock delay (milliseconds) the cursor must remain still on a
 -- widget before the tooltip appears.
@@ -113,16 +114,11 @@ handleEvent inputContext event = do
       case dragState of
         Just state -> do
           uiSnap <- InputActions.getUiSnapshot inputEnv
-          let DragState { dsStart = (sx, sy), dsLast = (px, py), dsDragging = dragging } = state
-              dx0 = fromIntegral mx - fromIntegral sx
-              dy0 = fromIntegral my - fromIntegral sy
-              dist2 = dx0 * dx0 + dy0 * dy0
-              startDrag = dist2 > dragThreshold * dragThreshold
-              (ox, oy) = uiPanOffset uiSnap
-              dx = fromIntegral mx - fromIntegral px
-              dy = fromIntegral my - fromIntegral py
-              zoom = uiZoom uiSnap
-              newOffset = (ox + dx / zoom, oy + dy / zoom)
+          let DragState { dsStart = start, dsLast = previous, dsDragging = dragging } = state
+              current = (fromIntegral mx, fromIntegral my)
+              startDrag = isViewportDrag start current
+              dragOrigin = if dragging then previous else start
+              newOffset = panViewportForDrag uiSnap dragOrigin current
           if dragging || startDrag
             then do
               setUiPanOffset uiHandle newOffset
@@ -131,8 +127,8 @@ handleEvent inputContext event = do
         Nothing -> pure ()
       uiSnap <- getUiSnapshot uiHandle
       terrainSnap <- getTerrainSnapshot dataHandle
-      let (q, r) = screenPixelToAxial renderHexRadiusPx (uiPanOffset uiSnap) (uiZoom uiSnap) (fromIntegral mx, fromIntegral my)
-      if isTerrainHex terrainSnap (q, r)
+      let ((q, r), hexExists) = pickTerrainHex terrainSnap uiSnap (fromIntegral mx, fromIntegral my)
+      if hexExists
         then setUiHoverHex uiHandle (Just (q, r))
         else setUiHoverHex uiHandle Nothing
       -- Editor drag-to-paint: apply brush continuously while left button held
@@ -244,6 +240,10 @@ handleEvent inputContext event = do
                 , dsDragging = False
                 })
             _ -> do
+              -- SDL terrain clicks retain the editor policy: they paint only
+              -- while the editor is active and never select inspection state.
+              -- Automation uses viewport_click for select-and-optional-paint;
+              -- select_hex remains the explicit coordinate selection command.
               uiSnap' <- getUiSnapshot uiHandle
               let editor = uiEditor uiSnap'
                   inputBarrierActive =
@@ -433,18 +433,6 @@ handleEvent inputContext event = do
       ToolSetHardness -> "set_hardness"
       ToolErode -> "erode"
 
-    dragThreshold :: Float
-    dragThreshold = 4
-
-    isTerrainHex terrainSnap (q, r) =
-      let size = tsChunkSize terrainSnap
-      in size > 0
-        &&
-          let cfg = WorldConfig { wcChunkSize = size }
-              (chunkCoord, _) = chunkCoordFromTile cfg (TileCoord q r)
-              ChunkId key = chunkIdFromCoord chunkCoord
-          in IntMap.member key (tsTerrainChunks terrainSnap)
-
     toggleConfig = do
       uiSnap <- getUiSnapshot uiHandle
       setUiShowConfig uiHandle (not (uiShowConfig uiSnap))
@@ -468,23 +456,11 @@ handleEvent inputContext event = do
       where
         selection = effectiveViewSelection uiSnap
 
-    nextBuiltinOverlay :: LayeredViewState -> Maybe SkyOverlayMode
-    nextBuiltinOverlay selection = case lvsSkyOverlay selection of
-      Nothing -> Just SkyOverlayWeatherTemperature
-      Just SkyOverlayWeatherTemperature -> Just SkyOverlayPrecipitation
-      Just SkyOverlayPrecipitation -> Just SkyOverlayCloud
-      Just SkyOverlayCloud -> Nothing
-      Just (SkyOverlayPlugin _ _) -> Just SkyOverlayWeatherTemperature
-
     weatherBasisEnabled :: LayeredViewState -> Bool
     weatherBasisEnabled selection = case lvsSkyOverlay selection of
       Just (SkyOverlayPlugin _ _) -> False
       Just _ -> True
       Nothing -> False
-
-    nextWeatherBasis :: WeatherBasis -> WeatherBasis
-    nextWeatherBasis WeatherBasisAverage = WeatherBasisCurrent
-    nextWeatherBasis WeatherBasisCurrent = WeatherBasisAverage
 
     handleEditorKey :: EditorState -> SDL.Keycode -> IO ()
     handleEditorKey editor keycode = case keycode of

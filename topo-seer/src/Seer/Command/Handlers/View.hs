@@ -490,18 +490,22 @@ handleSetOverlay ctx reqId params = do
           if fieldIdx < 0 || (fieldCount > 0 && fieldIdx >= fieldCount)
             then pure $ errResponse reqId ("field_index out of range for overlay " <> overlayName)
             else do
-              let vm = ViewOverlay overlayName fieldIdx
+              let selection = (effectiveViewSelection ui)
+                    { lvsSkyOverlay = Just (SkyOverlayPlugin overlayName fieldIdx) }
                   handles = ccActorHandles ctx
                   uiHandle = ahUiHandle handles
-              setUiOverlayFields uiHandle fields
-              setUiViewMode uiHandle vm
-              scheduleAtlasTransitionRebuild handles ui vm
-              pure $ okResponse reqId $ object
-                [ "overlay"     .= overlayName
-                , "field_index" .= fieldIdx
-                , "field_count" .= fieldCount
-                , "view_mode"   .= viewModeToText vm
-                ]
+              case layeredViewStateToViewMode selection of
+                Nothing -> pure $ errResponse reqId "overlay selection is not representable by the current renderer"
+                Just vm -> do
+                  setUiOverlayFields uiHandle fields
+                  setUiViewSelection uiHandle selection
+                  scheduleAtlasTransitionRebuild handles ui vm
+                  pure $ okResponse reqId $ object
+                    [ "overlay"     .= overlayName
+                    , "field_index" .= fieldIdx
+                    , "field_count" .= fieldCount
+                    , "view_mode"   .= viewModeToText vm
+                    ]
 
 -- | Handle @list_overlay_fields@ — return fields for an overlay.
 --
@@ -517,8 +521,8 @@ handleListOverlayFields ctx reqId params = do
         Nothing -> pure $ errResponse reqId ("overlay not found: " <> overlayName)
         Just fields -> pure (overlayFieldsResponse reqId overlayName fields)
     Nothing ->
-      case uiViewMode ui of
-        ViewOverlay overlayName _ -> do
+      case lvsSkyOverlay (effectiveViewSelection ui) of
+        Just (SkyOverlayPlugin overlayName _) -> do
           let fields = maybe (uiOverlayFields ui) id (overlayFieldsForName snap overlayName)
           pure (overlayFieldsResponse reqId overlayName fields)
         _ -> pure $ errResponse reqId "no overlay specified and not currently viewing an overlay"
@@ -526,7 +530,8 @@ handleListOverlayFields ctx reqId params = do
 -- | Handle @cycle_overlay@ — navigate to the next or previous overlay.
 --
 -- Params: @{ "direction": 1|-1 }@
--- +1 = next, -1 = previous.  Wraps around; index 0 = no overlay (elevation).
+-- +1 = next, -1 = previous. Wraps around; index 0 clears the overlay
+-- while preserving the current layered base, weather basis, and opacity.
 handleCycleOverlay :: CommandContext -> Int -> Value -> IO SeerResponse
 handleCycleOverlay ctx reqId params = do
   case Aeson.parseMaybe parseDirection params of
@@ -540,37 +545,45 @@ handleCycleOverlay ctx reqId params = do
       if null names
         then pure $ errResponse reqId "no overlays available"
         else do
-          let currentIdx = case uiViewMode ui of
-                ViewOverlay name _ ->
+          let currentSelection = effectiveViewSelection ui
+              currentIdx = case lvsSkyOverlay currentSelection of
+                Just (SkyOverlayPlugin name _) ->
                   case findIndex (== name) names of
                     Just i  -> i + 1
                     Nothing -> 0
                 _ -> 0
               total = length names + 1
               newIdx = (currentIdx + dir) `mod` total
+              handles = ccActorHandles ctx
+              uiHandle = ahUiHandle handles
           if newIdx == 0
             then do
-              let handles = ccActorHandles ctx
-              setUiViewMode (ahUiHandle handles) ViewElevation
-              scheduleAtlasTransitionRebuild handles ui ViewElevation
-              pure $ okResponse reqId $ object
-                [ "view_mode" .= ("elevation" :: Text)
-                , "overlay"   .= Null
-                ]
+              let selection = currentSelection { lvsSkyOverlay = Nothing }
+              case layeredViewStateToViewMode selection of
+                Nothing -> pure $ errResponse reqId "base view is not representable by the current renderer"
+                Just vm -> do
+                  setUiViewSelection uiHandle selection
+                  scheduleAtlasTransitionRebuild handles ui vm
+                  pure $ okResponse reqId $ object
+                    [ "view_mode" .= viewModeToText vm
+                    , "overlay"   .= Null
+                    ]
             else do
               let overlayName = names !! (newIdx - 1)
-                  vm = ViewOverlay overlayName 0
-                  handles = ccActorHandles ctx
-                  uiHandle = ahUiHandle handles
+                  selection = currentSelection
+                    { lvsSkyOverlay = Just (SkyOverlayPlugin overlayName 0) }
                   fields = maybe (uiOverlayFields ui) id (overlayFieldsForName snap overlayName)
-              setUiOverlayFields uiHandle fields
-              setUiViewMode uiHandle vm
-              scheduleAtlasTransitionRebuild handles ui vm
-              pure $ okResponse reqId $ object
-                [ "view_mode" .= viewModeToText vm
-                , "overlay"   .= overlayName
-                , "field_count" .= length fields
-                ]
+              case layeredViewStateToViewMode selection of
+                Nothing -> pure $ errResponse reqId "overlay selection is not representable by the current renderer"
+                Just vm -> do
+                  setUiOverlayFields uiHandle fields
+                  setUiViewSelection uiHandle selection
+                  scheduleAtlasTransitionRebuild handles ui vm
+                  pure $ okResponse reqId $ object
+                    [ "view_mode" .= viewModeToText vm
+                    , "overlay"   .= overlayName
+                    , "field_count" .= length fields
+                    ]
 
 -- | Handle @cycle_overlay_field@ — navigate to the next or previous field
 -- within the current overlay.
@@ -585,27 +598,31 @@ handleCycleOverlayField ctx reqId params = do
     Just dir -> do
       ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
       snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
-      case uiViewMode ui of
-        ViewOverlay name fieldIdx -> do
+      case lvsSkyOverlay (effectiveViewSelection ui) of
+        Just (SkyOverlayPlugin name fieldIdx) -> do
           let fields = maybe (uiOverlayFields ui) id (overlayFieldsForName snap name)
               fieldCount = length fields
           if fieldCount <= 0
             then pure $ errResponse reqId "overlay has no fields"
             else do
               let newIdx = (fieldIdx + dir) `mod` fieldCount
-                  vm = ViewOverlay name newIdx
+                  selection = (effectiveViewSelection ui)
+                    { lvsSkyOverlay = Just (SkyOverlayPlugin name newIdx) }
                   handles = ccActorHandles ctx
                   uiHandle = ahUiHandle handles
-              setUiOverlayFields uiHandle fields
-              setUiViewMode uiHandle vm
-              scheduleAtlasTransitionRebuild handles ui vm
-              let (fname, ftype) = fields !! newIdx
-              pure $ okResponse reqId $ object
-                [ "overlay"     .= name
-                , "field_index" .= newIdx
-                , "field_name"  .= fname
-                , "field_type"  .= overlayFieldTypeToText ftype
-                ]
+              case layeredViewStateToViewMode selection of
+                Nothing -> pure $ errResponse reqId "overlay selection is not representable by the current renderer"
+                Just vm -> do
+                  setUiOverlayFields uiHandle fields
+                  setUiViewSelection uiHandle selection
+                  scheduleAtlasTransitionRebuild handles ui vm
+                  let (fname, ftype) = fields !! newIdx
+                  pure $ okResponse reqId $ object
+                    [ "overlay"     .= name
+                    , "field_index" .= newIdx
+                    , "field_name"  .= fname
+                    , "field_type"  .= overlayFieldTypeToText ftype
+                    ]
         _ -> pure $ errResponse reqId "not currently viewing an overlay — use set_overlay or cycle_overlay first"
 
 -- --------------------------------------------------------------------------

@@ -72,6 +72,7 @@ import Actor.UI
   , getUiSnapshot
   , newUiSnapshotRef
   , setUiDayNightEnabled
+  , setUiEditor
   , setUiGenerating
   , setUiSnapshotRef
   )
@@ -169,7 +170,7 @@ import Topo.Plugin.RPC.Manifest
   , manifestV3
   )
 import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
-import Topo.Types (ChunkCoord(..), ChunkId(..))
+import Topo.Types (ChunkCoord(..), ChunkId(..), TerrainChunk(..))
 
 spec :: Spec
 spec = describe "CommandDispatch" $ do
@@ -666,6 +667,36 @@ spec = describe "CommandDispatch" $ do
       lookupKey "overlay_mode" (srResult rsp) `shouldBe` Just (String "plugin")
       lookupKey "plugin_overlay" (srResult rsp) `shouldBe` Just (String "weather_normals")
       lookupKey "overlay_field" (srResult rsp) `shouldBe` Just (Number 1)
+
+    it "preserves layered base, basis, and opacity across legacy overlay set and cycles" $ withCtx $ \ctx -> do
+      _ <- writeSingleChunkTerrainWithNormals ctx
+      initial <- dispatch ctx "set_view" (object
+        [ "base" .= ("biome" :: Text)
+        , "overlay" .= ("cloud" :: Text)
+        , "basis" .= ("average" :: Text)
+        , "overlay_opacity" .= (0.37 :: Double)
+        ])
+      srSuccess initial `shouldBe` True
+
+      setRsp <- dispatch ctx "set_overlay" (object
+        [ "overlay" .= ("weather_normals" :: Text)
+        , "field_index" .= (0 :: Int)
+        ])
+      srSuccess setRsp `shouldBe` True
+      assertPreservedLayeredSelection ctx (Just (SkyOverlayPlugin "weather_normals" 0))
+
+      fieldRsp <- dispatch ctx "cycle_overlay_field" (object ["direction" .= (1 :: Int)])
+      srSuccess fieldRsp `shouldBe` True
+      assertPreservedLayeredSelection ctx (Just (SkyOverlayPlugin "weather_normals" 1))
+
+      offRsp <- dispatch ctx "cycle_overlay" (object ["direction" .= (1 :: Int)])
+      srSuccess offRsp `shouldBe` True
+      lookupKey "view_mode" (srResult offRsp) `shouldBe` Just (String "biome")
+      assertPreservedLayeredSelection ctx Nothing
+
+      onRsp <- dispatch ctx "cycle_overlay" (object ["direction" .= (1 :: Int)])
+      srSuccess onRsp `shouldBe` True
+      assertPreservedLayeredSelection ctx (Just (SkyOverlayPlugin "weather_normals" 0))
 
     it "rejects plugin overlay field changes without an active plugin overlay" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "set_view" (object ["overlay_field" .= (1 :: Int)])
@@ -1599,6 +1630,39 @@ spec = describe "CommandDispatch" $ do
         , "y" .= (240 :: Int)
         ]) $ \ui0 ui1 -> uiZoom ui1 `shouldNotBe` uiZoom ui0
 
+    it "applies every viewport_scroll wheel step and preserves cursor anchoring" $ withCtx $ \ctx -> do
+      let cursor = (120, 80) :: (Int, Int)
+      expectViewportRefreshForCommand ctx "viewport_scroll" (object
+        [ "delta" .= (3 :: Int)
+        , "x" .= fst cursor
+        , "y" .= snd cursor
+        ]) $ \ui0 ui1 -> do
+          uiZoom ui1 `shouldSatisfy` (\zoom -> abs (zoom - uiZoom ui0 * 1.1 ^ (3 :: Int)) < 0.0001)
+          let (x0, y0) = uiPanOffset ui0
+              (x1, y1) = uiPanOffset ui1
+              expectedX = x0 + fromIntegral (fst cursor) * (1 / uiZoom ui1 - 1 / uiZoom ui0)
+              expectedY = y0 + fromIntegral (snd cursor) * (1 / uiZoom ui1 - 1 / uiZoom ui0)
+          abs (x1 - expectedX) `shouldSatisfy` (< 0.0001)
+          abs (y1 - expectedY) `shouldSatisfy` (< 0.0001)
+
+    it "keeps zero-delta viewport_scroll publication and atlas state unchanged" $ withCtx $ \ctx -> do
+      _ <- writeReadyTerrainData ctx
+      let handles = ccActorHandles ctx
+          atlasH = ahAtlasManagerHandle handles
+      _ <- drainAtlasJobs atlasH
+      baseline <- beginPublicationAssertion ctx
+      rsp <- dispatch ctx "viewport_scroll" (object
+        [ "delta" .= (0 :: Int)
+        , "x" .= (120 :: Int)
+        , "y" .= (80 :: Int)
+        ])
+      srSuccess rsp `shouldBe` True
+      lookupKey "steps" (srResult rsp) `shouldBe` Just (Number 0)
+      readCommittedRenderSnapshot (ahSnapshotVersionRef handles)
+        `shouldReturn` (pbVersion baseline, pbSnapshot baseline)
+      jobs <- drainAtlasJobs atlasH
+      length jobs `shouldBe` 0
+
     it "viewport_drag bumps the snapshot and queues a current-stage viewport refresh" $ withCtx $ \ctx -> do
       expectViewportRefreshForCommand ctx "viewport_drag" (object
         [ "x1" .= (0 :: Int)
@@ -1606,6 +1670,115 @@ spec = describe "CommandDispatch" $ do
         , "x2" .= (30 :: Int)
         , "y2" .= ((-10) :: Int)
         ]) $ \ui0 ui1 -> uiPanOffset ui1 `shouldNotBe` uiPanOffset ui0
+
+    it "treats an exact-threshold viewport drag as a right click" $ withCtx $ \ctx -> do
+      _ <- writeReadyTerrainData ctx
+      let handles = ccActorHandles ctx
+          atlasH = ahAtlasManagerHandle handles
+      _ <- drainAtlasJobs atlasH
+      baseline <- beginPublicationAssertion ctx
+
+      rsp <- dispatch ctx "viewport_drag" (object
+        [ "x1" .= (0 :: Int), "y1" .= (0 :: Int)
+        , "x2" .= (4 :: Int), "y2" .= (0 :: Int)
+        ])
+      srSuccess rsp `shouldBe` True
+      (_, committed) <- expectExactPublication ctx baseline
+      uiPanOffset (rsUi committed) `shouldBe` uiPanOffset (rsUi (pbSnapshot baseline))
+      uiHexTooltipPinned (rsUi committed) `shouldBe` True
+      jobs <- drainAtlasJobs atlasH
+      length jobs `shouldBe` 0
+
+    it "classifies and pans near-boundary viewport coordinates exactly" $ withCtx $ \ctx -> do
+      let startX = maxBound - 5 :: Int
+          endX = maxBound :: Int
+      expectViewportRefreshForCommand ctx "viewport_drag" (object
+        [ "x1" .= startX, "y1" .= (0 :: Int)
+        , "x2" .= endX, "y2" .= (0 :: Int)
+        ]) $ \ui0 ui1 -> do
+          let (x0, y0) = uiPanOffset ui0
+              (x1, y1) = uiPanOffset ui1
+          abs (x1 - (x0 + 5 / uiZoom ui0)) `shouldSatisfy` (< 0.0001)
+          y1 `shouldBe` y0
+          uiHexTooltipPinned ui1 `shouldBe` uiHexTooltipPinned ui0
+
+    it "toggles tooltip pinning for an explicit right viewport click" $ withCtx $ \ctx -> do
+      let handles = ccActorHandles ctx
+          atlasH = ahAtlasManagerHandle handles
+      baseline <- beginPublicationAssertion ctx
+      rsp <- dispatch ctx "viewport_click" (object
+        [ "x" .= (999999 :: Int), "y" .= (999999 :: Int)
+        , "button" .= ("right" :: Text)
+        ])
+      srSuccess rsp `shouldBe` True
+      lookupKey "tooltip_pinned" (srResult rsp) `shouldBe` Just (Bool True)
+      (_, committed) <- expectExactPublication ctx baseline
+      uiHexTooltipPinned (rsUi committed) `shouldBe` True
+      jobs <- drainAtlasJobs atlasH
+      length jobs `shouldBe` 0
+
+    it "clears stale selection and pin state for an invalid left viewport click" $ withCtx $ \ctx -> do
+      selected <- dispatch ctx "select_hex" (object ["q" .= (2 :: Int), "r" .= ((-3) :: Int)])
+      srSuccess selected `shouldBe` True
+      let handles = ccActorHandles ctx
+          atlasH = ahAtlasManagerHandle handles
+      baseline <- beginPublicationAssertion ctx
+      rsp <- dispatch ctx "viewport_click" (object
+        [ "x" .= (999999 :: Int), "y" .= (999999 :: Int)
+        , "button" .= ("left" :: Text)
+        ])
+      srSuccess rsp `shouldBe` True
+      lookupKey "selected" (srResult rsp) `shouldBe` Just (Bool False)
+      (_, committed) <- expectExactPublication ctx baseline
+      uiHoverHex (rsUi committed) `shouldBe` Nothing
+      uiContextHex (rsUi committed) `shouldBe` Nothing
+      uiHexTooltipPinned (rsUi committed) `shouldBe` False
+      jobs <- drainAtlasJobs atlasH
+      length jobs `shouldBe` 0
+
+    it "selects valid terrain without painting while the editor is inactive" $ withCtx $ \ctx -> do
+      _ <- writeReadyTerrainData ctx
+      let handles = ccActorHandles ctx
+          atlasH = ahAtlasManagerHandle handles
+      _ <- drainAtlasJobs atlasH
+      rsp <- dispatch ctx "viewport_click" (object
+        ["x" .= (40 :: Int), "y" .= (80 :: Int), "button" .= ("left" :: Text)])
+      srSuccess rsp `shouldBe` True
+      lookupKey "selected" (srResult rsp) `shouldBe` Just (Bool True)
+      lookupKey "editor_stroke" (srResult rsp) `shouldBe` Just (Bool False)
+      ui <- getUiSnapshot (ahUiHandle handles)
+      uiContextHex ui `shouldBe` Just (0, 0)
+      uiHexTooltipPinned ui `shouldBe` True
+      jobs <- drainAtlasJobs atlasH
+      length jobs `shouldBe` 0
+
+    it "bounds discrete flatten viewport clicks with cleared stroke sessions" $ withCtx $ \ctx -> do
+      before <- writeReadyTerrainData ctx
+      let handles = ccActorHandles ctx
+          uiH = ahUiHandle handles
+      activeRsp <- dispatch ctx "editor_toggle" (object ["active" .= True])
+      toolRsp <- dispatch ctx "editor_set_tool" (object ["tool" .= ("flatten" :: Text)])
+      srSuccess activeRsp `shouldBe` True
+      srSuccess toolRsp `shouldBe` True
+
+      -- A stale remote-session reference would alter this flat fixture unless
+      -- viewport_click clears it before starting its discrete stroke.
+      configured <- getUiSnapshot uiH
+      setUiEditor uiH ((uiEditor configured) { editorFlattenRef = Just 0.99 })
+      _ <- getUiSnapshot uiH
+
+      first <- dispatch ctx "viewport_click" (object ["x" .= (40 :: Int), "y" .= (80 :: Int)])
+      srSuccess first `shouldBe` True
+      lookupKey "editor_stroke" (srResult first) `shouldBe` Just (Bool True)
+      afterFirst <- getTerrainSnapshot (ahDataHandle handles)
+      fmap tcElevation (tsTerrainChunks afterFirst)
+        `shouldBe` fmap tcElevation (tsTerrainChunks before)
+      (editorFlattenRef . uiEditor <$> getUiSnapshot uiH) `shouldReturn` Nothing
+
+      second <- dispatch ctx "viewport_click" (object ["x" .= (40 :: Int), "y" .= (80 :: Int)])
+      srSuccess second `shouldBe` True
+      lookupKey "editor_stroke" (srResult second) `shouldBe` Just (Bool True)
+      (editorFlattenRef . uiEditor <$> getUiSnapshot uiH) `shouldReturn` Nothing
 
     it "viewport_hover does not enqueue a viewport atlas refresh" $ withCtx $ \ctx -> do
       _ <- writeReadyTerrainData ctx
@@ -2252,6 +2425,18 @@ atlasJobStage job = (ajHexRadius job, ajAtlasScale job)
 
 zoomStagePair :: ZoomStage -> (Int, Int)
 zoomStagePair stage = (zsHexRadius stage, zsAtlasScale stage)
+
+assertPreservedLayeredSelection
+  :: CommandContext
+  -> Maybe SkyOverlayMode
+  -> Expectation
+assertPreservedLayeredSelection ctx expectedOverlay = do
+  ui <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+  let selection = effectiveViewSelection ui
+  lvsBaseView selection `shouldBe` BaseViewBiome
+  lvsSkyOverlay selection `shouldBe` expectedOverlay
+  lvsWeatherBasis selection `shouldBe` WeatherBasisAverage
+  lvsOverlayOpacity selection `shouldSatisfy` (\opacity -> abs (opacity - 0.37) < 0.0001)
 
 prepareReadyDayNight :: CommandContext -> IO ()
 prepareReadyDayNight ctx = do

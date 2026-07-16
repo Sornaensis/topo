@@ -38,6 +38,7 @@ import Actor.UI
   , LayeredViewState(..)
   , SkyOverlayMode(..)
   , UiState(..)
+  , WeatherBasis(..)
   , defaultLayeredViewState
   , effectiveViewSelection
   , getUiSnapshot
@@ -940,6 +941,36 @@ spec = describe "Seer.HTTP.Server" $ do
           { hreqBody = Just screenshotBody }
         assertHttpServiceSuccess directObject screenshotObject
 
+    it "keeps viewport commands and friendly routes on identical responses and state" $ do
+      forM_
+        [ ("viewport_scroll", ["ui", "viewport", "scroll"], object
+            ["delta" .= (3 :: Int), "x" .= (120 :: Int), "y" .= (80 :: Int)])
+        , ("viewport_drag", ["ui", "viewport", "drag"], object
+            [ "x1" .= (0 :: Int), "y1" .= (0 :: Int)
+            , "x2" .= (4 :: Int), "y2" .= (0 :: Int)
+            ])
+        , ("viewport_click", ["ui", "viewport", "click"], object
+            ["x" .= (40 :: Int), "y" .= (80 :: Int), "button" .= ("left" :: Text)])
+        , ("viewport_click", ["ui", "viewport", "click"], object
+            ["x" .= (999999 :: Int), "y" .= (999999 :: Int), "button" .= ("right" :: Text)])
+        ] $ \(serviceMethod, path, body) -> do
+          (directResult, directUi) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+            installTerrainFixture app
+            result <- runServiceOperation headlessAppService (headlessServiceContext app) serviceMethod body
+            ui <- getUiSnapshot (ahUiHandle (httpHandles app))
+            pure (result, ui)
+          (httpRsp, httpUi) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+            installTerrainFixture app
+            rsp <- request app (mkRequest "POST" path) { hreqBody = Just body }
+            ui <- getUiSnapshot (ahUiHandle (httpHandles app))
+            pure (rsp, ui)
+          assertHttpServiceSuccess directResult httpRsp
+          uiZoom httpUi `shouldBe` uiZoom directUi
+          uiPanOffset httpUi `shouldBe` uiPanOffset directUi
+          uiHoverHex httpUi `shouldBe` uiHoverHex directUi
+          uiContextHex httpUi `shouldBe` uiContextHex directUi
+          uiHexTooltipPinned httpUi `shouldBe` uiHexTooltipPinned directUi
+
     it "keeps list_plugins and set_overlay aliases on one AppService behavior" $ do
       withHeadlessApp defaultHeadlessConfig $ \app -> do
         let ctx = headlessServiceContext app
@@ -954,17 +985,73 @@ spec = describe "Seer.HTTP.Server" $ do
             assertHttpServiceSuccess directPlugins pluginRsp
 
       let overlayBody = object ["overlay" .= ("weather" :: Text), "field_index" .= (0 :: Int)]
+          prepareOverlayState app = do
+            installOverlayFixture app
+            _ <- runServiceOperation headlessAppService (headlessServiceContext app) "set_view" (object
+              [ "base" .= ("biome" :: Text)
+              , "basis" .= ("average" :: Text)
+              , "overlay_opacity" .= (0.37 :: Double)
+              ])
+            pure ()
       forM_
         [ ("PUT", ["overlays", "current"])
         , ("POST", ["ui", "overlay"])
         , ("PUT", ["ui", "overlay"])
-        ] $ \(routeMethod, path) ->
-          withHeadlessApp defaultHeadlessConfig $ \app -> do
+        ] $ \(routeMethod, path) -> do
+          (directOverlay, directSelection) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+            prepareOverlayState app
+            result <- runServiceOperation headlessAppService
+              (headlessServiceContext app) "set_overlay" overlayBody
+            selection <- effectiveViewSelection <$> getUiSnapshot (ahUiHandle (httpHandles app))
+            pure (result, selection)
+          (overlayRsp, httpSelection) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+            prepareOverlayState app
+            rsp <- request app (mkRequest routeMethod path) { hreqBody = Just overlayBody }
+            selection <- effectiveViewSelection <$> getUiSnapshot (ahUiHandle (httpHandles app))
+            pure (rsp, selection)
+          assertHttpServiceSuccess directOverlay overlayRsp
+          httpSelection `shouldBe` directSelection
+          lvsBaseView httpSelection `shouldBe` BaseViewBiome
+          lvsWeatherBasis httpSelection `shouldBe` WeatherBasisAverage
+          lvsOverlayOpacity httpSelection
+            `shouldSatisfy` (\opacity -> abs (opacity - 0.37) < 0.0001)
+
+    it "keeps overlay cycle aliases on preserved layered state" $ do
+      let directionBody = object ["direction" .= (1 :: Int)]
+          prepare app = do
             installOverlayFixture app
             let ctx = headlessServiceContext app
-            overlayRsp <- request app (mkRequest routeMethod path) { hreqBody = Just overlayBody }
-            directOverlay <- runServiceOperation headlessAppService ctx "set_overlay" overlayBody
-            assertHttpServiceSuccess directOverlay overlayRsp
+            _ <- runServiceOperation headlessAppService ctx "set_view" (object
+              [ "base" .= ("biome" :: Text)
+              , "basis" .= ("average" :: Text)
+              , "overlay_opacity" .= (0.37 :: Double)
+              ])
+            _ <- runServiceOperation headlessAppService ctx "set_overlay" (object
+              ["overlay" .= ("weather" :: Text), "field_index" .= (0 :: Int)])
+            pure ()
+      forM_
+        [ ("cycle_overlay", ["overlays", "cycle"])
+        , ("cycle_overlay", ["ui", "overlay", "cycle"])
+        , ("cycle_overlay_field", ["overlays", "fields", "cycle"])
+        , ("cycle_overlay_field", ["ui", "overlay-field", "cycle"])
+        ] $ \(serviceMethod, path) -> do
+          (directResult, directSelection) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+            prepare app
+            result <- runServiceOperation headlessAppService
+              (headlessServiceContext app) serviceMethod directionBody
+            selection <- effectiveViewSelection <$> getUiSnapshot (ahUiHandle (httpHandles app))
+            pure (result, selection)
+          (httpRsp, httpSelection) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+            prepare app
+            rsp <- request app (mkRequest "POST" path) { hreqBody = Just directionBody }
+            selection <- effectiveViewSelection <$> getUiSnapshot (ahUiHandle (httpHandles app))
+            pure (rsp, selection)
+          assertHttpServiceSuccess directResult httpRsp
+          httpSelection `shouldBe` directSelection
+          lvsBaseView httpSelection `shouldBe` BaseViewBiome
+          lvsWeatherBasis httpSelection `shouldBe` WeatherBasisAverage
+          lvsOverlayOpacity httpSelection
+            `shouldSatisfy` (\opacity -> abs (opacity - 0.37) < 0.0001)
 
     it "maps direct validation, service, and data-resource errors to HTTP" $
       withHeadlessApp defaultHeadlessConfig $ \app -> do
