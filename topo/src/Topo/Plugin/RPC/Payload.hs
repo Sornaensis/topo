@@ -40,6 +40,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import Data.Word (Word64)
+import qualified Data.Vector.Unboxed as U
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Read as TextRead
@@ -205,6 +206,7 @@ terrainWorldToCompletePayloadWithBudget :: Maybe Integer -> Topo.World.TerrainWo
 terrainWorldToCompletePayloadWithBudget budget world = do
   let config = Topo.World.twConfig world
       weather = getWeatherFromOverlay world
+  preflightCompletePayloadBudget budget weather world
   (terrainObj, budget1) <- encodeChunkMap budget "terrain" (Topo.World.twTerrain world) (encodeTerrainChunk config)
   (climateObj, budget2) <- encodeChunkMap budget1 "climate" (Topo.World.twClimate world) (encodeClimateChunk config)
   (riverObj, budget3) <- encodeChunkMap budget2 "rivers" (Topo.World.twRivers world) (encodeRiverChunk config)
@@ -252,6 +254,46 @@ terrainWorldToCompletePayloadWithBudget budget world = do
     , "overlays" .= overlaysToJSON (Topo.World.twOverlays world)
     , "metadata" .= metadataStoreToJSON (Topo.World.twMeta world)
     ]
+
+-- Compute the complete binary extent before encoding any chunk. Besides making
+-- failure deterministic, this prevents a known-oversize v4 export from
+-- constructing tens of MiB of base64 only to fail in a later section.
+preflightCompletePayloadBudget
+  :: Maybe Integer
+  -> IntMap.IntMap Topo.Types.WeatherChunk
+  -> Topo.World.TerrainWorld
+  -> Either Text ()
+preflightCompletePayloadBudget Nothing _ _ = Right ()
+preflightCompletePayloadBudget (Just limit) weather world
+  | chunkSize <= 0 = Right () -- The section encoder reports the dimension error.
+  | total > limit = Left
+      ("outgoing complete terrain payload decoded aggregate exceeds limit before encoding: actual="
+        <> tshow total <> " bytes, limit=" <> tshow limit <> " bytes")
+  | otherwise = Right ()
+  where
+    chunkSize = Topo.Types.wcChunkSize (Topo.World.twConfig world)
+    tiles = toInteger chunkSize * toInteger chunkSize
+    fixed bytesPerTile chunks =
+      toInteger (IntMap.size chunks) * (4 + bytesPerTile * tiles)
+    rivers = sum
+      [ 12 + 38 * tiles + 8 * toInteger (U.length (Topo.Types.rcSegEntryEdge chunk))
+      | chunk <- IntMap.elems (Topo.World.twRivers world)
+      ]
+    groundwater = sum
+      [ 4 + (if U.null (Topo.Types.gwInfiltration chunk) then 16 else 28) * tiles
+      | chunk <- IntMap.elems (Topo.World.twGroundwater world)
+      ]
+    total =
+      fixed 113 (Topo.World.twTerrain world)
+        + fixed 28 (Topo.World.twClimate world)
+        + rivers
+        + groundwater
+        + fixed 26 (Topo.World.twVolcanism world)
+        + fixed 24 (Topo.World.twGlaciers world)
+        + fixed 14 (Topo.World.twWaterBodies world)
+        + fixed 12 (Topo.World.twVegetation world)
+        + fixed 2 (Topo.World.twTerrain world)
+        + fixed 56 weather
 
 worldTimeToJSON :: WorldTime -> Value
 worldTimeToJSON time = object

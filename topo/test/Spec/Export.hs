@@ -2,6 +2,7 @@
 
 module Spec.Export (spec) where
 
+import Control.Monad (forM_)
 import qualified Data.ByteString as BS
 import Test.Hspec
 import qualified Data.Text as Text
@@ -36,6 +37,52 @@ spec = describe "Export" $ do
       Right bytes -> do
         bytes `shouldBe` BS.pack [1, 0, 0, 0, 0, 0]
         encodeBase64Text bytes `shouldBe` "AQAAAAAA"
+
+  it "asserts exact binary size formulas, including river segments" $ do
+    forM_ [1, 2, 64] $ \side -> do
+      let config = WorldConfig { wcChunkSize = side }
+          n = side * side
+          segmentCount = 2
+          river = (emptyRiverChunk config)
+            { rcSegOffsets = U.generate (n + 1) (\index -> min index segmentCount)
+            , rcSegEntryEdge = U.fromList [0, 1]
+            , rcSegExitEdge = U.fromList [1, 2]
+            , rcSegDischarge = U.fromList [0.25, 0.75]
+            , rcSegOrder = U.fromList [1, 2]
+            }
+          weather = WeatherChunk
+            { wcTemp = U.replicate n 0, wcHumidity = U.replicate n 0
+            , wcWindDir = U.replicate n 0, wcWindSpd = U.replicate n 0
+            , wcPressure = U.replicate n 0, wcPrecip = U.replicate n 0
+            , wcCloudCover = U.replicate n 0, wcCloudWater = U.replicate n 0
+            , wcCloudCoverLow = U.replicate n 0, wcCloudCoverMid = U.replicate n 0
+            , wcCloudCoverHigh = U.replicate n 0, wcCloudWaterLow = U.replicate n 0
+            , wcCloudWaterMid = U.replicate n 0, wcCloudWaterHigh = U.replicate n 0
+            }
+      assertEncodedLength (4 + 113 * n) (encodeTerrainChunk config (emptyTerrainChunk config))
+      assertEncodedLength (4 + 28 * n) (encodeClimateChunk config (emptyClimateChunk config))
+      assertEncodedLength (12 + 38 * n + 8 * segmentCount) (encodeRiverChunk config river)
+      assertEncodedLength (4 + 16 * n) (encodeGroundwaterChunk config (emptyGroundwaterChunk config))
+      assertEncodedLength (4 + 26 * n) (encodeVolcanismChunk config (emptyVolcanismChunk config))
+      assertEncodedLength (4 + 24 * n) (encodeGlacierChunk config (emptyGlacierChunk config))
+      assertEncodedLength (4 + 14 * n) (encodeWaterBodyChunk config (emptyWaterBodyChunk config))
+      assertEncodedLength (4 + 12 * n) (encodeVegetationChunk config (emptyVegetationChunk config))
+      assertEncodedLength (4 + 2 * n) (encodeBiomeChunk config (emptyTerrainChunk config))
+      assertEncodedLength (4 + 56 * n) (encodeWeatherChunk config weather)
+      let completeLayerBytes = 48 + 329 * n + 8 * segmentCount
+      encoded <- traverse expectEncoded
+        [ encodeTerrainChunk config (emptyTerrainChunk config)
+        , encodeClimateChunk config (emptyClimateChunk config)
+        , encodeRiverChunk config river
+        , encodeGroundwaterChunk config (emptyGroundwaterChunk config)
+        , encodeVolcanismChunk config (emptyVolcanismChunk config)
+        , encodeGlacierChunk config (emptyGlacierChunk config)
+        , encodeWaterBodyChunk config (emptyWaterBodyChunk config)
+        , encodeVegetationChunk config (emptyVegetationChunk config)
+        , encodeBiomeChunk config (emptyTerrainChunk config)
+        , encodeWeatherChunk config weather
+        ]
+      sum (map BS.length encoded) `shouldBe` completeLayerBytes
 
   it "round-trips every plugin terrain-layer binary decoder without lists" $ do
     let config = WorldConfig { wcChunkSize = 2 }
@@ -143,6 +190,11 @@ assertChunkRoundTrip config encodeChunk decodeChunk chunk =
 expectEncoded :: Either ExportError BS.ByteString -> IO BS.ByteString
 expectEncoded (Left err) = expectationFailure (show err) >> fail "encode"
 expectEncoded (Right bytes) = pure bytes
+
+assertEncodedLength :: Int -> Either ExportError BS.ByteString -> Expectation
+assertEncodedLength expected encoded = do
+  bytes <- expectEncoded encoded
+  BS.length bytes `shouldBe` expected
 
 assertDecodeFailure
   :: Show a

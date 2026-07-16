@@ -359,6 +359,7 @@ benchmark topo-rpc-allocation-bench
     , containers
     , deepseq
     , topo
+    , vector
   default-language: Haskell2010
 
 benchmark topo-seer-bench

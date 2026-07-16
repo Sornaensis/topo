@@ -5,9 +5,11 @@ module Spec.Payload (spec) where
 import Data.Aeson (Value(..), (.=), object)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
+import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+import qualified Data.Vector.Unboxed as U
 import Test.Hspec
 
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
@@ -28,10 +30,12 @@ import Topo.Plugin.RPC.Scope
 import Topo.Plugin.RPC.Transport (mkRPCPayloadLimits)
 import Topo.Plugin.SDK.Payload
 import Topo.Plugin.SDK.Types
-import Topo.Simulation (TerrainWrites, emptyTerrainWrites)
-import Topo.Types (ChunkId(..), WorldConfig(..))
+import Topo.Simulation (TerrainWrites(..), emptyTerrainWrites)
+import Topo.Types
+  ( ChunkId(..), ClimateChunk(..), TerrainChunk(..), VegetationChunk(..), WorldConfig(..) )
 import Topo.World
-  ( TerrainWorld(..), emptyTerrainChunk, emptyWorld, emptyWorldWithPlanet, setTerrainChunk )
+  ( TerrainWorld(..), emptyClimateChunk, emptyTerrainChunk, emptyVegetationChunk
+  , emptyWorld, emptyWorldWithPlanet, setTerrainChunk )
 
 spec :: Spec
 spec = describe "SDK payload helpers" $ do
@@ -64,6 +68,35 @@ spec = describe "SDK payload helpers" $ do
         twHexGrid decoded `shouldBe` twHexGrid world
         twPlanet decoded `shouldBe` twPlanet world
         twSlice decoded `shouldBe` twSlice world
+
+  it "round-trips a 25-chunk s=64 generator snapshot and simulation writes" $ do
+    let config = WorldConfig { wcChunkSize = 64 }
+        keys = [0 .. 24]
+        chunks value = IntMap.fromDistinctAscList [(key, value) | key <- keys]
+        terrainChunk = (emptyTerrainChunk config)
+          { tcElevation = U.replicate (64 * 64) 0.625 }
+        climateChunk = (emptyClimateChunk config)
+          { ccTempAvg = U.replicate (64 * 64) 0.375 }
+        vegetationChunk = (emptyVegetationChunk config)
+          { vegCover = U.replicate (64 * 64) 0.875 }
+        terrain = chunks terrainChunk
+        climate = chunks climateChunk
+        vegetation = chunks vegetationChunk
+        world = (emptyWorld config defaultHexGridMeta)
+          { twTerrain = terrain, twClimate = climate, twVegetation = vegetation }
+        writes = TerrainWrites terrain climate vegetation
+    snapshot <- case encodeTerrainPayload world >>= decodeTerrainPayload of
+      Left err -> expectationFailure (show err) >> fail "large snapshot"
+      Right value -> pure value
+    twTerrain snapshot `shouldBe` terrain
+    twClimate snapshot `shouldBe` climate
+    twVegetation snapshot `shouldBe` vegetation
+    decodedWrites <- case encodeTerrainWritesPayload writes >>= decodeTerrainWritesPayload . Just of
+      Left err -> expectationFailure (show err) >> fail "large writes"
+      Right value -> pure value
+    twrTerrain decodedWrites `shouldBe` terrain
+    twrClimate decodedWrites `shouldBe` climate
+    twrVegetation decodedWrites `shouldBe` vegetation
 
   it "applies explicit terrain budgets to all SDK result constructors" $ do
     let config = WorldConfig { wcChunkSize = 1 }

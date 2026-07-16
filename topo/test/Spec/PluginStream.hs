@@ -127,12 +127,64 @@ spec = describe "RPC protocol v5 stream_v1 core" $ do
       parentResultReady 7 readyMachine `shouldBe` True
       completedStreamRecords (StreamId 2) machine4 `shouldBe` Right [key]
 
-    it "rejects data before credit and duplicate stream IDs" $ do
+    it "rejects sequence gaps, duplicate/non-canonical keys, and record corruption" $ do
+      let open = streamOpen (StreamId 2) "scope-1" TerrainSnapshot
+          (opened, Right _) = receiveStreamEnvelope 1 (StreamOpenEnvelope open) registeredMachine
+          key1 = StreamRecordKey TerrainElevation 1 0 0
+          key2 = StreamRecordKey TerrainElevation 2 0 0
+          first = encodeStreamRecord StreamIdentity (StreamId 2) 7 0 key2 "abc"
+          (_, gapResult) = receiveStreamEnvelope 2
+            (StreamDataEnvelope first { srSequence = 1 }) opened
+          (afterFirst, Right _) = receiveStreamEnvelope 2 (StreamDataEnvelope first) opened
+          duplicate = encodeStreamRecord StreamIdentity (StreamId 2) 7 1 key2 "def"
+          reordered = encodeStreamRecord StreamIdentity (StreamId 2) 7 1 key1 "def"
+          corrupted = (encodeStreamRecord StreamIdentity (StreamId 2) 7 0 key1 "abc")
+            { srSha256 = "00" }
+          (_, duplicateResult) = receiveStreamEnvelope 3 (StreamDataEnvelope duplicate) afterFirst
+          (_, reorderResult) = receiveStreamEnvelope 3 (StreamDataEnvelope reordered) afterFirst
+          (_, corruptionResult) = receiveStreamEnvelope 2 (StreamDataEnvelope corrupted) opened
+      gapResult `shouldSatisfy` isConnectionFailure
+      duplicateResult `shouldSatisfy` isConnectionFailure
+      reorderResult `shouldSatisfy` isConnectionFailure
+      corruptionResult `shouldSatisfy` isRequestFailure
+
+    it "rejects final count, byte, and digest mismatches" $ do
+      let open = streamOpen (StreamId 2) "scope-1" TerrainSnapshot
+          (opened, Right _) = receiveStreamEnvelope 1 (StreamOpenEnvelope open) registeredMachine
+          key = StreamRecordKey TerrainElevation 1 0 0
+          record = encodeStreamRecord StreamIdentity (StreamId 2) 7 0 key "abc"
+          (received, Right _) = receiveStreamEnvelope 2 (StreamDataEnvelope record) opened
+          badEnds =
+            [ StreamEnd (StreamId 2) 7 2 3 (streamRecordsDigest [(key, "abc")])
+            , StreamEnd (StreamId 2) 7 1 4 (streamRecordsDigest [(key, "abc")])
+            , StreamEnd (StreamId 2) 7 1 3 "00"
+            ]
+      mapM_ (\end -> snd (receiveStreamEnvelope 3 (StreamEndEnvelope end) received)
+        `shouldSatisfy` isRequestFailure) badEnds
+
+    it "rejects data on a zero-credit stream" $ do
+      let limits = negotiatedLimits { nsvAggregateStagedBytes = 3, nsvReceiveWindowBytes = 3 }
+          start = either (error . show) id
+            (registerStreamRequest 7 resolvedScope 1000 (newStreamMachine StreamHost limits))
+          (one, Right _) = receiveStreamEnvelope 1
+            (StreamOpenEnvelope (streamOpen (StreamId 2) "scope-1" TerrainSnapshot)) start
+          (two, Right []) = receiveStreamEnvelope 1
+            (StreamOpenEnvelope (streamOpen (StreamId 4) "scope-1" TerrainSnapshot)) one
+          record = encodeStreamRecord StreamIdentity (StreamId 4) 7 0
+            (StreamRecordKey TerrainElevation 1 0 0) "a"
+          (_, result) = receiveStreamEnvelope 2 (StreamDataEnvelope record) two
+      result `shouldSatisfy` isConnectionFailure
+
+    it "rejects duplicate IDs and terminal ID reuse" $ do
       let machine0 = registeredMachine
           open = streamOpen (StreamId 2) "scope-1" TerrainSnapshot
           (machine1, Right _) = receiveStreamEnvelope 1 (StreamOpenEnvelope open) machine0
           (_, duplicateResult) = receiveStreamEnvelope 2 (StreamOpenEnvelope open) machine1
+          end = StreamEnd (StreamId 2) 7 0 0 (streamRecordsDigest [])
+          (ended, Right _) = receiveStreamEnvelope 2 (StreamEndEnvelope end) machine1
+          (_, reusedResult) = receiveStreamEnvelope 3 (StreamOpenEnvelope open) ended
       duplicateResult `shouldSatisfy` isConnectionFailure
+      reusedResult `shouldSatisfy` isConnectionFailure
 
     it "does not complete a parent from another request's stream" $ do
       let first = registeredMachine

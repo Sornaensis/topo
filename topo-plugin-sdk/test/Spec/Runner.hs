@@ -40,7 +40,7 @@ import Test.Hspec
 import Topo.Export (encodeTerrainChunk)
 import Topo.Plugin.DataResource
   ( DataFieldDef(..), DataFieldType(..)
-  , DataOperations(..), DataResourceSchema(..)
+  , DataOperations(..), DataPagination(..), DataResourceSchema(..)
   , currentDataResourceSchemaVersion, defaultDataResourceVersion, defaultDataPagination
   , noOperations, allOperations
   )
@@ -1233,6 +1233,35 @@ spec = describe "SDK runner pipe integration" $ do
           qrsResource result `shouldBe` "items"
           length (qrsRecords result) `shouldBe` 2
           qrsTotalCount result `shouldBe` Just 2
+      shutdownAndWait host done
+
+  it "enforces query page and result-count boundaries before sending results" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession dataPlugin plugin
+      let request requestId pageSize = RPCEnvelope
+            { envType = MsgQueryResource
+            , envPayload = Aeson.toJSON QueryResource
+                { qrResource = "items", qrQuery = QueryAll
+                , qrPageSize = Just pageSize, qrPageOffset = Just 0 }
+            , envRequestId = Just requestId
+            }
+      sendEnvelope host (request 420 2)
+      exact <- recvEnvelope host
+      envType exact `shouldBe` MsgQueryResult
+      sendEnvelope host (request 421 1)
+      tooManyRecords <- recvEnvelope host
+      envType tooManyRecords `shouldBe` MsgError
+      case Aeson.fromJSON (envPayload tooManyRecords) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) ->
+          peMessage pluginErr `shouldSatisfy` Text.isInfixOf "record count"
+      sendEnvelope host (request 422 (dpMaxPageSize defaultDataPagination + 1))
+      oversizedPage <- recvEnvelope host
+      envType oversizedPage `shouldBe` MsgError
+      case Aeson.fromJSON (envPayload oversizedPage) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) ->
+          peMessage pluginErr `shouldSatisfy` Text.isInfixOf "page_size"
       shutdownAndWait host done
 
   it "returns error for query on unknown resource" $

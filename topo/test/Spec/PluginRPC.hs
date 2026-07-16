@@ -11,7 +11,7 @@ import Test.QuickCheck
 
 import Control.Concurrent (MVar, forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, bracket, finally, try)
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Data.Char (toLower)
 import Data.Aeson (Value(..), (.=), object, encode, eitherDecode)
 import qualified Data.Aeson as Aeson
@@ -32,6 +32,7 @@ import qualified Data.Text as Text
 import Data.Time (UTCTime)
 import Data.Word (Word32, Word64)
 import qualified Data.Vector as Vector
+import qualified Data.Vector.Unboxed as U
 import System.Directory (doesFileExist, doesPathExist, getCurrentDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Info (os)
@@ -88,6 +89,8 @@ import Topo.Plugin.RPC
   , terrainWorldToPayload
   , terrainWorldToPayloadWithLimits
   , terrainWorldToScopedPayload
+  , terrainWorldToCompletePayloadWithLimits
+  , decodeBase64Text
   , encodeBase64Text
   )
 import Topo.Plugin.RPC.Manifest
@@ -140,11 +143,17 @@ import Topo.Overlay.Schema
   )
 import Topo.Simulation (SimContext(..), SimNode(..), TerrainWrites(..), terrainWritesEmpty)
 import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleDecl(..), defaultScheduleDecl)
-import Topo.Types (ChunkId(..), WorldConfig(..))
+import Topo.Types (ChunkId(..), GroundwaterChunk(..), RiverChunk(..), WorldConfig(..))
 import Topo.World
   ( TerrainWorld(..)
   , emptyClimateChunk
+  , emptyGlacierChunk
+  , emptyGroundwaterChunk
+  , emptyRiverChunk
   , emptyTerrainChunk
+  , emptyVegetationChunk
+  , emptyVolcanismChunk
+  , emptyWaterBodyChunk
   , emptyWorld
   , setClimateChunk
   , setTerrainChunk
@@ -1566,6 +1575,41 @@ spec = describe "Plugin.RPC" $ do
             , ricDataResourceRequest = Just request
             }
       resolveInvocationScope 5 Nothing [CapDataRead] context `shouldSatisfy` isLeft
+
+    it "covers every terrain-section combination and exact selected chunk set" $ do
+      let config = WorldConfig { wcChunkSize = 1 }
+          keys = [0, 1, 2]
+          world = (emptyWorld config defaultHexGridMeta)
+            { twTerrain = IntMap.fromDistinctAscList [(key, emptyTerrainChunk config) | key <- keys]
+            , twClimate = IntMap.fromDistinctAscList [(key, emptyClimateChunk config) | key <- keys]
+            , twVegetation = IntMap.fromDistinctAscList [(key, emptyVegetationChunk config) | key <- keys]
+            }
+          selected = IntSet.fromList [0, 2]
+          combinations = Set.toAscList . Set.fromList $
+            [ Set.fromList sections
+            | sections <- subsequences [TerrainElevation, TerrainClimate, TerrainVegetation]
+            ]
+          subsequences [] = [[]]
+          subsequences (x:xs) = let rest = subsequences xs in rest <> map (x:) rest
+          sectionFields =
+            [ (TerrainElevation, "terrain", "chunk_count")
+            , (TerrainClimate, "climate", "climate_count")
+            , (TerrainVegetation, "vegetation", "vegetation_count")
+            ]
+      forM_ combinations $ \sections ->
+        case terrainWorldToScopedPayload sections selected world of
+          Left err -> expectationFailure (Text.unpack err)
+          Right (Object payload) -> if Set.null sections
+            then KM.null payload `shouldBe` True
+            else forM_ sectionFields $ \(section, field, countField) -> do
+              let included = Set.member section sections
+              KM.member field payload `shouldBe` included
+              KM.member countField payload `shouldBe` included
+              when included $ case KM.lookup field payload of
+                Just (Object chunks) -> map AesonKey.toText (KM.keys chunks)
+                  `shouldMatchList` ["0", "2"]
+                other -> expectationFailure ("expected scoped chunk map, got " <> show other)
+          Right other -> expectationFailure ("expected object, got " <> show other)
 
     it "omits every unselected terrain section and count without river leakage" $ do
       let world = emptyWorld (WorldConfig { wcChunkSize = 2 }) defaultHexGridMeta
@@ -3361,6 +3405,27 @@ spec = describe "Plugin.RPC" $ do
         Left err -> err `shouldSatisfy` Text.isInfixOf "before base64 decode"
         Right _ -> expectationFailure "expected excessive map to fail structurally"
 
+    it "rejects malformed, non-canonical, and oversized base64 before chunk allocation" $ do
+      let world = emptyWorld (WorldConfig 1) defaultHexGridMeta
+          terrain encoded = object
+            [ "encoding" .= ("base64" :: Text)
+            , "chunk_size" .= (1 :: Int)
+            , "chunk_count" .= (1 :: Int)
+            , "terrain" .= object ["0" .= (encoded :: Text)]
+            ]
+      forM_ ["%%==", "AAAA==="] $ \encoded ->
+        case applyGeneratorTerrainValueWithLimits defaultRPCPayloadLimits world (terrain encoded) of
+          Left _ -> pure ()
+          Right _ -> expectationFailure ("malformed base64 was accepted: " <> Text.unpack encoded)
+      decodeBase64Text "AR==" `shouldSatisfy` isLeft
+      smallLimits <- case mkRPCPayloadLimits 100 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      case applyGeneratorTerrainValueWithLimits smallLimits world
+          (terrain (encodeBase64Text (BS.replicate 117 0))) of
+        Left err -> err `shouldSatisfy` Text.isInfixOf "exceeds decoded limit before base64 decode"
+        Right _ -> expectationFailure "oversized valid base64 was accepted"
+
     it "rejects fixed terrain section trailing bytes before vector decode" $ do
       limits <- case mkRPCPayloadLimits 4096 of
         Left err -> expectationFailure (Text.unpack err) >> fail "limits"
@@ -3375,6 +3440,64 @@ spec = describe "Plugin.RPC" $ do
       case applyGeneratorTerrainValueWithLimits limits world payload of
         Left err -> err `shouldSatisfy` Text.isInfixOf "expected=117 bytes"
         Right _ -> expectationFailure "expected trailing terrain bytes to fail"
+
+    it "preflights exact river-segment and extended-groundwater complete totals" $ do
+      let config = WorldConfig 1
+          river = (emptyRiverChunk config)
+            { rcSegOffsets = U.fromList [0, 2]
+            , rcSegEntryEdge = U.fromList [0, 1]
+            , rcSegExitEdge = U.fromList [1, 2]
+            , rcSegDischarge = U.fromList [0.25, 0.75]
+            , rcSegOrder = U.fromList [1, 2]
+            }
+          groundwater = (emptyGroundwaterChunk config)
+            { gwInfiltration = U.singleton 0
+            , gwWaterTableDepth = U.singleton 0
+            , gwRootZoneMoisture = U.singleton 0
+            }
+          world = (emptyWorld config defaultHexGridMeta)
+            { twRivers = IntMap.singleton 0 river
+            , twGroundwater = IntMap.singleton 0 groundwater
+            }
+      exact <- case mkRPCPayloadLimits 131 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      below <- case mkRPCPayloadLimits 130 of
+        Left err -> expectationFailure (Text.unpack err) >> fail "limits"
+        Right value -> pure value
+      rplMaxDecodedTerrainBytes exact `shouldBe` 98
+      terrainWorldToCompletePayloadWithLimits exact world `shouldSatisfy` isRight
+      case terrainWorldToCompletePayloadWithLimits below world of
+        Left err -> err `shouldSatisfy` Text.isInfixOf "actual=98 bytes, limit=97 bytes"
+        Right _ -> expectationFailure "one-byte-below complete budget was accepted"
+
+    it "fits a complete radius-2 world and preflights radius-4 before v4 encoding" $ do
+      let completeWorld radius =
+            let config = WorldConfig { wcChunkSize = 64 }
+                count = 1 + 3 * radius * (radius + 1)
+                keys = [0 .. count - 1]
+                chunks value = IntMap.fromDistinctAscList [(key, value) | key <- keys]
+            in (emptyWorld config defaultHexGridMeta)
+              { twTerrain = chunks (emptyTerrainChunk config)
+              , twClimate = chunks (emptyClimateChunk config)
+              , twRivers = chunks (emptyRiverChunk config)
+              , twGroundwater = chunks (emptyGroundwaterChunk config)
+              , twVolcanism = chunks (emptyVolcanismChunk config)
+              , twGlaciers = chunks (emptyGlacierChunk config)
+              , twWaterBodies = chunks (emptyWaterBodyChunk config)
+              , twVegetation = chunks (emptyVegetationChunk config)
+              }
+          decodedBytes radius =
+            let count = 1 + 3 * radius * (radius + 1)
+                tiles = 64 * 64
+            in count * (44 + 273 * tiles)
+      decodedBytes 2 `shouldSatisfy` (<= fromIntegral (rplMaxDecodedTerrainBytes defaultRPCPayloadLimits))
+      decodedBytes 4 `shouldSatisfy` (> fromIntegral (rplMaxDecodedTerrainBytes defaultRPCPayloadLimits))
+      terrainWorldToCompletePayloadWithLimits defaultRPCPayloadLimits (completeWorld 2)
+        `shouldSatisfy` isRight
+      case terrainWorldToCompletePayloadWithLimits defaultRPCPayloadLimits (completeWorld 4) of
+        Left err -> err `shouldSatisfy` Text.isInfixOf "exceeds limit before encoding"
+        Right _ -> expectationFailure "radius-4 complete payload unexpectedly fit the v4 limit"
 
     it "applies explicit connection limits to outgoing host RPC immediately" $
       withConnectedTransports "connection-limit" $ \host _plugin -> do

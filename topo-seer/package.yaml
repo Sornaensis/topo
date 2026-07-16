@@ -266,6 +266,7 @@ benchmarks:
       - containers
       - deepseq
       - topo
+      - vector
 
   topo-seer-bench:
     main: Main.hs
