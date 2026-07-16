@@ -45,6 +45,7 @@ import Seer.System.Cache
   , initialRenderCacheState
   , renderStepSummary
   )
+import Seer.Input.Context (newInputActionDispatcher)
 import Seer.System.EventPump (EventPumpEnv(..), EventPumpResult(..), hasQuitEvent, processEvents)
 import Seer.System.RenderFrame
   ( RenderFrameEnv(..)
@@ -476,6 +477,7 @@ runMainLoop runtimeCfg actors sdl = do
   mousePosRef <- newIORef (0, 0)
   dragRef <- newIORef Nothing
   tooltipHoverRef <- newIORef Nothing
+  inputActionDispatcher <- newInputActionDispatcher
   diagnosticStartNs <- getMonotonicTimeNSec
   snapshotAdvanceRef <- newIORef (initialSnapshotAdvanceState diagnosticStartNs)
   snapshotLagRef <- newIORef initialSnapshotLagState
@@ -508,6 +510,7 @@ runMainLoop runtimeCfg actors sdl = do
         , epeMousePosRef = mousePosRef
         , epeDragRef = dragRef
         , epeTooltipHoverRef = tooltipHoverRef
+        , epeInputActionDispatcher = inputActionDispatcher
         }
       snapshotEnv = SnapshotPollEnv
         { speTimingLogThresholdMs = timingLogThresholdMs

@@ -24,6 +24,7 @@ import Actor.SnapshotReceiver
   )
 import Actor.Terrain (Terrain)
 import Actor.UI (Ui, UiState, getUiSnapshot)
+import Control.Concurrent.MVar (MVar, newMVar)
 import Data.IORef (IORef)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Editor.History (EditHistory)
@@ -42,6 +43,8 @@ data ActorHandles = ActorHandles
   , ahSimulationHandle :: !(ActorHandle Simulation (Protocol Simulation))
   , ahHistoryRef :: !(IORef EditHistory)
     -- ^ Mutable undo\/redo history for terrain editor edits.
+  , ahWidgetActionLock :: !(MVar ())
+    -- ^ Per-application serialization owner for transport-neutral widget actions.
   }
 
 -- | Build a shared actor-handle bundle from the live application actors.
@@ -57,9 +60,10 @@ mkActorHandles
   -> ActorHandle PluginManager (Protocol PluginManager)
   -> ActorHandle Simulation (Protocol Simulation)
   -> IORef EditHistory
-  -> ActorHandles
-mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapRef terrainSnapRef versionRef pluginManagerHandle simulationHandle historyRef =
-  ActorHandles
+  -> IO ActorHandles
+mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapRef terrainSnapRef versionRef pluginManagerHandle simulationHandle historyRef = do
+  widgetActionLock <- newMVar ()
+  pure ActorHandles
     { ahUiHandle = uiHandle
     , ahLogHandle = logHandle
     , ahDataHandle = dataHandle
@@ -71,6 +75,7 @@ mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle da
     , ahPluginManagerHandle = pluginManagerHandle
     , ahSimulationHandle = simulationHandle
     , ahHistoryRef = historyRef
+    , ahWidgetActionLock = widgetActionLock
     }
 
 -- | Drain the UI mailbox and publish the resulting state in one epoch.

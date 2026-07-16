@@ -56,7 +56,12 @@ import Seer.Input.ConfigScroll
   ( computeScrollUpdates
   , defaultScrollSettings
   )
-import Seer.Input.Context (DragState(..), InputContext(..), TooltipHover)
+import Seer.Input.Context
+  ( DragState(..)
+  , InputContext(..)
+  , TooltipHover
+  , enqueueInputAction
+  )
 import Seer.Input.Modal (handleModalListKey, handleModalTextKey, handleModalTextInput)
 import Seer.Input.Seed (bumpSeed, handleSeedKey, handleSeedTextInput)
 import Seer.Input.ViewControls
@@ -68,13 +73,13 @@ import Seer.Input.ViewControls
 import Seer.DataBrowser.Executor (submitDataBrowserAction)
 import qualified Seer.DataBrowser.Lifecycle as DataBrowser
 import Topo (ChunkCoord(..), ChunkId(..), TileCoord(..), WorldConfig(..), chunkCoordFromTile, chunkIdFromCoord)
-import Topo.Types (BiomeId, TerrainForm, biomeIdToCode, terrainFormToCode)
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildSliderRowWidgets, hitTest)
+import UI.WidgetId (widgetIdToText)
 import UI.Widgets (Rect(..), containsPoint)
 import Seer.Input.Actions (InputEnv(..), runInputService, submitAction)
 import qualified Seer.Input.Actions as InputActions
-import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..), Falloff(..), paintableBiomes, allTerrainForms)
+import Seer.Editor.Types (EditorState(..), EditorTool(..), BrushSettings(..))
 import Actor.UiActions (UiAction(..))
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Input.Widgets (handleClick)
@@ -278,7 +283,7 @@ handleEvent inputContext event = do
                       reopenWidgets = buildEditorReopenWidget rLayout
                   case hitTest reopenWidgets rPoint of
                     Just WidgetEditorReopen ->
-                      setEditorActive True
+                      dispatchEditorWidget WidgetEditorReopen
                     _ -> handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
       | SDL.mouseButtonEventMotion btnEvent == SDL.Released ->
           case SDL.mouseButtonEventButton btnEvent of
@@ -407,30 +412,6 @@ handleEvent inputContext event = do
     setEditorBrushRadius radius =
       runEditorService "editor_set_brush" (object ["radius" .= radius])
 
-    setEditorBrushStrength strength =
-      runEditorService "editor_set_brush" (object ["strength" .= strength])
-
-    setEditorBrushFalloff falloff =
-      runEditorService "editor_set_brush" (object ["falloff" .= falloffName falloff])
-
-    setEditorSmoothPasses passes =
-      runEditorService "editor_set_brush" (object ["smooth_passes" .= passes])
-
-    setEditorNoiseFrequency frequency =
-      runEditorService "editor_set_brush" (object ["noise_frequency" .= frequency])
-
-    setEditorErodePasses passes =
-      runEditorService "editor_set_brush" (object ["erode_passes" .= passes])
-
-    setEditorBiome biome =
-      runEditorService "editor_set_biome" (object ["biome" .= biomeIdToCode biome])
-
-    setEditorForm form =
-      runEditorService "editor_set_form" (object ["form" .= terrainFormToCode form])
-
-    setEditorHardness hardness =
-      runEditorService "editor_set_hardness" (object ["hardness" .= hardness])
-
     submitEditorBrushStroke hex =
       -- Local drag strokes stay on the shared UiActions stroke stream so
       -- ToolFlatten keeps one reference height for the whole drag gesture;
@@ -451,12 +432,6 @@ handleEvent inputContext event = do
       ToolPaintForm -> "paint_form"
       ToolSetHardness -> "set_hardness"
       ToolErode -> "erode"
-
-    falloffName :: Falloff -> Text.Text
-    falloffName falloff = case falloff of
-      FalloffLinear -> "linear"
-      FalloffSmooth -> "smooth"
-      FalloffConstant -> "constant"
 
     dragThreshold :: Float
     dragThreshold = 4
@@ -545,91 +520,13 @@ handleEvent inputContext event = do
         in setEditorBrushRadius r
       _ -> pure ()
     handleEditorWidgetClick :: EditorState -> WidgetId -> IO ()
-    handleEditorWidgetClick editor wid = case wid of
-      WidgetEditorTool idx ->
-        let tools = [minBound .. maxBound] :: [EditorTool]
-        in case drop idx tools of
-          (tool:_) -> setEditorTool tool
-          []       -> pure ()
-      WidgetEditorRadiusMinus ->
-        let brush = editorBrush editor
-            r = max 0 (brushRadius brush - 1)
-        in setEditorBrushRadius r
-      WidgetEditorRadiusPlus ->
-        let brush = editorBrush editor
-            r = min 6 (brushRadius brush + 1)
-        in setEditorBrushRadius r
-      WidgetEditorClose ->
-        setEditorActive False
-      -- Param bar: numeric minus/plus
-      WidgetEditorParamMinus slot -> applyNumericDelta editor slot (-1)
-      WidgetEditorParamPlus  slot -> applyNumericDelta editor slot 1
-      -- Param bar: cycle selectors
-      WidgetEditorCyclePrev _slot -> applyCycleStep editor (-1)
-      WidgetEditorCycleNext _slot -> applyCycleStep editor 1
-      -- Falloff cycle
-      WidgetEditorFalloffPrev -> applyFalloffStep editor (-1)
-      WidgetEditorFalloffNext -> applyFalloffStep editor 1
-      _ -> pure ()
+    handleEditorWidgetClick _editor = dispatchEditorWidget
 
-    applyNumericDelta :: EditorState -> Int -> Int -> IO ()
-    applyNumericDelta editor slot dir =
-      let brush = editorBrush editor
-          sign  = fromIntegral dir :: Float
-      in case editorTool editor of
-        ToolRaise -> setEditorBrushStrength (clamp 0.005 0.2 (brushStrength brush + sign * 0.005))
-        ToolLower -> setEditorBrushStrength (clamp 0.005 0.2 (brushStrength brush + sign * 0.005))
-        ToolSmooth -> setEditorSmoothPasses (clampI 1 5 (editorSmoothPasses editor + dir))
-        ToolFlatten -> setEditorBrushStrength (clamp 0.01 0.5 (brushStrength brush + sign * 0.01))
-        ToolNoise
-          | slot == 0 -> setEditorNoiseFrequency (clamp 0.5 4.0 (editorNoiseFrequency editor + sign * 0.1))
-          | otherwise -> setEditorBrushStrength (clamp 0.005 0.2 (brushStrength brush + sign * 0.005))
-        ToolSetHardness -> setEditorHardness (clamp 0.0 1.0 (editorHardnessTarget editor + sign * 0.05))
-        ToolErode -> setEditorErodePasses (clampI 1 20 (editorErodePasses editor + dir))
-        _ -> pure ()
-
-    applyCycleStep :: EditorState -> Int -> IO ()
-    applyCycleStep editor dir = case editorTool editor of
-      ToolPaintBiome ->
-        let next = cycleBiome (editorBiomeId editor) dir
-        in setEditorBiome next
-      ToolPaintForm ->
-        let next = cycleForm (editorFormOverride editor) dir
-        in setEditorForm next
-      _ -> pure ()
-
-    applyFalloffStep :: EditorState -> Int -> IO ()
-    applyFalloffStep editor dir =
-      let brush  = editorBrush editor
-          next   = cycleFalloff (brushFalloff brush) dir
-      in setEditorBrushFalloff next
-
-    clamp :: Float -> Float -> Float -> Float
-    clamp lo hi v = max lo (min hi v)
-
-    clampI :: Int -> Int -> Int -> Int
-    clampI lo hi v = max lo (min hi v)
-
-    cycleBiome :: BiomeId -> Int -> BiomeId
-    cycleBiome cur dir =
-      let bs  = paintableBiomes
-          idx = maybe 0 id (lookup cur (zip bs [0..]))
-          n   = length bs
-      in bs !! ((idx + dir + n) `mod` n)
-
-    cycleForm :: TerrainForm -> Int -> TerrainForm
-    cycleForm cur dir =
-      let fs  = allTerrainForms
-          idx = maybe 0 id (lookup cur (zip fs [0..]))
-          n   = length fs
-      in fs !! ((idx + dir + n) `mod` n)
-
-    cycleFalloff :: Falloff -> Int -> Falloff
-    cycleFalloff cur dir =
-      let fs  = [FalloffLinear, FalloffSmooth, FalloffConstant]
-          idx = maybe 0 id (lookup cur (zip fs [0..]))
-          n   = length fs
-      in fs !! ((idx + dir + n) `mod` n)
+    dispatchEditorWidget wid = enqueueInputAction
+      (icActionDispatcher inputContext) $ do
+        _ <- runInputService inputEnv "click_widget"
+          (object ["widget_id" .= widgetIdToText wid])
+        pure ()
 
     -- | Handle keyboard events when a data browser text field is focused.
     handleDataFieldKey :: UiState -> DataBrowserState -> Text.Text -> SDL.Keycode -> IO ()

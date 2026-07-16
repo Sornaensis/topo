@@ -158,7 +158,7 @@ spec = describe "DataResource CRUD service/API/UI e2e" $ do
         [ "widget_id" .= ("WidgetDataDeleteConfirm" :: Text) ]
       case busy of
         Left err -> serviceErrorText err `shouldSatisfy`
-          Text.isInfixOf "data browser mutation in progress"
+          Text.isInfixOf "widget is not visible"
         Right _ -> expectationFailure "duplicate mutation click was accepted while busy"
       invalid <- expectE2EWithin "invalid click rejection" $ serviceResult app "click_widget" $ object
         [ "widget_id" .= ("WidgetDataNotAControl" :: Text) ]
@@ -426,6 +426,10 @@ withGatedCrudFixtureApp gate action =
     setUiDataResources uiHandle resources
     setUiShowConfig uiHandle True
     setUiConfigTab uiHandle ConfigData
+    waitForWidgets app (widgetIdToText (WidgetDataPluginSelect crudPluginName))
+    _ <- clickWidget app ("WidgetDataPluginSelect:" <> crudPluginName)
+    waitForWidgets app (widgetIdToText
+      (WidgetDataResourceSelect crudPluginName crudResourceName))
     action app
 
 withCrudFixturePluginGate

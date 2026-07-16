@@ -2326,13 +2326,19 @@ viewportHoverResponseSchema = objectSchema "ViewportHoverResponse"
   ]
 
 widgetClickRequestSchema :: JsonSchema
-widgetClickRequestSchema = widgetIdRequestSchema "WidgetClickRequest"
+widgetClickRequestSchema = objectSchema "WidgetClickRequest"
+  [ "widget_id" ]
+  [ ("widget_id", stringSchema)
+  , ("normalized_position", numberRangeSchema 0 1)
+  , ("item_index", integerMinimumSchema 0)
+  ]
 
 widgetClickResponseSchema :: JsonSchema
 widgetClickResponseSchema = objectSchema "WidgetClickResponse"
   [ "widget_id", "status" ]
   [ ("widget_id", stringSchema)
-  , ("status", enumStringSchema ["clicked", "accepted"])
+  , ("status", enumStringSchema ["completed", "accepted"])
+  , ("changed", booleanSchema)
   , ("info", stringSchema)
   , ("request_id", integerSchema)
   , ("operation", stringSchema)
@@ -2342,8 +2348,9 @@ widgetArgumentSchema :: Value
 widgetArgumentSchema = inlineObjectSchema
   [ "name", "type", "minimum", "description" ]
   [ ("name", stringSchema)
-  , ("type", enumStringSchema ["integer"])
+  , ("type", enumStringSchema ["integer", "number"])
   , ("minimum", integerSchema)
+  , ("maximum", integerSchema)
   , ("description", stringSchema)
   ]
 
@@ -2776,6 +2783,13 @@ integerMinimumSchema minimumValue = object
 
 numberSchema :: Value
 numberSchema = object ["type" .= ("number" :: Text)]
+
+numberRangeSchema :: Double -> Double -> Value
+numberRangeSchema minimumValue maximumValue = object
+  [ "type" .= ("number" :: Text)
+  , "minimum" .= minimumValue
+  , "maximum" .= maximumValue
+  ]
 
 booleanSchema :: Value
 booleanSchema = object ["type" .= ("boolean" :: Text)]

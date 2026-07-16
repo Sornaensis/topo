@@ -311,7 +311,7 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
   screenshotRef <- newScreenshotRequestRef
   historyRef <- newIORef (emptyHistory 50)
   eventBus <- newDefaultServiceEventBus
-  let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
+  actorHandles <- mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
   dataBrowserExecutor <- newDataBrowserExecutor uiHandle
   let commandContext = CommandContext
         { ccActorHandles = actorHandles

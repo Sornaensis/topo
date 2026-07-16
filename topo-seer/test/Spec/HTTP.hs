@@ -1409,7 +1409,7 @@ spec = describe "Seer.HTTP.Server" $ do
         , "non_clickable", "compatibility_only"
         ]
     (inlinePropertyNames =<< componentProperty doc "WidgetStateResponse" "required_argument")
-      `shouldBe` Just ["description", "minimum", "name", "type"]
+      `shouldBe` Just ["description", "maximum", "minimum", "name", "type"]
     (inlinePropertyNames =<< componentProperty doc "WidgetStateResponse" "pending")
       `shouldBe` Just ["operation", "request_id", "target"]
     (inlinePropertyNames =<< componentProperty doc "WidgetStateResponse" "async_error")

@@ -12,7 +12,7 @@
 module Spec.CommandDispatch (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (newEmptyMVar, takeMVar)
+import Control.Concurrent.MVar (newEmptyMVar, newMVar, takeMVar)
 import Control.Exception (bracket, catch, finally)
 import Control.Monad (forM_)
 import qualified Data.ByteString as BS
@@ -75,7 +75,15 @@ import Actor.UI
   , setUiGenerating
   , setUiSnapshotRef
   )
-import Actor.UI.Setters (setUiPluginParamSpecs)
+import Actor.UI.Setters
+  ( setUiConfigTab
+  , setUiLeftTab
+  , setUiPluginExpanded
+  , setUiPluginNames
+  , setUiPluginParamSpecs
+  , setUiShowConfig
+  , setUiShowLeftPanel
+  )
 import Actor.UiActions (ActorHandles(..), UiActions)
 import Actor.UiActions.Command (UiAction(..), UiActionRequest(..), runUiAction)
 
@@ -1343,6 +1351,9 @@ spec = describe "CommandDispatch" $ do
       managerValue `shouldBe` Just (Bool True)
 
     it "click_widget toggles plugin parameter checkboxes through pipeline action helpers" $ withPluginCtx $ \ctx -> do
+      showPipelineWidgets ctx
+      setUiPluginExpanded (ahUiHandle (ccActorHandles ctx)) "example" True
+      _ <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
       seedRsp <- dispatch ctx "set_plugin_param" (object
         [ "plugin" .= ("example" :: String)
         , "param" .= ("enabled" :: String)
@@ -1358,6 +1369,8 @@ spec = describe "CommandDispatch" $ do
       (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "enabled") `shouldBe` Just (Bool False)
 
     it "returns accepted request metadata for asynchronous Data Browser clicks" $ withCtx $ \ctx -> do
+      setUiShowConfig (ahUiHandle (ccActorHandles ctx)) True
+      _ <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
       rsp <- dispatch ctx "click_widget" (object
         [ "widget_id" .= ("WidgetConfigTabData" :: Text) ])
       srSuccess rsp `shouldBe` True
@@ -1369,8 +1382,61 @@ spec = describe "CommandDispatch" $ do
           KM.lookup "info" result `shouldBe` Nothing
         value -> expectationFailure ("unexpected click response: " <> show value)
 
+    it "rejects known widgets that are hidden by the current live surface" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetViewBaseBiome" :: Text) ])
+      srSuccess rsp `shouldBe` False
+      srError rsp `shouldSatisfy` maybe False (Text.isInfixOf "not visible")
+
+    it "toggles the log header with a real completed transition" $ withCtx $ \ctx -> do
+      let logH = ahLogHandle (ccActorHandles ctx)
+      before <- getLogSnapshot logH
+      rsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetLogHeader" :: Text) ])
+      srSuccess rsp `shouldBe` True
+      case srResult rsp of
+        Object result -> do
+          KM.lookup "status" result `shouldBe` Just (String "completed")
+          KM.lookup "changed" result `shouldBe` Just (Bool True)
+        value -> expectationFailure ("unexpected click response: " <> show value)
+      after <- getLogSnapshot logH
+      lsCollapsed after `shouldBe` not (lsCollapsed before)
+
+    it "maps normalized plugin slider positions through the manifest range" $ withPluginCtx $ \ctx -> do
+      showPipelineWidgets ctx
+      let uiH = ahUiHandle (ccActorHandles ctx)
+      setUiPluginExpanded uiH "example" True
+      _ <- getUiSnapshot uiH
+      rsp <- dispatch ctx "click_widget" (object
+        [ "widget_id" .= ("WidgetPluginParamSlider:example:density" :: Text)
+        , "normalized_position" .= (0.25 :: Double)
+        ])
+      srSuccess rsp `shouldBe` True
+      ui <- getUiSnapshot uiH
+      (Map.lookup "example" (uiPluginParams ui) >>= Map.lookup "density")
+        `shouldBe` Just (Number 0.25)
+
+    it "executes all nine editor tools and context-sensitive controls" $ withCtx $ \ctx -> do
+      let click wid = dispatch ctx "click_widget" (object ["widget_id" .= (wid :: Text)])
+      openRsp <- click "WidgetEditorReopen"
+      srSuccess openRsp `shouldBe` True
+      forM_ [0 .. 8 :: Int] $ \index -> do
+        rsp <- click ("WidgetEditorTool:" <> Text.pack (show index))
+        srSuccess rsp `shouldBe` True
+      radiusRsp <- click "WidgetEditorRadiusPlus"
+      srSuccess radiusRsp `shouldBe` True
+      toolRsp <- click "WidgetEditorTool:4"
+      srSuccess toolRsp `shouldBe` True
+      frequencyRsp <- click "WidgetEditorParamPlus:0"
+      strengthRsp <- click "WidgetEditorParamMinus:1"
+      falloffRsp <- click "WidgetEditorFalloffNext"
+      map srSuccess [frequencyRsp, strengthRsp, falloffRsp] `shouldBe` [True, True, True]
+      editorTool . uiEditor <$> getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+        `shouldReturn` ToolNoise
+
   describe "click_widget layered view controls" $ do
     it "selects base view, weather overlay, and basis independently" $ withCtx $ \ctx -> do
+      showLeftViewWidgets ctx
       baseBaseline <- beginPublicationAssertion ctx
       baseRsp <- dispatch ctx "click_widget" (object
         [ "widget_id" .= ("WidgetViewBaseBiome" :: Text) ])
@@ -1400,6 +1466,7 @@ spec = describe "CommandDispatch" $ do
       lvsWeatherBasis (uiViewSelection (rsUi basisCommitted)) `shouldBe` WeatherBasisAverage
 
     it "keeps legacy weather widget ids accepted as full-mode compatibility" $ withCtx $ \ctx -> do
+      showLeftViewWidgets ctx
       let uiH = ahUiHandle (ccActorHandles ctx)
       seedRsp <- dispatch ctx "click_widget" (object
         [ "widget_id" .= ("WidgetViewBaseBiome" :: Text) ])
@@ -1431,6 +1498,7 @@ spec = describe "CommandDispatch" $ do
 
   describe "click_widget day/night" $ do
     it "routes the toggle through UiActions, bumps the snapshot version, and enqueues current atlas jobs" $ withCtx $ \ctx -> do
+      showLeftViewWidgets ctx
       let handles = ccActorHandles ctx
           logH = ahLogHandle handles
           atlasH = ahAtlasManagerHandle handles
@@ -1460,6 +1528,7 @@ spec = describe "CommandDispatch" $ do
       assertAtlasJobsMatch jobs expected
 
     it "publishes the latest authoritative terrain context before toggling day/night" $ withCtx $ \ctx -> do
+      showLeftViewWidgets ctx
       _ <- writeReadyTerrainData ctx
       let handles = ccActorHandles ctx
           logH = ahLogHandle handles
@@ -1480,6 +1549,7 @@ spec = describe "CommandDispatch" $ do
       map (tgcWorldTime . tsGeoContext . ajTerrain) jobs `shouldSatisfy` all (== latestTime)
 
     it "serializes rapid day/night clicks against the latest UI state" $ withCtx $ \ctx -> do
+      showLeftViewWidgets ctx
       let handles = ccActorHandles ctx
           uiH = ahUiHandle handles
           logH = ahLogHandle handles
@@ -2226,6 +2296,22 @@ expectViewportRefreshForCommand ctx method params assertUi = do
   jobs <- drainAtlasJobs atlasH
   assertAtlasJobsMatch jobs expected
 
+showLeftViewWidgets :: CommandContext -> IO ()
+showLeftViewWidgets ctx = do
+  let uiH = ahUiHandle (ccActorHandles ctx)
+  setUiShowLeftPanel uiH True
+  setUiLeftTab uiH LeftView
+  _ <- getUiSnapshot uiH
+  pure ()
+
+showPipelineWidgets :: CommandContext -> IO ()
+showPipelineWidgets ctx = do
+  let uiH = ahUiHandle (ccActorHandles ctx)
+  setUiShowConfig uiH True
+  setUiConfigTab uiH ConfigPipeline
+  _ <- getUiSnapshot uiH
+  pure ()
+
 -- | Bracket that creates a full actor system with all handles needed
 -- for a 'CommandContext'.
 withCtx :: (CommandContext -> IO a) -> IO a
@@ -2249,6 +2335,7 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
   versionRef     <- newRenderSnapshotVersionRef uiSnapRef logSnapRef dataSnapRef terrainSnapRef
   screenshotRef  <- newScreenshotRequestRef
   historyRef     <- newIORef (emptyHistory 50)
+  widgetActionLock <- newMVar ()
   dataBrowserExecutor <- newDataBrowserExecutor uiH
   let handles = ActorHandles
         { ahUiHandle              = uiH
@@ -2262,6 +2349,7 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
         , ahPluginManagerHandle   = pluginH
         , ahSimulationHandle      = simH
         , ahHistoryRef            = historyRef
+        , ahWidgetActionLock      = widgetActionLock
         }
       ctx = CommandContext
         { ccActorHandles    = handles
@@ -2279,7 +2367,9 @@ withPluginCtx action = withIsolatedPluginDir $ \_pluginRoot ->
   withCtx $ \ctx -> do
     discoverPlugins (ahPluginManagerHandle (ccActorHandles ctx))
     _ <- getLoadedPlugins (ahPluginManagerHandle (ccActorHandles ctx))
+    setUiPluginNames (ahUiHandle (ccActorHandles ctx)) ["example"]
     setUiPluginParamSpecs (ahUiHandle (ccActorHandles ctx)) (Map.singleton "example" commandPluginParamSpecs)
+    _ <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
     action ctx
 
 testPluginDirEnv :: String

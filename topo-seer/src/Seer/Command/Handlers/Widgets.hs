@@ -7,6 +7,10 @@
 -- @click_widget@, @list_widgets@, @get_widget_state@.
 module Seer.Command.Handlers.Widgets
   ( handleClickWidget
+  , WidgetInvocation(..)
+  , WidgetActionResult(..)
+  , executeWidgetInvocation
+  , executeLocalWidgetInvocation
   , handleListWidgets
   , handleGetWidgetState
   , WidgetClickSupport(..)
@@ -17,21 +21,24 @@ module Seer.Command.Handlers.Widgets
   , widgetState
   ) where
 
+import Control.Concurrent.MVar (withMVar)
 import Control.Monad (when)
-import Data.Aeson (Value(..), object, (.=), (.:))
+import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.Types as Aeson
-import Data.List (find)
+import Data.List (find, findIndex)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
-import Data.Word (Word64)
+import Data.String (IsString(..))
 import Linear (V2(..))
 import qualified Data.Text as Text
 import qualified Data.Text.Read as Text
 
-import Actor.Log (LogLevel(..), setLogMinLevel)
+import Actor.Data (TerrainSnapshot(..))
+import Actor.Log (LogLevel(..), LogSnapshot(..), getLogSnapshot, setLogCollapsed, setLogMinLevel)
+import Actor.SnapshotReceiver (publishChangedUiAndLog, readTerrainSnapshot)
 import Actor.PluginManager
   ( PluginSimulationPlan(..)
   , getPluginSimulationPlan
@@ -49,6 +56,7 @@ import Actor.UI.State
   , LeftTab(..)
   , SkyOverlayMode(..)
   , UiState(..)
+  , UiMenuMode(..)
   , ViewMode(..)
   , WeatherBasis(..)
   , dataBrowserScopedError
@@ -65,11 +73,25 @@ import Actor.UI.Setters
   , setUiChunkSize
   , setUiPluginNames
   , setUiPluginExpanded
+  , setUiMenuMode
+  , setUiPresetInput
+  , setUiPresetList
+  , setUiPresetSelected
+  , setUiPresetFilter
+  , setUiWorldSaveInput
+  , setUiWorldList
+  , setUiWorldSelected
+  , setUiWorldFilter
+  , setUiOverlayFields
   )
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
 import Seer.DataBrowser.Executor (submitDataBrowserAction)
 import qualified Seer.Command.Handlers.Data as HData
+import qualified Seer.Command.Handlers.Editor as HEditor
+import qualified Seer.Command.Handlers.Presets as HPresets
+import qualified Seer.Command.Handlers.View as HView
+import qualified Seer.Command.Handlers.World as HWorld
 import qualified Seer.Command.Handlers.Pipeline as HPipeline
 import qualified Seer.Command.Handlers.Plugin as HPlugin
 import qualified Seer.Command.Handlers.Simulation as HSimulation
@@ -77,8 +99,10 @@ import qualified Seer.Command.Handlers.Sliders as HSliders
 import Seer.Config.SliderId (SliderId(..))
 import Seer.Config.SliderRegistry (SliderDef(..), SliderPart(..), sliderDefsForTab, SliderTab(..))
 import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
+import Seer.Config.Snapshot (listSnapshots)
 import Seer.Config.SliderUi (sliderValueForId)
 import Seer.Service.Types (ServiceError(..), ServiceResponse(..), ServiceResult)
+import Seer.World.Persist (listWorlds)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Topo.Command.Types (SeerResponse(..), okResponse, errResponse)
 import Topo.Pipeline.Stage (parseStageId, stageCanonicalName, allBuiltinStageIds)
@@ -92,10 +116,21 @@ import Seer.DataBrowser.Model
   , dataBrowserOperationText
   , dataBrowserPendingEnvelopeValue
   )
+import Topo.Overlay (Overlay(..), lookupOverlay, overlayNames)
+import Topo.Overlay.Schema (OverlayFieldDef(..), OverlaySchema(..))
 import Topo.Plugin.DataResource (DataResourceSchema(..), DataOperations(..))
-import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..))
+import Seer.Editor.Types
+  ( BrushSettings(..)
+  , EditorState(..)
+  , EditorTool(..)
+  , Falloff(..)
+  , allTerrainForms
+  , paintableBiomes
+  )
 import UI.Component (ComponentId(..), componentForWidget)
 import UI.Components.PipelineControls (pipelineParamToggleValue)
+import Topo.Plugin.RPC.Manifest (RPCParamSpec(..))
+import Topo.Types (biomeIdToCode, terrainFormToCode)
 import UI.Layout (layoutFor)
 import UI.WidgetId (widgetIdFromText, widgetIdToText)
 import UI.WidgetTree
@@ -422,53 +457,152 @@ lookupSliderId = flip Map.lookup sliderIdMap
 -- click_widget
 -- ---------------------------------------------------------------------------
 
--- | Handle @click_widget@ — simulate clicking a widget by its ID.
---
--- Params: @{ "widget_id": "<WidgetId text>" }@
-handleClickWidget :: CommandContext -> Int -> Value -> IO SeerResponse
-handleClickWidget ctx reqId params = do
-  case Aeson.parseMaybe parseWidgetParam params of
-    Nothing ->
-      pure $ errResponse reqId "missing or invalid 'widget_id' parameter"
-    Just widText ->
-      case widgetIdFromText widText of
-        Nothing ->
-          pure $ errResponse reqId ("unknown widget_id: " <> widText)
-        Just wid -> do
-          result <- executeWidgetClick ctx wid
-          case result of
-            Right msg -> case decodeAsyncAcceptance msg of
-              Just (requestId, operation) -> pure $ okResponse reqId $ object
-                [ "widget_id" .= widgetIdToText wid
-                , "status" .= ("accepted" :: Text)
-                , "request_id" .= requestId
-                , "operation" .= operation
-                ]
-              Nothing -> pure $ okResponse reqId $ object
-                [ "widget_id" .= widgetIdToText wid
-                , "status" .= ("clicked" :: Text)
-                , "info" .= msg
-                ]
-            Left err -> pure $ errResponse reqId err
-  where
-    parseWidgetParam = Aeson.withObject "params" $ \o -> o .: "widget_id"
+data WidgetInvocation = WidgetInvocation
+  { wiWidgetId :: !WidgetId
+  , wiNormalizedPosition :: !(Maybe Double)
+  , wiItemIndex :: !(Maybe Int)
+  } deriving (Eq, Show)
 
--- | Execute the action associated with clicking a widget.
-executeWidgetClick :: CommandContext -> WidgetId -> IO (Either Text Text)
-executeWidgetClick ctx wid = do
+data WidgetActionResult
+  = WidgetActionCompleted !Text !Bool
+  | WidgetActionAccepted !DataBrowserPendingEnvelope
+  deriving (Eq, Show)
+
+instance IsString WidgetActionResult where
+  -- String-form results describe UI/log transitions; the coordinator derives
+  -- their changed flag from fresh before/after snapshots.
+  fromString value = WidgetActionCompleted (Text.pack value) False
+
+-- | Handle @click_widget@ through the shared serialized semantic interpreter.
+handleClickWidget :: CommandContext -> Int -> Value -> IO SeerResponse
+handleClickWidget ctx reqId params =
+  case Aeson.parseMaybe parseWidgetParam params of
+    Nothing -> pure $ errResponse reqId "missing or invalid widget invocation"
+    Just (widText, normalizedPosition, itemIndex) ->
+      case widgetIdFromText widText of
+        Nothing -> pure $ errResponse reqId ("unknown widget_id: " <> widText)
+        Just wid -> do
+          result <- executeWidgetInvocation ctx WidgetInvocation
+            { wiWidgetId = wid
+            , wiNormalizedPosition = normalizedPosition
+            , wiItemIndex = itemIndex
+            }
+          pure $ case result of
+            Left err -> errResponse reqId err
+            Right (WidgetActionCompleted info changed) -> okResponse reqId $ object
+              [ "widget_id" .= widgetIdToText wid
+              , "status" .= ("completed" :: Text)
+              , "changed" .= changed
+              , "info" .= info
+              ]
+            Right (WidgetActionAccepted envelope) -> okResponse reqId $ object
+              [ "widget_id" .= widgetIdToText wid
+              , "status" .= ("accepted" :: Text)
+              , "request_id" .= unDataBrowserRequestId (dbpeRequestId envelope)
+              , "operation" .= dataBrowserOperationText (dbpeOperation envelope)
+              ]
+  where
+    parseWidgetParam = Aeson.withObject "widget invocation" $ \o ->
+      (,,) <$> o .: "widget_id" <*> o .:? "normalized_position" <*> o .:? "item_index"
+
+-- | Single per-application owner for all SDL and remote widget semantics.
+executeWidgetInvocation :: CommandContext -> WidgetInvocation -> IO (Either Text WidgetActionResult)
+executeWidgetInvocation ctx invocation =
+  withMVar (ahWidgetActionLock handles) $ \_ -> do
+    uiBefore <- getUiSnapshot (ahUiHandle handles)
+    logBefore <- getLogSnapshot (ahLogHandle handles)
+    let capability = widgetCapability uiBefore (wiWidgetId invocation)
+    case invocationGate uiBefore capability invocation of
+      Left err -> pure (Left err)
+      Right () -> do
+        result <- executeWidgetClick ctx uiBefore invocation
+        case result of
+          Left err -> pure (Left err)
+          Right success -> do
+            uiAfter <- getUiSnapshot (ahUiHandle handles)
+            logAfter <- getLogSnapshot (ahLogHandle handles)
+            -- Publish direct UI/log mutations before releasing the widget
+            -- coordinator. Domain owners that already published are detected
+            -- by the conditional helper and do not gain a duplicate epoch.
+            publishChangedUiAndLog
+              (ahSnapshotVersionRef handles)
+              uiBefore
+              logBefore
+              (getUiSnapshot (ahUiHandle handles))
+              (getLogSnapshot (ahLogHandle handles))
+            pure $ Right $ case success of
+              accepted@WidgetActionAccepted{} -> accepted
+              WidgetActionCompleted info domainChanged -> WidgetActionCompleted info
+                (domainChanged || uiAfter /= uiBefore || logAfter /= logBefore)
+  where
+    handles = ccActorHandles ctx
+
+-- | Run one SDL-only semantic action under the same fresh-state coordinator.
+-- The callback receives the mailbox-current UI state and is invoked only when
+-- the local-only widget is visible and enabled.
+executeLocalWidgetInvocation
+  :: ActorHandles
+  -> WidgetId
+  -> (UiState -> IO (Either Text a))
+  -> IO (Either Text a)
+executeLocalWidgetInvocation handles wid action =
+  withMVar (ahWidgetActionLock handles) $ \_ -> do
+    uiSnap <- getUiSnapshot (ahUiHandle handles)
+    let capability = widgetCapability uiSnap wid
+    case localInvocationGate capability wid of
+      Left err -> pure (Left err)
+      Right () -> action uiSnap
+
+localInvocationGate :: WidgetCapability -> WidgetId -> Either Text ()
+localInvocationGate capability wid
+  | not (wcVisible capability) = Left ("widget is not visible: " <> widgetIdToText wid)
+  | not (wcEnabled capability) =
+      Left ("widget rejected: " <> Text.intercalate "; " (wcPreconditions capability))
+  | wcSupport capability /= WidgetLocalOnly =
+      Left ("widget is not a local-only action: " <> widgetIdToText wid)
+  | otherwise = Right ()
+
+invocationGate :: UiState -> WidgetCapability -> WidgetInvocation -> Either Text ()
+invocationGate uiSnap capability invocation
+  | wcSupport capability == WidgetCompatibilityOnly
+  , uiMenuMode uiSnap == MenuNone = Right ()
+  | wcSupport capability == WidgetCompatibilityOnly =
+      Left "widget is not available while a modal dialog is active"
+  | not (wcVisible capability) = Left ("widget is not visible: " <> widgetIdToText (wiWidgetId invocation))
+  | not (wcEnabled capability) = Left ("widget rejected: " <> Text.intercalate "; " (wcPreconditions capability))
+  | wcSupport capability == WidgetLocalOnly = unsupported "local-only"
+  | wcSupport capability == WidgetNonClickable = unsupported "non-clickable"
+  | wcSupport capability == WidgetArgumentRequired = requireArgument
+  | otherwise = Right ()
+  where
+    unsupported support = Left $ "unsupported " <> support <> " widget: "
+      <> widgetIdToText (wiWidgetId invocation) <> alternativeSuffix
+    alternativeSuffix = maybe "" ("; use " <>) (wcAlternative capability)
+    requireArgument = case wiWidgetId invocation of
+      WidgetPluginParamSlider _ _ -> case wiNormalizedPosition invocation of
+        Just position | position >= 0 && position <= 1 -> Right ()
+        _ -> Left "invalid normalized_position: expected a number in [0,1]"
+      WidgetPresetLoadItem -> requireIndex
+      WidgetWorldLoadItem -> requireIndex
+      _ -> Left "missing required widget argument"
+    requireIndex = case wiItemIndex invocation of
+      Just index | index >= 0 -> Right ()
+      _ -> Left "invalid item_index: expected a non-negative integer"
+
+-- | Execute the action associated with a capability-checked invocation.
+executeWidgetClick :: CommandContext -> UiState -> WidgetInvocation -> IO (Either Text WidgetActionResult)
+executeWidgetClick ctx uiSnap invocation = do
+  let wid = wiWidgetId invocation
   let handles = ccActorHandles ctx
       uiH = ahUiHandle handles
       logH = ahLogHandle handles
       pluginH = ahPluginManagerHandle handles
-  -- Use an actor call for command-triggered widget clicks so a rapid sequence
-  -- of clicks observes UI updates enqueued by prior clicks before it.
-  uiSnap <- getUiSnapshot uiH
   let dataBrowserResult message action = do
         result <- applyDataBrowserClick ctx action
         pure $ case result of
           Left err -> Left err
-          Right Nothing -> Right message
-          Right (Just envelope) -> Right (encodeAsyncAcceptance envelope)
+          Right Nothing -> Right (WidgetActionCompleted message False)
+          Right (Just envelope) -> Right (WidgetActionAccepted envelope)
       setBase baseMode = do
         submitAction ctx (UiActionSetBaseViewMode baseMode)
         pure $ Right "base view set"
@@ -520,12 +654,12 @@ executeWidgetClick ctx wid = do
       let cur = uiChunkSize uiSnap
           new = max 8 (cur - 8)
       setUiChunkSize uiH new
-      pure $ Right ("chunk size: " <> Text.pack (show new))
+      pure $ completed ("chunk size: " <> Text.pack (show new))
     WidgetChunkPlus -> do
       let cur = uiChunkSize uiSnap
           new = cur + 8
       setUiChunkSize uiH new
-      pure $ Right ("chunk size: " <> Text.pack (show new))
+      pure $ completed ("chunk size: " <> Text.pack (show new))
 
     -- ----- Config panel & tabs -----
     WidgetConfigToggle -> do
@@ -544,7 +678,7 @@ executeWidgetClick ctx wid = do
       pure $ case dataResult of
         Left err -> Left err
         Right Nothing -> tabResult
-        Right (Just envelope) -> Right (encodeAsyncAcceptance envelope)
+        Right (Just envelope) -> Right (WidgetActionAccepted envelope)
 
     -- ----- Layered View tab controls -----
     WidgetViewBaseElevation -> setBase BaseViewElevation
@@ -592,10 +726,10 @@ executeWidgetClick ctx wid = do
       pure $ Right "day/night toggle queued"
 
     -- ----- Overlay cycling -----
-    WidgetViewOverlayPrev -> pure $ Right "use 'cycle_overlay' IPC with direction -1"
-    WidgetViewOverlayNext -> pure $ Right "use 'cycle_overlay' IPC with direction 1"
-    WidgetViewFieldPrev   -> pure $ Right "use 'cycle_overlay_field' IPC with direction -1"
-    WidgetViewFieldNext   -> pure $ Right "use 'cycle_overlay_field' IPC with direction 1"
+    WidgetViewOverlayPrev -> cycleLayeredOverlay ctx uiSnap (-1)
+    WidgetViewOverlayNext -> cycleLayeredOverlay ctx uiSnap 1
+    WidgetViewFieldPrev   -> cycleLayeredOverlayField ctx uiSnap (-1)
+    WidgetViewFieldNext   -> cycleLayeredOverlayField ctx uiSnap 1
     WidgetOverlayManager  -> pure $ Right "use 'get_overlays' or GET /overlays for overlay manager metadata"
     WidgetOverlaySchema   -> pure $ Right "use 'get_overlay_schema' or GET /overlays/schema for schema inspection"
     WidgetOverlayProvenance -> pure $ Right "use 'get_overlay_provenance' or GET /overlays/provenance for provenance inspection"
@@ -611,28 +745,47 @@ executeWidgetClick ctx wid = do
     WidgetLogInfo   -> setLogMinLevel logH LogInfo   >> pure (Right "log level: info")
     WidgetLogWarn   -> setLogMinLevel logH LogWarn   >> pure (Right "log level: warn")
     WidgetLogError  -> setLogMinLevel logH LogError  >> pure (Right "log level: error")
-    WidgetLogHeader -> pure $ Right "use 'set_log_collapsed' IPC command"
+    WidgetLogHeader -> do
+      logSnapshot <- getLogSnapshot logH
+      setLogCollapsed logH (not (lsCollapsed logSnapshot))
+      pure $ Right "log panel toggled"
 
-    -- ----- Menu -----
-    WidgetMenuSave   -> pure $ Right "use 'save_world' IPC command"
-    WidgetMenuLoad   -> pure $ Right "use 'load_world' IPC command"
-    WidgetMenuExit   -> pure $ Left "exit not available via IPC"
+    -- ----- Menu and dialog intents -----
+    WidgetMenuSave -> do
+      setUiWorldSaveInput uiH (uiWorldName uiSnap)
+      setUiMenuMode uiH MenuWorldSave
+      pure $ Right "world save dialog opened"
+    WidgetMenuLoad -> do
+      worlds <- listWorlds
+      setUiWorldList uiH worlds
+      setUiWorldSelected uiH 0
+      setUiWorldFilter uiH Text.empty
+      setUiMenuMode uiH MenuWorldLoad
+      pure $ Right "world load dialog opened"
+    WidgetMenuExit -> pure $ Left "unsupported local-only widget: WidgetMenuExit"
 
-    -- ----- Preset dialog -----
-    WidgetConfigPresetSave -> pure $ Right "use 'save_preset' IPC command"
-    WidgetConfigPresetLoad -> pure $ Right "use 'load_preset' IPC command"
-    WidgetPresetSaveOk     -> pure $ Right "use 'save_preset' IPC command"
-    WidgetPresetSaveCancel -> pure $ Right "use 'save_preset' IPC command"
-    WidgetPresetLoadOk     -> pure $ Right "use 'load_preset' IPC command"
-    WidgetPresetLoadCancel -> pure $ Right "use 'load_preset' IPC command"
-    WidgetPresetLoadItem   -> pure $ Right "use 'load_preset' IPC command"
+    WidgetConfigPresetSave -> do
+      setUiPresetInput uiH ("preset-" <> Text.pack (show (uiSeed uiSnap)))
+      setUiMenuMode uiH MenuPresetSave
+      pure $ Right "preset save dialog opened"
+    WidgetConfigPresetLoad -> do
+      names <- listSnapshots
+      setUiPresetList uiH names
+      setUiPresetSelected uiH 0
+      setUiPresetFilter uiH Text.empty
+      setUiMenuMode uiH MenuPresetLoad
+      pure $ Right "preset load dialog opened"
+    WidgetPresetSaveOk -> confirmPresetDialog ctx uiSnap
+    WidgetPresetSaveCancel -> closeDialog uiH "preset save cancelled"
+    WidgetPresetLoadOk -> confirmPresetDialog ctx uiSnap
+    WidgetPresetLoadCancel -> closeDialog uiH "preset load cancelled"
+    WidgetPresetLoadItem -> selectPresetItem uiH uiSnap (wiItemIndex invocation)
 
-    -- ----- World dialog -----
-    WidgetWorldSaveOk     -> pure $ Right "use 'save_world' IPC command"
-    WidgetWorldSaveCancel -> pure $ Right "use 'save_world' IPC command"
-    WidgetWorldLoadOk     -> pure $ Right "use 'load_world' IPC command"
-    WidgetWorldLoadCancel -> pure $ Right "use 'load_world' IPC command"
-    WidgetWorldLoadItem   -> pure $ Right "use 'load_world' IPC command"
+    WidgetWorldSaveOk -> confirmWorldDialog ctx uiSnap
+    WidgetWorldSaveCancel -> closeDialog uiH "world save cancelled"
+    WidgetWorldLoadOk -> confirmWorldDialog ctx uiSnap
+    WidgetWorldLoadCancel -> closeDialog uiH "world load cancelled"
+    WidgetWorldLoadItem -> selectWorldItem uiH uiSnap (wiItemIndex invocation)
 
     -- ----- Pipeline stage toggles -----
     WidgetPipelineToggle name ->
@@ -645,7 +798,7 @@ executeWidgetClick ctx wid = do
 
     -- ----- Simulation -----
     WidgetSimTick ->
-      commandResult "sim tick requested" $
+      commandEffectResult "sim tick requested" $
         HSimulation.handleSimTick ctx 0 (object ["count" .= (1 :: Int)])
     WidgetSimAutoTick ->
       commandResult ("auto tick " <> if uiSimAutoTick uiSnap then "off" else "on") $
@@ -658,14 +811,14 @@ executeWidgetClick ctx wid = do
       setUiPluginNames uiH swapped
       setPluginOrder pluginH swapped
       rebindSimulationForCurrentWorld handles
-      pure $ Right ("moved plugin " <> name <> " up")
+      pure $ completed ("moved plugin " <> name <> " up")
     WidgetPluginMoveDown name -> do
       let names = uiPluginNames uiSnap
           swapped = swapWithNext name names
       setUiPluginNames uiH swapped
       setPluginOrder pluginH swapped
       rebindSimulationForCurrentWorld handles
-      pure $ Right ("moved plugin " <> name <> " down")
+      pure $ completed ("moved plugin " <> name <> " down")
     WidgetPluginToggle name -> do
       let enabled = Set.member name (uiDisabledPlugins uiSnap)
       commandResult ("plugin " <> name <> if enabled then " enabled" else " disabled") $
@@ -673,9 +826,19 @@ executeWidgetClick ctx wid = do
     WidgetPluginExpand name -> do
       let current = Map.findWithDefault False name (uiPluginExpanded uiSnap)
       setUiPluginExpanded uiH name (not current)
-      pure $ Right ("plugin " <> name <> if current then " collapsed" else " expanded")
-    WidgetPluginParamSlider _pluginName _paramName ->
-      pure $ Left "use 'set_plugin_param' IPC command for positional slider"
+      pure $ completed ("plugin " <> name <> if current then " collapsed" else " expanded")
+    WidgetPluginParamSlider pluginName paramName ->
+      case wiNormalizedPosition invocation of
+        Nothing -> pure $ Left "missing normalized_position for plugin slider"
+        Just position ->
+          case pluginParamValue uiSnap pluginName paramName position of
+            Left err -> pure (Left err)
+            Right value -> commandResult ("plugin param " <> paramName <> " set") $
+              HPlugin.handleSetPluginParam ctx 0 (object
+                [ "plugin" .= pluginName
+                , "param" .= paramName
+                , "value" .= value
+                ])
     WidgetPluginParamCheck pluginName paramName ->
       commandResult ("plugin param " <> paramName <> " toggled") $
         HPlugin.handleSetPluginParam ctx 0 (object
@@ -748,35 +911,224 @@ executeWidgetClick ctx wid = do
         DataBrowser.DataBrowserCycleEnumField path 1
 
     -- ----- Editor -----
-    WidgetEditorTool _i ->
-      pure $ Right "use 'editor_set_tool' IPC command"
-    WidgetEditorRadiusMinus ->
-      pure $ Right "use 'editor_set_brush' IPC command (radius)"
-    WidgetEditorRadiusPlus ->
-      pure $ Right "use 'editor_set_brush' IPC command (radius)"
-    WidgetEditorClose ->
-      pure $ Right "use 'editor_toggle' IPC command"
-    WidgetEditorReopen ->
-      pure $ Right "use 'editor_toggle' IPC command"
-    WidgetEditorFalloffPrev ->
-      pure $ Right "use 'editor_set_brush' IPC command (falloff)"
-    WidgetEditorFalloffNext ->
-      pure $ Right "use 'editor_set_brush' IPC command (falloff)"
-    WidgetEditorParamMinus _i ->
-      pure $ Right "use 'editor_set_brush' IPC command"
-    WidgetEditorParamPlus _i ->
-      pure $ Right "use 'editor_set_brush' IPC command"
-    WidgetEditorCyclePrev _i ->
-      pure $ Right "use 'editor_set_brush' IPC command"
-    WidgetEditorCycleNext _i ->
-      pure $ Right "use 'editor_set_brush' IPC command"
+    WidgetEditorTool index ->
+      case drop index ([minBound .. maxBound] :: [EditorTool]) of
+        tool:_ -> editorCommand ctx "editor tool set" HEditor.handleEditorSetTool
+          (object ["tool" .= editorToolText tool])
+        [] -> pure $ Left "invalid editor tool index"
+    WidgetEditorRadiusMinus -> editorRadiusCommand ctx uiSnap (-1)
+    WidgetEditorRadiusPlus -> editorRadiusCommand ctx uiSnap 1
+    WidgetEditorClose -> editorCommand ctx "editor closed" HEditor.handleEditorToggle
+      (object ["active" .= False])
+    WidgetEditorReopen -> editorCommand ctx "editor opened" HEditor.handleEditorToggle
+      (object ["active" .= True])
+    WidgetEditorFalloffPrev -> editorFalloffCommand ctx uiSnap (-1)
+    WidgetEditorFalloffNext -> editorFalloffCommand ctx uiSnap 1
+    WidgetEditorParamMinus slot -> editorNumericCommand ctx uiSnap slot (-1)
+    WidgetEditorParamPlus slot -> editorNumericCommand ctx uiSnap slot 1
+    WidgetEditorCyclePrev slot -> editorCycleCommand ctx uiSnap slot (-1)
+    WidgetEditorCycleNext slot -> editorCycleCommand ctx uiSnap slot 1
 
 -- helpers
+
+completed :: Text -> Either Text WidgetActionResult
+completed info = Right (WidgetActionCompleted info False)
+
+closeDialog uiH info = do
+  setUiMenuMode uiH MenuNone
+  pure (completed info)
+
+confirmPresetDialog ctx uiSnap = case uiMenuMode uiSnap of
+  MenuPresetSave -> runDialogCommand ctx "preset saved"
+    (HPresets.handleSavePreset ctx 0 (object ["name" .= uiPresetInput uiSnap]))
+  MenuPresetLoad ->
+    let names = filteredPresets uiSnap
+        index = uiPresetSelected uiSnap
+    in case atIndex index names of
+      Nothing -> pure $ Left "widget rejected: select a filtered preset"
+      Just name -> runDialogCommand ctx "preset loaded"
+        (HPresets.handleLoadPreset ctx 0 (object ["name" .= name]))
+  _ -> pure $ Left "preset dialog is not active"
+
+confirmWorldDialog ctx uiSnap = case uiMenuMode uiSnap of
+  MenuWorldSave -> runDialogCommand ctx "world saved"
+    (HWorld.handleSaveWorld ctx 0 (object ["name" .= uiWorldSaveInput uiSnap]))
+  MenuWorldLoad ->
+    let worlds = filteredWorlds uiSnap
+        index = uiWorldSelected uiSnap
+    in case atIndex index worlds of
+      Nothing -> pure $ Left "widget rejected: select a filtered world"
+      Just manifest -> runDialogCommand ctx "world loaded"
+        (HWorld.handleLoadWorld ctx 0 (object ["name" .= wsmName manifest]))
+  _ -> pure $ Left "world dialog is not active"
+
+runDialogCommand ctx info action = do
+  response <- action
+  if srSuccess response
+    then do
+      setUiMenuMode (ahUiHandle (ccActorHandles ctx)) MenuNone
+      pure (completed info)
+    else pure $ Left (maybe "dialog action failed" id (srError response))
+
+selectPresetItem uiH uiSnap maybeIndex = case maybeIndex >>= (`atIndex` filteredPresets uiSnap) of
+  Nothing -> pure $ Left "invalid item_index for filtered preset list"
+  Just _ -> do
+    let Just index = maybeIndex
+    setUiPresetSelected uiH index
+    pure $ completed "preset selected"
+
+selectWorldItem uiH uiSnap maybeIndex = case maybeIndex >>= (`atIndex` filteredWorlds uiSnap) of
+  Nothing -> pure $ Left "invalid item_index for filtered world list"
+  Just _ -> do
+    let Just index = maybeIndex
+    setUiWorldSelected uiH index
+    pure $ completed "world selected"
+
+filteredPresets uiSnap = filter (matches (uiPresetFilter uiSnap)) (uiPresetList uiSnap)
+filteredWorlds uiSnap = filter (matches (uiWorldFilter uiSnap) . wsmName) (uiWorldList uiSnap)
+matches query candidate = Text.toLower query `Text.isInfixOf` Text.toLower candidate
+
+atIndex index values
+  | index < 0 = Nothing
+  | otherwise = case drop index values of
+      value:_ -> Just value
+      [] -> Nothing
+
+pluginParamValue uiSnap pluginName paramName normalized = do
+  specs <- maybe (Left "plugin parameter metadata is unavailable") Right
+    (Map.lookup pluginName (uiPluginParamSpecs uiSnap))
+  spec <- maybe (Left "unknown plugin parameter") Right
+    (find ((== paramName) . rpsName) specs)
+  pure $ case rpsRange spec of
+    Just (Number low, Number high) | high > low ->
+      let lowD = realToFrac low :: Double
+          highD = realToFrac high :: Double
+          value = lowD + normalized * (highD - lowD)
+      in Number (realToFrac value)
+    _ -> Number (realToFrac normalized)
+
+cycleLayeredOverlay ctx uiSnap direction = do
+  terrainSnap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
+  let names = availableOverlayNames uiSnap terrainSnap
+      selection = effectiveViewSelection uiSnap
+  if null names
+    then pure $ Left "widget rejected: no overlays available"
+    else do
+      let currentIndex = case lvsSkyOverlay selection of
+            Just (SkyOverlayPlugin name _) -> maybe 0 (+ 1) (findIndex (== name) names)
+            _ -> 0
+          nextIndex = (currentIndex + direction) `mod` (length names + 1)
+      if nextIndex == 0
+        then submitAction ctx (UiActionSetViewSelection selection { lvsSkyOverlay = Nothing })
+        else do
+          let name = names !! (nextIndex - 1)
+              fields = fieldsForOverlayName uiSnap terrainSnap name
+          setUiOverlayFields (ahUiHandle (ccActorHandles ctx)) fields
+          submitAction ctx (UiActionSetViewSelection selection
+            { lvsSkyOverlay = Just (SkyOverlayPlugin name 0) })
+      pure $ completed "overlay cycled"
+
+cycleLayeredOverlayField ctx uiSnap direction =
+  case lvsSkyOverlay selection of
+    Just (SkyOverlayPlugin name fieldIndex) -> do
+      terrainSnap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
+      let fields = fieldsForOverlayName uiSnap terrainSnap name
+      if null fields
+        then pure $ Left "widget rejected: overlay has no fields"
+        else do
+          let nextIndex = (fieldIndex + direction) `mod` length fields
+          setUiOverlayFields (ahUiHandle (ccActorHandles ctx)) fields
+          submitAction ctx (UiActionSetViewSelection selection
+            { lvsSkyOverlay = Just (SkyOverlayPlugin name nextIndex) })
+          pure $ completed "overlay field cycled"
+    _ -> pure $ Left "widget rejected: plugin overlay is not active"
+  where
+    selection = effectiveViewSelection uiSnap
+
+availableOverlayNames uiSnap terrainSnap =
+  uiOverlayNames uiSnap
+    ++ [name | name <- overlayNames (tsOverlayStore terrainSnap), name `notElem` uiOverlayNames uiSnap]
+
+fieldsForOverlayName uiSnap terrainSnap name = case lookupOverlay name (tsOverlayStore terrainSnap) of
+  Just overlay -> map (\field -> (ofdName field, ofdType field)) (osFields (ovSchema overlay))
+  Nothing -> uiOverlayFields uiSnap
+
+editorCommand ctx info handler params = commandResult info (handler ctx 0 params)
+
+editorRadiusCommand ctx uiSnap direction =
+  let radius = brushRadius (editorBrush (uiEditor uiSnap))
+      next = max 0 (min 6 (radius + direction))
+  in editorCommand ctx "editor radius changed" HEditor.handleEditorSetBrush
+       (object ["radius" .= next])
+
+editorNumericCommand ctx uiSnap slot direction =
+  let editor = uiEditor uiSnap
+      brush = editorBrush editor
+      sign = fromIntegral direction :: Float
+      brushParam name value = editorCommand ctx "editor parameter changed" HEditor.handleEditorSetBrush
+        (object [AesonKey.fromText name .= value])
+  in case editorTool editor of
+    ToolRaise | slot == 0 -> brushParam "strength" (clampF 0.005 0.2 (brushStrength brush + sign * 0.005))
+    ToolLower | slot == 0 -> brushParam "strength" (clampF 0.005 0.2 (brushStrength brush + sign * 0.005))
+    ToolSmooth | slot == 0 -> brushParam "smooth_passes" (clampI 1 5 (editorSmoothPasses editor + direction))
+    ToolFlatten | slot == 0 -> brushParam "strength" (clampF 0.01 0.5 (brushStrength brush + sign * 0.01))
+    ToolNoise | slot == 0 -> brushParam "noise_frequency" (clampF 0.5 4 (editorNoiseFrequency editor + sign * 0.1))
+    ToolNoise | slot == 1 -> brushParam "strength" (clampF 0.005 0.2 (brushStrength brush + sign * 0.005))
+    ToolSetHardness | slot == 0 -> editorCommand ctx "editor hardness changed" HEditor.handleEditorSetHardness
+      (object ["hardness" .= clampF 0 1 (editorHardnessTarget editor + sign * 0.05)])
+    ToolErode | slot == 0 -> brushParam "erode_passes" (clampI 1 20 (editorErodePasses editor + direction))
+    _ -> pure $ Left "widget rejected: numeric parameter is unavailable for the current editor tool"
+
+editorCycleCommand ctx uiSnap slot direction
+  | slot /= 0 = pure $ Left "widget rejected: invalid editor cycle slot"
+  | otherwise = case editorTool editor of
+      ToolPaintBiome ->
+        let value = cycleValue paintableBiomes (editorBiomeId editor) direction
+        in editorCommand ctx "editor biome changed" HEditor.handleEditorSetBiome
+             (object ["biome" .= biomeIdToCode value])
+      ToolPaintForm ->
+        let value = cycleValue allTerrainForms (editorFormOverride editor) direction
+        in editorCommand ctx "editor terrain form changed" HEditor.handleEditorSetForm
+             (object ["form" .= terrainFormToCode value])
+      _ -> pure $ Left "widget rejected: cycle parameter is unavailable for the current editor tool"
+  where
+    editor = uiEditor uiSnap
+
+editorFalloffCommand ctx uiSnap direction =
+  let current = brushFalloff (editorBrush (uiEditor uiSnap))
+      next = cycleValue [FalloffLinear, FalloffSmooth, FalloffConstant] current direction
+  in editorCommand ctx "editor falloff changed" HEditor.handleEditorSetBrush
+       (object ["falloff" .= falloffText next])
+
+editorToolText :: EditorTool -> Text
+editorToolText tool = case tool of
+  ToolRaise -> "raise"
+  ToolLower -> "lower"
+  ToolSmooth -> "smooth"
+  ToolFlatten -> "flatten"
+  ToolNoise -> "noise"
+  ToolPaintBiome -> "paint_biome"
+  ToolPaintForm -> "paint_form"
+  ToolSetHardness -> "set_hardness"
+  ToolErode -> "erode"
+
+falloffText :: Falloff -> Text
+falloffText falloff = case falloff of
+  FalloffLinear -> "linear"
+  FalloffSmooth -> "smooth"
+  FalloffConstant -> "constant"
+
+cycleValue values current direction =
+  let index = maybe 0 id (findIndex (== current) values)
+  in values !! ((index + direction) `mod` length values)
+
+clampF low high value = max low (min high value)
+clampI low high value = max low (min high value)
 
 setTab uiH tab = do
   setUiConfigTab uiH tab
   setUiConfigScroll uiH 0
-  pure $ Right ("config tab: " <> tabToText tab)
+  pure $ completed ("config tab: " <> tabToText tab)
   where
     tabToText ConfigTerrain  = "terrain"
     tabToText ConfigPlanet   = "planet"
@@ -812,11 +1164,21 @@ rebindSimulationForCurrentWorld handles = do
     _ <- rebindSimNodes (ahSimulationHandle handles) (pspExecutableNodes simPlan)
     pure ()
 
-commandResult :: Text -> IO SeerResponse -> IO (Either Text Text)
-commandResult successInfo action = do
+commandResult :: Text -> IO SeerResponse -> IO (Either Text WidgetActionResult)
+commandResult = commandResultWithDomainChange False
+
+commandEffectResult :: Text -> IO SeerResponse -> IO (Either Text WidgetActionResult)
+commandEffectResult = commandResultWithDomainChange True
+
+commandResultWithDomainChange
+  :: Bool
+  -> Text
+  -> IO SeerResponse
+  -> IO (Either Text WidgetActionResult)
+commandResultWithDomainChange domainChanged successInfo action = do
   response <- action
   if srSuccess response
-    then pure (Right successInfo)
+    then pure (Right (WidgetActionCompleted successInfo domainChanged))
     else pure (Left (maybe "command failed" id (srError response)))
 
 runWidgetDataService :: CommandContext -> Text -> Value -> IO ServiceResult
@@ -846,24 +1208,6 @@ applyDataBrowserClick ctx action = do
     DataBrowserBeginRejected err -> Left err
     DataBrowserBeginPure -> Right Nothing
     DataBrowserBeginAccepted envelope _ -> Right (Just envelope)
-
-asyncAcceptancePrefix :: Text
-asyncAcceptancePrefix = "__data_browser_accepted__:"
-
-encodeAsyncAcceptance :: DataBrowserPendingEnvelope -> Text
-encodeAsyncAcceptance envelope =
-  asyncAcceptancePrefix
-    <> Text.pack (show (unDataBrowserRequestId (dbpeRequestId envelope)))
-    <> ":" <> dataBrowserOperationText (dbpeOperation envelope)
-
-decodeAsyncAcceptance :: Text -> Maybe (Word64, Text)
-decodeAsyncAcceptance value = do
-  payload <- Text.stripPrefix asyncAcceptancePrefix value
-  case Text.splitOn ":" payload of
-    [rawId, operation] -> case Text.decimal rawId of
-      Right (requestId, "") -> Just (requestId, operation)
-      _ -> Nothing
-    _ -> Nothing
 
 bumpSlider ctx uiSnap sid part = do
   let style = sliderStyleForId sid
@@ -970,47 +1314,31 @@ widgetSupport wid = case wid of
   WidgetViewCloudTypical -> compatibility
   WidgetPresetLoadItem -> required "item_index" "zero-based filtered preset index"
   WidgetWorldLoadItem -> required "item_index" "zero-based filtered world index"
+  WidgetPluginParamSlider _ _ -> normalizedPosition
   WidgetMenuExit -> (WidgetLocalOnly, Nothing, Nothing)
-  WidgetPluginParamSlider _ _ -> nonClickable "set_plugin_param"
-  WidgetSeedValue -> nonClickable "set_seed"
-  WidgetSeedRandom -> nonClickable "set_seed"
-  WidgetViewOverlayPrev -> nonClickable "cycle_overlay"
-  WidgetViewOverlayNext -> nonClickable "cycle_overlay"
-  WidgetViewFieldPrev -> nonClickable "cycle_overlay_field"
-  WidgetViewFieldNext -> nonClickable "cycle_overlay_field"
+  WidgetSeedValue -> localOnly "set_seed"
+  WidgetSeedRandom -> localOnly "set_seed"
   WidgetOverlayManager -> nonClickable "get_overlays"
   WidgetOverlaySchema -> nonClickable "get_overlay_schema"
   WidgetOverlayProvenance -> nonClickable "get_overlay_provenance"
   WidgetOverlayExport -> nonClickable "export_overlay_data"
   WidgetOverlayImportValidate -> nonClickable "validate_overlay_import"
-  WidgetLogHeader -> nonClickable "set_log_collapsed"
-  WidgetMenuSave -> nonClickable "save_world"
-  WidgetMenuLoad -> nonClickable "load_world"
-  WidgetConfigPresetSave -> nonClickable "save_preset"
-  WidgetConfigPresetLoad -> nonClickable "load_preset"
-  WidgetPresetSaveOk -> nonClickable "dialog_confirm"
-  WidgetPresetSaveCancel -> nonClickable "dialog_cancel"
-  WidgetPresetLoadOk -> nonClickable "dialog_confirm"
-  WidgetPresetLoadCancel -> nonClickable "dialog_cancel"
-  WidgetWorldSaveOk -> nonClickable "dialog_confirm"
-  WidgetWorldSaveCancel -> nonClickable "dialog_cancel"
-  WidgetWorldLoadOk -> nonClickable "dialog_confirm"
-  WidgetWorldLoadCancel -> nonClickable "dialog_cancel"
-  WidgetEditorTool _ -> nonClickable "editor_set_tool"
-  WidgetEditorRadiusMinus -> nonClickable "editor_set_brush"
-  WidgetEditorRadiusPlus -> nonClickable "editor_set_brush"
-  WidgetEditorClose -> nonClickable "editor_toggle"
-  WidgetEditorReopen -> nonClickable "editor_toggle"
-  WidgetEditorParamMinus _ -> nonClickable "editor_set_brush"
-  WidgetEditorParamPlus _ -> nonClickable "editor_set_brush"
-  WidgetEditorCyclePrev _ -> nonClickable "editor_set_brush"
-  WidgetEditorCycleNext _ -> nonClickable "editor_set_brush"
-  WidgetEditorFalloffPrev -> nonClickable "editor_set_brush"
-  WidgetEditorFalloffNext -> nonClickable "editor_set_brush"
   _ -> (WidgetClickable, Nothing, Nothing)
   where
     compatibility = (WidgetCompatibilityOnly, Nothing, Just "set_view_mode")
+    localOnly operation = (WidgetLocalOnly, Nothing, Just operation)
     nonClickable operation = (WidgetNonClickable, Nothing, Just operation)
+    normalizedPosition =
+      ( WidgetArgumentRequired
+      , Just (object
+          [ "name" .= ("normalized_position" :: Text)
+          , "type" .= ("number" :: Text)
+          , "minimum" .= (0 :: Int)
+          , "maximum" .= (1 :: Int)
+          , "description" .= ("normalized slider position" :: Text)
+          ])
+      , Just "set_plugin_param"
+      )
     required :: Text -> Text -> (WidgetClickSupport, Maybe Value, Maybe Text)
     required name description =
       ( WidgetArgumentRequired

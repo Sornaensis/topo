@@ -217,7 +217,7 @@ initialiseAppActors runtimeCfg = do
     }
   screenshotRef <- newScreenshotRequestRef
   historyRef <- newIORef (emptyHistory 50)
-  let actorHandles = mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
+  actorHandles <- mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
   dataBrowserExecutor <- newDataBrowserExecutor uiHandle
   commandChannelControl <- newCommandChannelControl
   httpServerHandle <- newMVar Nothing

@@ -478,7 +478,11 @@ appServiceRequestValidators =
   , ("viewport_click", fields "viewport_click" [requiredInt "x", requiredInt "y", optionalText "button"])
   , ("viewport_drag", fields "viewport_drag" [requiredInt "x1", requiredInt "y1", requiredInt "x2", requiredInt "y2"])
   , ("viewport_hover", fields "viewport_hover" [requiredInt "x", requiredInt "y"])
-  , ("click_widget", fields "click_widget" [requiredText "widget_id"])
+  , ("click_widget", fields "click_widget"
+      [ requiredText "widget_id"
+      , optionalNumber "normalized_position"
+      , optionalInt "item_index"
+      ])
   , ("get_widget_state", fields "get_widget_state" [requiredText "widget_id"])
   , ("set_dialog_text", fields "set_dialog_text" [requiredText "text", optionalText "target"])
   , ("send_key", fields "send_key" [requiredText "key"])

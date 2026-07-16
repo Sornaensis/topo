@@ -183,7 +183,7 @@ spec = describe "UI.WidgetTree" $ do
     wcPreconditions basis `shouldContain` ["weather basis requires an active built-in weather overlay"]
     wcEnabled firstUp `shouldBe` False
     wcEnabled lastDown `shouldBe` False
-    wcSupport pluginSlider `shouldBe` WidgetNonClickable
+    wcSupport pluginSlider `shouldBe` WidgetArgumentRequired
     wcAlternative pluginSlider `shouldBe` Just "set_plugin_param"
     wcActive pluginCheck `shouldBe` Just True
     wcVisible legacyView `shouldBe` False

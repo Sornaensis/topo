@@ -387,14 +387,19 @@ data UiViewportHoverResponse = UiViewportHoverResponse
   , uiViewportHoverValid :: !Bool
   } deriving (Eq, Show)
 
-newtype UiClickWidgetRequest = UiClickWidgetRequest
-  { uiClickWidgetRequestId :: Text
+data UiClickWidgetRequest = UiClickWidgetRequest
+  { uiClickWidgetRequestId :: !Text
+  , uiClickWidgetNormalizedPosition :: !(Maybe Double)
+  , uiClickWidgetItemIndex :: !(Maybe Int)
   } deriving (Eq, Show)
 
 data UiClickWidgetResponse = UiClickWidgetResponse
   { uiClickWidgetResponseId :: !Text
   , uiClickWidgetStatus :: !Text
-  , uiClickWidgetInfo :: !Text
+  , uiClickWidgetInfo :: !(Maybe Text)
+  , uiClickWidgetChanged :: !(Maybe Bool)
+  , uiClickWidgetRequestIdAccepted :: !(Maybe Word64)
+  , uiClickWidgetAcceptedOperation :: !(Maybe Text)
   } deriving (Eq, Show)
 
 data UiListWidgetsRequest = UiListWidgetsRequest
@@ -409,6 +414,7 @@ data UiWidgetArgument = UiWidgetArgument
   { uiWidgetArgumentName :: !Text
   , uiWidgetArgumentType :: !Text
   , uiWidgetArgumentMinimum :: !Int
+  , uiWidgetArgumentMaximum :: !(Maybe Int)
   , uiWidgetArgumentDescription :: !Text
   } deriving (Eq, Show)
 

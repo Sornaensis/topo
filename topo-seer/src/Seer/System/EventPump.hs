@@ -22,7 +22,13 @@ import qualified SDL
 import Seer.DataBrowser.Executor (DataBrowserExecutor)
 import Seer.Input (handleEvent, isQuit, tickTooltipHover)
 import Seer.Input.Actions (mkInputEnv)
-import Seer.Input.Context (DragState, TooltipHover, mkInputContext)
+import Seer.Input.Context
+  ( DragState
+  , InputActionDispatcher
+  , TooltipHover
+  , drainInputMainThreadActions
+  , mkInputContext
+  )
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 import Seer.Timing (nsToMs)
@@ -44,6 +50,7 @@ data EventPumpEnv = EventPumpEnv
   , epeMousePosRef :: !(IORef (Int, Int))
   , epeDragRef :: !(IORef (Maybe DragState))
   , epeTooltipHoverRef :: !(IORef TooltipHover)
+  , epeInputActionDispatcher :: !InputActionDispatcher
   }
 
 hasQuitEvent :: [SDL.Event] -> Bool
@@ -55,7 +62,10 @@ data EventPumpResult = EventPumpResult
   } deriving (Eq, Show)
 
 processEvents :: EventPumpEnv -> Word32 -> [SDL.Event] -> RenderSnapshot -> IO EventPumpResult
-processEvents env _timingLogThresholdMs events renderSnap =
+processEvents env _timingLogThresholdMs events renderSnap = do
+  -- SDL APIs requested by completed semantic actions are always marshalled
+  -- back onto the event-pump thread, including during otherwise idle frames.
+  drainInputMainThreadActions (epeInputActionDispatcher env)
   if null events
     then do
       -- Idle tooltip activation is a same-loop publication just like an SDL
@@ -92,7 +102,9 @@ processEvents env _timingLogThresholdMs events renderSnap =
             (epeMousePosRef env)
             (epeDragRef env)
             (epeTooltipHoverRef env)
+            (epeInputActionDispatcher env)
       forM_ coalescedEvents (handleEvent inputContext)
+      drainInputMainThreadActions (epeInputActionDispatcher env)
       _ <- tickTooltipHover (epeTooltipHoverRef env) (ahUiHandle actorHandles)
       -- A delegated UiActions mutation may publish terrain and enqueue atlas
       -- work after its UI setter. Wait for actor ownership to finish before
