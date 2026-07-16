@@ -23,6 +23,7 @@ library:
     - containers
     - directory
     - filepath
+    - stm
     - text
     - topo
     - vector

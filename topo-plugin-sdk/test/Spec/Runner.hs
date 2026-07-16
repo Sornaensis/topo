@@ -7,8 +7,12 @@ import Control.Concurrent (MVar, forkFinally, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, bracket, finally)
 import Data.Aeson (Value(..), (.:), (.=), object)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Types as AesonTypes (parseMaybe)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BL
 import Data.IORef (atomicModifyIORef', newIORef)
+import Data.List (isPrefixOf)
 import qualified Data.IntSet as IntSet
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -20,6 +24,7 @@ import System.Directory
   ( createDirectory
   , doesFileExist
   , getTemporaryDirectory
+  , listDirectory
   , removeFile
   , removePathForcibly
   , withCurrentDirectory
@@ -32,6 +37,7 @@ import System.Process (CreateProcess(..), StdStream(..), createPipe, createProce
 import System.Timeout (timeout)
 import Test.Hspec
 
+import Topo.Export (encodeTerrainChunk)
 import Topo.Plugin.DataResource
   ( DataFieldDef(..), DataFieldType(..)
   , DataOperations(..), DataResourceSchema(..)
@@ -95,6 +101,11 @@ import Topo.Plugin.RPC.ExternalDataSource
   , RPCExternalDataSourceStatusRequest(..)
   , revokedExternalDataSourceStatus
   )
+import Topo.Plugin.RPC.Stream
+  ( StreamCancel(..), StreamCodec(..), StreamEnd(..), StreamEnvelope(..), StreamId(..), StreamOpen(..)
+  , StreamPayloadKind(..), StreamProposal(..), StreamRecord(..), StreamRecordKey(..)
+  , defaultStreamProposal, encodeStreamRecord, streamRecordsDigest
+  )
 import Topo.Plugin.RPC.Transport
   ( Transport(..)
   , TransportConfig(..)
@@ -112,6 +123,7 @@ import Topo.Plugin.RPC.Transport
   , recvMessage
   , sendMessage
   )
+import Topo.Plugin.SDK.Payload (foldTerrainChunks)
 import Topo.Plugin.SDK.Runner
   ( generateManifest
   , pluginManifestFileName
@@ -126,7 +138,7 @@ import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationSchedule
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
 import Topo.Types (WorldConfig(..))
-import Topo.World (TerrainWorld(..), emptyWorldWithPlanet)
+import Topo.World (TerrainWorld(..), emptyTerrainChunk, emptyWorldWithPlanet)
 
 spec :: Spec
 spec = describe "SDK runner pipe integration" $ do
@@ -224,6 +236,249 @@ spec = describe "SDK runner pipe integration" $ do
           { pdSimulation = pdSimulation simulationPlugin })
     rmrProtocolMin (rmRuntime manifest) `shouldBe` 4
     rmrProtocolMax (rmRuntime manifest) `shouldBe` 5
+
+  it "receives and validates a complete terrain snapshot before the native callback" $
+    withTransportPair $ \host plugin -> do
+      seen <- newEmptyMVar
+      done <- startSession (streamingSnapshotPlugin seen) plugin
+      negotiateStreamingSession host 830
+      raw <- case encodeTerrainChunk (WorldConfig 1) (emptyTerrainChunk (WorldConfig 1)) of
+        Left err -> expectationFailure (show err) >> fail "chunk encode"
+        Right bytes -> pure bytes
+      sendEnvelope host (streamingSnapshotInvoke streamingSnapshotResolvedScope)
+      sendEnvelope host RPCEnvelope
+        { envType = MsgHeartbeat
+        , envPayload = Aeson.toJSON (Heartbeat "snapshot-ping")
+        , envRequestId = Just 832
+        }
+      heartbeat <- recvEnvelope host
+      envType heartbeat `shouldBe` MsgHeartbeat
+      envRequestId heartbeat `shouldBe` Just 832
+      let streamId = StreamId 1
+          key = StreamRecordKey TerrainElevation 7 0 0
+          digest = streamRecordsDigest [(key, raw)]
+          open = StreamOpen
+            { soStreamId = streamId
+            , soParentRequestId = 831
+            , soScopeId = risScopeId streamingSnapshotResolvedScope
+            , soPayloadKind = TerrainSnapshot
+            , soPayloadVersion = 1
+            , soSections = Set.singleton TerrainElevation
+            , soChunkIds = IntSet.singleton 7
+            , soMetadata = object []
+            , soCodec = StreamIdentity
+            , soTotalItems = Just 1
+            , soTotalBytes = Just (fromIntegral (BS.length raw))
+            , soFinalSha256 = Just digest
+            }
+      sendStreamEnvelope host (StreamOpenEnvelope open)
+      window <- recvStreamEnvelope host
+      window `shouldSatisfy` \frame -> case frame of
+        StreamWindowEnvelope sid requestId credit -> sid == streamId && requestId == 831
+          && credit >= fromIntegral (BS.length raw)
+        _ -> False
+      sendEnvelope host RPCEnvelope
+        { envType = MsgHealthCheck
+        , envPayload = object []
+        , envRequestId = Just 833
+        }
+      health <- recvEnvelope host
+      envType health `shouldBe` MsgHealthStatus
+      envRequestId health `shouldBe` Just 833
+      let record = encodeStreamRecord StreamIdentity streamId 831 0 key raw
+      sendStreamEnvelope host (StreamDataEnvelope record)
+      sendStreamEnvelope host (StreamEndEnvelope (StreamEnd streamId 831 1
+        (fromIntegral (BS.length raw)) digest))
+      result <- recvEnvelope host
+      envType result `shouldBe` MsgGeneratorResult
+      takeMVar seen `shouldReturn` [(TerrainElevation, 7)]
+      shutdownAndWait host done
+
+  it "negotiates stream_v1 and emits a canonical scoped terrain removal" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession streamingRemovalPlugin plugin
+      negotiateStreamingSession host 820
+      sendEnvelope host (streamingRemovalInvoke streamingRemovalResolvedScope)
+      parent <- recvEnvelope host
+      envType parent `shouldBe` MsgGeneratorResult
+      opened <- recvStreamEnvelope host
+      case opened of
+        StreamOpenEnvelope streamOpen -> do
+          soPayloadKind streamOpen `shouldBe` TerrainDelta
+          soScopeId streamOpen `shouldBe` risScopeId streamingRemovalResolvedScope
+        other -> expectationFailure ("expected stream_open, got " <> show other)
+      recordFrame <- recvStreamEnvelope host
+      case recordFrame of
+        StreamDataEnvelope record -> do
+          srkSection (srKey record) `shouldBe` TerrainElevation
+          srkChunkId (srKey record) `shouldBe` 7
+          srkPart (srKey record) `shouldBe` maxBound
+          srUncompressedLength record `shouldBe` 0
+        other -> expectationFailure ("expected removal record, got " <> show other)
+      ended <- recvStreamEnvelope host
+      ended `shouldSatisfy` \frame -> case frame of
+        StreamEndEnvelope _ -> True
+        _ -> False
+      shutdownAndWait host done
+
+  it "terminates the outer session when shutdown races a streaming callback" $
+    withTransportPair $ \host plugin -> do
+      started <- newEmptyMVar
+      finalized <- newEmptyMVar
+      outcome <- startSessionOutcome (streamingBlockingPlugin started finalized) plugin
+      negotiateStreamingSession host 840
+      sendEnvelope host (streamingRemovalInvoke streamingRemovalResolvedScope)
+      timeout 2000000 (takeMVar started) `shouldReturn` Just ()
+      sendEnvelope host (RPCEnvelope MsgShutdown (object []) Nothing)
+      finished <- timeout 2000000 (takeMVar outcome)
+      case finished of
+        Just (Right ()) -> pure ()
+        Just (Left err) -> expectationFailure ("shutdown failed: " <> show err)
+        Nothing -> expectationFailure "streaming callback did not unwind on shutdown"
+      timeout 1000000 (takeMVar finalized)
+        `shouldReturn` Just (Just "host requested shutdown")
+
+  it "expires a stalled snapshot despite interleaved control traffic and cleans its spool" $
+    withTransportPair $ \host plugin -> do
+      seen <- newEmptyMVar
+      done <- startSession (streamingSnapshotPlugin seen) plugin
+      let proposal = (defaultStreamProposal 1048576)
+            { spIdleTimeoutMicros = 1000000 }
+      negotiateStreamingSessionWithProposal proposal host 850
+      before <- snapshotTempFiles
+      raw <- case encodeTerrainChunk (WorldConfig 1) (emptyTerrainChunk (WorldConfig 1)) of
+        Left err -> expectationFailure (show err) >> fail "chunk encode"
+        Right bytes -> pure bytes
+      sendEnvelope host (streamingSnapshotInvoke streamingSnapshotResolvedScope)
+      let streamId = StreamId 1
+          key = StreamRecordKey TerrainElevation 7 0 0
+          open = snapshotOpen streamId 831 streamingSnapshotResolvedScope raw
+      sendStreamEnvelope host (StreamOpenEnvelope open)
+      _ <- recvStreamEnvelope host
+      sendEnvelope host RPCEnvelope
+        { envType = MsgHeartbeat
+        , envPayload = Aeson.toJSON (Heartbeat "keepalive")
+        , envRequestId = Just 851
+        }
+      heartbeat <- recvEnvelope host
+      envType heartbeat `shouldBe` MsgHeartbeat
+      envRequestId heartbeat `shouldBe` Just 851
+      sendStreamEnvelope host
+        (StreamDataEnvelope (encodeStreamRecord StreamIdentity streamId 831 0 key raw))
+      sendEnvelope host RPCEnvelope
+        { envType = MsgHealthCheck
+        , envPayload = object []
+        , envRequestId = Just 852
+        }
+      -- The health frame is deliberately queued behind stream data. It may be
+      -- answered before or after expiry, but must not extend this stream's wait.
+      expired <- recvUntilType host MsgError
+      envRequestId expired `shouldBe` Just 831
+      case Aeson.fromJSON (envPayload expired) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (pluginErr :: PluginError) ->
+          peMessage pluginErr `shouldSatisfy` Text.isInfixOf "deadline expired"
+      timeout 100000 (takeMVar seen) `shouldReturn` Nothing
+      snapshotTempFiles `shouldReturn` before
+      shutdownAndWait host done
+
+  it "makes a stream-effect send failure session-fatal and cleans pending snapshot state" $
+    withTransportPair $ \host plugin -> do
+      seen <- newEmptyMVar
+      outcome <- startSessionOutcome (streamingSnapshotPlugin seen) plugin
+      negotiateStreamingSession host 855
+      before <- snapshotTempFiles
+      let raw = BS.replicate (256 * 1024) 0x5a
+      sendEnvelope host (streamingSnapshotInvoke streamingSnapshotResolvedScope)
+      let streamId = StreamId 1
+          key = StreamRecordKey TerrainElevation 7 0 0
+          open = (snapshotOpen streamId 831 streamingSnapshotResolvedScope raw)
+            { soTotalBytes = Nothing }
+      sendStreamEnvelope host (StreamOpenEnvelope open)
+      _ <- recvStreamEnvelope host
+      -- Queue a large valid record, then close the peer while the SDK is
+      -- decoding and spooling it. Its credit-replenishment write can therefore
+      -- fail after a partial frame and must not be downgraded to a request-local
+      -- error followed by another write.
+      sendStreamEnvelope host
+        (StreamDataEnvelope (encodeStreamRecord StreamIdentity streamId 831 0 key raw))
+      closeTransport host
+      finished <- timeout 2000000 (takeMVar outcome)
+      case finished of
+        Just (Left err) -> do
+          let rendered = Text.pack (show err)
+          rendered `shouldSatisfy` Text.isInfixOf "SDKSendFailure MsgStreamWindow"
+          rendered `shouldSatisfy` Text.isInfixOf "TransportSendFailed"
+        Just (Right ()) -> expectationFailure "stream send failure did not fail the session"
+        Nothing -> expectationFailure "session did not stop after stream send failure"
+      timeout 100000 (takeMVar seen) `shouldReturn` Nothing
+      snapshotTempFiles `shouldReturn` before
+
+  it "demultiplexes controls and credit while streaming an outbound terrain delta" $
+    withTransportPair $ \host plugin -> do
+      raw <- case encodeTerrainChunk (WorldConfig 1) (emptyTerrainChunk (WorldConfig 1)) of
+        Left err -> expectationFailure (show err) >> fail "chunk encode"
+        Right bytes -> pure bytes
+      done <- startSession (streamingUpdatePlugin raw) plugin
+      negotiateStreamingSession host 860
+      completeUpdateSnapshot host raw
+      parent <- recvEnvelope host
+      envType parent `shouldBe` MsgGeneratorResult
+      opened <- recvStreamEnvelope host
+      streamId <- case opened of
+        StreamOpenEnvelope value -> pure (soStreamId value)
+        other -> expectationFailure ("expected outbound stream_open, got " <> show other)
+          >> fail "stream open"
+      sendEnvelope host RPCEnvelope
+        { envType = MsgHeartbeat
+        , envPayload = Aeson.toJSON (Heartbeat "credit-ping")
+        , envRequestId = Just 862
+        }
+      heartbeat <- recvEnvelope host
+      envType heartbeat `shouldBe` MsgHeartbeat
+      sendEnvelope host RPCEnvelope
+        { envType = MsgHealthCheck
+        , envPayload = object []
+        , envRequestId = Just 863
+        }
+      health <- recvEnvelope host
+      envType health `shouldBe` MsgHealthStatus
+      sendStreamEnvelope host
+        (StreamWindowEnvelope streamId 861 (fromIntegral (BS.length raw)))
+      streamed <- recvStreamEnvelope host
+      streamed `shouldSatisfy` \frame -> case frame of
+        StreamDataEnvelope _ -> True
+        _ -> False
+      ended <- recvStreamEnvelope host
+      ended `shouldSatisfy` \frame -> case frame of
+        StreamEndEnvelope _ -> True
+        _ -> False
+      shutdownAndWait host done
+
+  it "routes peer cancellation while waiting for outbound credit and keeps the session usable" $
+    withTransportPair $ \host plugin -> do
+      raw <- case encodeTerrainChunk (WorldConfig 1) (emptyTerrainChunk (WorldConfig 1)) of
+        Left err -> expectationFailure (show err) >> fail "chunk encode"
+        Right bytes -> pure bytes
+      done <- startSession (streamingUpdatePlugin raw) plugin
+      negotiateStreamingSession host 870
+      completeUpdateSnapshot host raw
+      _ <- recvEnvelope host
+      opened <- recvStreamEnvelope host
+      streamId <- case opened of
+        StreamOpenEnvelope value -> pure (soStreamId value)
+        other -> expectationFailure ("expected outbound stream_open, got " <> show other)
+          >> fail "stream open"
+      sendStreamEnvelope host (StreamCancelEnvelope
+        (StreamCancel streamId 861 "host cancelled delta"))
+      sendEnvelope host RPCEnvelope
+        { envType = MsgHeartbeat
+        , envPayload = Aeson.toJSON (Heartbeat "after-cancel")
+        , envRequestId = Just 872
+        }
+      heartbeat <- recvUntilType host MsgHeartbeat
+      envRequestId heartbeat `shouldBe` Just 872
+      shutdownAndWait host done
 
   it "acknowledges protocol 5 and rejects missing bindings instead of falling back to v4" $
     withTransportPair $ \host plugin -> do
@@ -1358,6 +1613,12 @@ startSession plugin transport = do
   _ <- forkFinally (runPluginSession plugin transport Map.empty) (\_ -> putMVar done ())
   pure done
 
+startSessionOutcome :: PluginDef -> Transport -> IO (MVar (Either SomeException ()))
+startSessionOutcome plugin transport = do
+  outcome <- newEmptyMVar
+  _ <- forkFinally (runPluginSession plugin transport Map.empty) (putMVar outcome)
+  pure outcome
+
 stopSessionAndCheck :: Transport -> MVar (Either SomeException ()) -> IO ()
 stopSessionAndCheck host outcome = do
   sendEnvelope host RPCEnvelope
@@ -1371,12 +1632,63 @@ stopSessionAndCheck host outcome = do
     Just (Left err) -> expectationFailure ("session failed after request rejection: " <> show err)
     Nothing -> expectationFailure "session did not stop after shutdown"
 
+negotiateStreamingSession :: Transport -> Word64 -> IO ()
+negotiateStreamingSession = negotiateStreamingSessionWithProposal
+  (defaultStreamProposal 1048576)
+
+negotiateStreamingSessionWithProposal :: StreamProposal -> Transport -> Word64 -> IO ()
+negotiateStreamingSessionWithProposal proposal host requestId = do
+  let handshakeBase = Aeson.toJSON Handshake
+        { hsProtocolVersion = 5
+        , hsWorldPath = Nothing
+        , hsHostCapabilities = []
+        , hsAuthChallenge = Nothing
+        }
+      handshakePayload = case handshakeBase of
+        Object fields -> Object (KM.insert "stream_v1"
+          (Aeson.toJSON proposal) fields)
+        value -> value
+  sendEnvelope host RPCEnvelope
+    { envType = MsgHandshake
+    , envPayload = handshakePayload
+    , envRequestId = Just requestId
+    }
+  ack <- recvEnvelope host
+  envType ack `shouldBe` MsgHandshakeAck
+  case envPayload ack of
+    Object fields -> KM.member "stream_v1" fields `shouldBe` True
+    _ -> expectationFailure "streaming handshake ACK was not an object"
+
+sendStreamEnvelope :: Transport -> StreamEnvelope -> IO ()
+sendStreamEnvelope transport envelope = do
+  sendResult <- sendMessage transport (BL.toStrict (Aeson.encode envelope))
+  case sendResult of
+    Left err -> expectationFailure ("stream send failed: " <> show err)
+    Right () -> pure ()
+
 sendEnvelope :: Transport -> RPCEnvelope -> IO ()
 sendEnvelope transport envelope = do
   sendResult <- sendMessage transport (encodeMessage envelope)
   case sendResult of
     Left err -> expectationFailure ("send failed: " <> show err)
     Right () -> pure ()
+
+recvStreamEnvelope :: Transport -> IO StreamEnvelope
+recvStreamEnvelope transport = do
+  recvResult <- timeout 2000000 (recvMessage transport)
+  case recvResult of
+    Nothing -> expectationFailure "timed out waiting for stream envelope" >> fail "timeout"
+    Just (Left err) -> expectationFailure ("receive failed: " <> show err) >> fail "receive"
+    Just (Right bytes) -> case Aeson.eitherDecodeStrict' bytes of
+      Left err -> expectationFailure err >> fail "decode"
+      Right frame -> pure frame
+
+recvUntilType :: Transport -> RPCMessageType -> IO RPCEnvelope
+recvUntilType transport expected = do
+  envelope <- recvEnvelope transport
+  if envType envelope == expected
+    then pure envelope
+    else recvUntilType transport expected
 
 recvEnvelope :: Transport -> IO RPCEnvelope
 recvEnvelope transport = do
@@ -1535,6 +1847,11 @@ shutdownAndWait host done = do
     Nothing -> expectationFailure "plugin session did not shut down in time"
     Just () -> pure ()
 
+snapshotTempFiles :: IO [FilePath]
+snapshotTempFiles = do
+  temp <- getTemporaryDirectory
+  filter ("topo-sdk-snapshot.chunk" `isPrefixOf`) <$> listDirectory temp
+
 scopeBudgets :: RPCScopeBudgets
 scopeBudgets = RPCScopeBudgets 1048576 1048576 1048576
 
@@ -1543,6 +1860,206 @@ emptyGeneratorScope = RPCInvocationScopeDecl
   { risdInput = RPCScopeInput [] SelectAllInvocationChunks [] False
   , risdOutput = RPCScopeOutput [] SelectAllInvocationChunks False False
   , risdBudgets = scopeBudgets
+  }
+
+streamingSnapshotScope :: RPCInvocationScopeDecl
+streamingSnapshotScope = emptyGeneratorScope
+  { risdInput = RPCScopeInput [TerrainElevation] SelectAllInvocationChunks [] False }
+
+streamingSnapshotResolvedScope :: ResolvedInvocationScope
+streamingSnapshotResolvedScope = withScopeDigest emptyGeneratorResolvedScope
+  { risScopeId = ""
+  , risTerrainInputSections = Set.singleton TerrainElevation
+  , risTerrainInputChunkIds = IntSet.singleton 7
+  }
+
+streamingSnapshotPlugin :: MVar [(TerrainSection, Int)] -> PluginDef
+streamingSnapshotPlugin seen = defaultPluginDef
+  { pdName = "streaming-snapshot"
+  , pdVersion = "1.0"
+  , pdStreamingGenerator = Just StreamingGeneratorDef
+      { stgdInsertAfter = "erosion"
+      , stgdRequires = ["erosion"]
+      , stgdScope = streamingSnapshotScope
+      , stgdRun = \context -> case stgcTerrain context of
+          Nothing -> pure (Left "snapshot was omitted")
+          Just source -> do
+            folded <- foldTerrainChunks source [] $ \keys record ->
+              pure (Right (keys <> [(tcrSection record, tcrChunkId record)]))
+            case folded of
+              Left err -> pure (Left err)
+              Right keys -> putMVar seen keys >> pure (Right defaultStreamingGeneratorResult)
+      }
+  }
+
+streamingSnapshotInvoke :: ResolvedInvocationScope -> RPCEnvelope
+streamingSnapshotInvoke scope = RPCEnvelope
+  { envType = MsgInvokeGenerator
+  , envPayload = case Aeson.toJSON InvokeGenerator
+      { igPayloadVersion = 1
+      , igStageId = "plugin:streaming-snapshot"
+      , igSeed = 831
+      , igConfig = Map.empty
+      , igTerrain = Null
+      , igInvocationScope = Just RPCInvocationScopeBinding
+          { risbScopeId = risScopeId scope, risbDescriptor = Just scope }
+      } of
+      Object fields -> Object (KM.insert "terrain_snapshot" (object
+        [ "payload_version" .= (1 :: Int)
+        , "scope_id" .= risScopeId scope
+        , "header" .= object
+            [ "chunk_size" .= (1 :: Int)
+            , "hex_grid" .= defaultHexGridMeta
+            , "planet" .= defaultPlanetConfig
+            , "slice" .= defaultWorldSlice
+            ]
+        , "stream_ids" .= [StreamId 1]
+        ]) fields)
+      value -> value
+  , envRequestId = Just 831
+  }
+
+snapshotOpen
+  :: StreamId -> Word64 -> ResolvedInvocationScope -> BS.ByteString -> StreamOpen
+snapshotOpen streamId requestId scope raw = StreamOpen
+  { soStreamId = streamId
+  , soParentRequestId = requestId
+  , soScopeId = risScopeId scope
+  , soPayloadKind = TerrainSnapshot
+  , soPayloadVersion = 1
+  , soSections = Set.singleton TerrainElevation
+  , soChunkIds = IntSet.singleton 7
+  , soMetadata = object []
+  , soCodec = StreamIdentity
+  , soTotalItems = Just 1
+  , soTotalBytes = Just (fromIntegral (BS.length raw))
+  , soFinalSha256 = Just (streamRecordsDigest
+      [(StreamRecordKey TerrainElevation 7 0 0, raw)])
+  }
+
+streamingRemovalScope :: RPCInvocationScopeDecl
+streamingRemovalScope = emptyGeneratorScope
+  { risdOutput = RPCScopeOutput [TerrainElevation] SelectAllInvocationChunks False False }
+
+streamingRemovalResolvedScope :: ResolvedInvocationScope
+streamingRemovalResolvedScope = withScopeDigest emptyGeneratorResolvedScope
+  { risScopeId = ""
+  , risTerrainOutputSections = Set.singleton TerrainElevation
+  , risTerrainOutputChunkIds = IntSet.singleton 7
+  }
+
+streamingRemovalPlugin :: PluginDef
+streamingRemovalPlugin = defaultPluginDef
+  { pdName = "streaming-removal"
+  , pdVersion = "1.0"
+  , pdStreamingGenerator = Just StreamingGeneratorDef
+      { stgdInsertAfter = "erosion"
+      , stgdRequires = ["erosion"]
+      , stgdScope = streamingRemovalScope
+      , stgdRun = \context -> do
+          result <- tdsRemoveChunk (stgcTerrainDelta context)
+            (TerrainChunkRemoval TerrainElevation 7)
+          pure (result >> Right defaultStreamingGeneratorResult)
+      }
+  }
+
+streamingBlockingPlugin :: MVar () -> MVar (Maybe Text) -> PluginDef
+streamingBlockingPlugin started finalized = streamingRemovalPlugin
+  { pdName = "streaming-blocking"
+  , pdStreamingGenerator = fmap (\definition -> definition
+      { stgdRun = \context -> do
+          putMVar started ()
+          (icAwaitCancellation (stgcCancellation context)
+              >> pure (Left "callback cancelled"))
+            `finally` (icCancellationReason (stgcCancellation context)
+              >>= putMVar finalized)
+      }) (pdStreamingGenerator streamingRemovalPlugin)
+  }
+
+streamingUpdateScope :: RPCInvocationScopeDecl
+streamingUpdateScope = streamingSnapshotScope
+  { risdOutput = RPCScopeOutput [TerrainElevation] SelectAllInvocationChunks False False }
+
+streamingUpdateResolvedScope :: ResolvedInvocationScope
+streamingUpdateResolvedScope = withScopeDigest streamingSnapshotResolvedScope
+  { risScopeId = ""
+  , risTerrainOutputSections = Set.singleton TerrainElevation
+  , risTerrainOutputChunkIds = IntSet.singleton 7
+  }
+
+streamingUpdatePlugin :: BS.ByteString -> PluginDef
+streamingUpdatePlugin raw = defaultPluginDef
+  { pdName = "streaming-update"
+  , pdVersion = "1.0"
+  , pdStreamingGenerator = Just StreamingGeneratorDef
+      { stgdInsertAfter = "erosion"
+      , stgdRequires = ["erosion"]
+      , stgdScope = streamingUpdateScope
+      , stgdRun = \context -> do
+          result <- tdsWriteChunk (stgcTerrainDelta context)
+            (TerrainChunkUpdate TerrainElevation 7 raw)
+          pure (result >> Right defaultStreamingGeneratorResult)
+      }
+  }
+
+streamingUpdateInvoke :: RPCEnvelope
+streamingUpdateInvoke = RPCEnvelope
+  { envType = MsgInvokeGenerator
+  , envPayload = case Aeson.toJSON InvokeGenerator
+      { igPayloadVersion = 1
+      , igStageId = "plugin:streaming-update"
+      , igSeed = 861
+      , igConfig = Map.empty
+      , igTerrain = Null
+      , igInvocationScope = Just RPCInvocationScopeBinding
+          { risbScopeId = risScopeId streamingUpdateResolvedScope
+          , risbDescriptor = Just streamingUpdateResolvedScope
+          }
+      } of
+      Object fields -> Object (KM.insert "terrain_snapshot" (object
+        [ "payload_version" .= (1 :: Int)
+        , "scope_id" .= risScopeId streamingUpdateResolvedScope
+        , "header" .= object
+            [ "chunk_size" .= (1 :: Int)
+            , "hex_grid" .= defaultHexGridMeta
+            , "planet" .= defaultPlanetConfig
+            , "slice" .= defaultWorldSlice
+            ]
+        , "stream_ids" .= [StreamId 1]
+        ]) fields)
+      value -> value
+  , envRequestId = Just 861
+  }
+
+completeUpdateSnapshot :: Transport -> BS.ByteString -> IO ()
+completeUpdateSnapshot host raw = do
+  sendEnvelope host streamingUpdateInvoke
+  let streamId = StreamId 1
+      key = StreamRecordKey TerrainElevation 7 0 0
+      digest = streamRecordsDigest [(key, raw)]
+  sendStreamEnvelope host
+    (StreamOpenEnvelope (snapshotOpen streamId 861 streamingUpdateResolvedScope raw))
+  _ <- recvStreamEnvelope host
+  sendStreamEnvelope host
+    (StreamDataEnvelope (encodeStreamRecord StreamIdentity streamId 861 0 key raw))
+  sendStreamEnvelope host
+    (StreamEndEnvelope (StreamEnd streamId 861 1 (fromIntegral (BS.length raw)) digest))
+
+streamingRemovalInvoke :: ResolvedInvocationScope -> RPCEnvelope
+streamingRemovalInvoke scope = RPCEnvelope
+  { envType = MsgInvokeGenerator
+  , envPayload = Aeson.toJSON InvokeGenerator
+      { igPayloadVersion = 1
+      , igStageId = "plugin:streaming-removal"
+      , igSeed = 820
+      , igConfig = Map.empty
+      , igTerrain = Null
+      , igInvocationScope = Just RPCInvocationScopeBinding
+          { risbScopeId = risScopeId scope
+          , risbDescriptor = Just scope
+          }
+      }
+  , envRequestId = Just 821
   }
 
 noTerrainSimulationScope :: RPCInvocationScopeDecl

@@ -3,8 +3,11 @@
 module Spec.Payload (spec) where
 
 import Data.Aeson (Value(..), (.=), object)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
+import qualified Data.IntSet as IntSet
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Test.Hspec
 
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
@@ -16,7 +19,12 @@ import Topo.Overlay.Schema
   , OverlayFieldType(..)
   , emptyOverlayDeps
   )
+import Topo.Export (encodeTerrainChunk)
 import Topo.Planet (PlanetConfig(..), WorldSlice(..), defaultPlanetConfig, defaultWorldSlice)
+import Topo.Plugin.RPC.Scope
+  ( RPCInvocationKind(..), RPCScopeBudgets(..), ResolvedInvocationScope(..)
+  , TerrainSection(..)
+  )
 import Topo.Plugin.RPC.Transport (mkRPCPayloadLimits)
 import Topo.Plugin.SDK.Payload
 import Topo.Plugin.SDK.Types
@@ -81,6 +89,51 @@ spec = describe "SDK payload helpers" $ do
       `shouldSatisfy` either (const False) isObject
     simulationResultWithTerrainWritesWithLimits zeroTerrainLimits overlay memptyTerrainWrites
       `shouldSatisfy` either (const False) (maybe False isObject . strTerrainWrites)
+
+  it "rejects duplicate streamed snapshot keys before exposing a source" $ do
+    let config = WorldConfig { wcChunkSize = 1 }
+        header = TerrainSnapshotHeader 1 defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+    raw <- case encodeTerrainChunk config (emptyTerrainChunk config) of
+      Left err -> expectationFailure (show err) >> fail "encode"
+      Right value -> pure value
+    let record = TerrainChunkRecord TerrainElevation 0 raw
+    case terrainChunkSourceFromRecords header [record, record] of
+      Left _ -> pure ()
+      Right _ -> expectationFailure "duplicate snapshot keys were accepted"
+
+  it "emits deterministic baseline-aware removals through the delta sink" $ do
+    let config = WorldConfig { wcChunkSize = 1 }
+        header = TerrainSnapshotHeader 1 defaultHexGridMeta defaultPlanetConfig defaultWorldSlice
+        scope = ResolvedInvocationScope
+          { risScopeId = "payload-diff"
+          , risKind = InvocationGenerator
+          , risTerrainInputSections = Set.singleton TerrainElevation
+          , risTerrainInputChunkIds = IntSet.singleton 0
+          , risDependencyOverlayChunkIds = Map.empty
+          , risOwnOverlayReadChunkIds = IntSet.empty
+          , risTerrainOutputSections = Set.singleton TerrainElevation
+          , risTerrainOutputChunkIds = IntSet.singleton 0
+          , risOwnedOverlayIdentity = Nothing
+          , risOwnOverlayWriteChunkIds = IntSet.empty
+          , risGeneratorMetadataOutput = False
+          , risDataResource = Nothing
+          , risBudgets = RPCScopeBudgets 100000 100000 100000
+          }
+    raw <- case encodeTerrainChunk config (emptyTerrainChunk config) of
+      Left err -> expectationFailure (show err) >> fail "encode"
+      Right value -> pure value
+    source <- case terrainChunkSourceFromRecords header
+        [TerrainChunkRecord TerrainElevation 0 raw] of
+      Left err -> expectationFailure (show err) >> fail "source"
+      Right value -> pure value
+    changes <- newIORef ([] :: [Either TerrainChunkRemoval TerrainChunkUpdate])
+    let sink = TerrainDeltaSink
+          { tdsWriteChunk = \update -> modifyIORef' changes (<> [Right update]) >> pure (Right ())
+          , tdsRemoveChunk = \removal -> modifyIORef' changes (<> [Left removal]) >> pure (Right ())
+          }
+        world = emptyWorld config defaultHexGridMeta
+    diffTerrainWorldAgainstSnapshot scope source world sink `shouldReturn` Right ()
+    readIORef changes `shouldReturn` [Left (TerrainChunkRemoval TerrainElevation 0)]
 
   it "builds simulation result with encoded writes" $ do
     let overlay = emptyOverlay testSchema

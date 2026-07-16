@@ -56,13 +56,19 @@ module Topo.Plugin.SDK
     -- * Generator
   , GeneratorDef(..)
   , GeneratorScopeDef(..)
+  , StreamingGeneratorDef(..)
   , GeneratorTickResult(..)
+  , StreamingGeneratorResult(..)
   , defaultGeneratorTickResult
+  , defaultStreamingGeneratorResult
     -- * Simulation
   , SimulationDef(..)
   , SimulationScopeDef(..)
+  , StreamingSimulationDef(..)
   , SimulationTickResult(..)
+  , StreamingSimulationResult(..)
   , defaultSimulationTickResult
+  , defaultStreamingSimulationResult
   , SimulationCatchUpPolicy(..)
   , SimulationScheduleDecl(..)
   , defaultScheduleDecl
@@ -71,11 +77,29 @@ module Topo.Plugin.SDK
   , PluginContext(..)
   , GeneratorContext(..)
   , SimulationContext(..)
+  , StreamingGeneratorContext(..)
+  , StreamingSimulationContext(..)
   , DataContext(..)
   , reportPluginProgress
   , reportGeneratorProgress
   , reportSimulationProgress
   , reportDataProgress
+    -- * Streaming terrain
+  , TerrainSnapshotHeader(..)
+  , TerrainChunkRecord(..)
+  , TerrainChunkUpdate(..)
+  , TerrainChunkRemoval(..)
+  , TerrainChunkSource(..)
+  , TerrainDeltaSink(..)
+  , InvocationCancellation(..)
+  , foldTerrainChunks
+  , terrainChunkSourceFromRecords
+  , decodeTerrainSnapshotHeader
+  , terrainChunkRecordsToPayload
+  , terrainChunkUpdatesFromWorld
+  , terrainWritesToChunkUpdates
+  , writeTerrainWritesToSink
+  , diffTerrainWorldAgainstSnapshot
     -- * Invocation scopes
   , RPCInvocationScopeDecl(..)
   , RPCScopeInput(..)

@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE StrictData #-}
 
 -- | Core types for defining topo plugins.
@@ -27,10 +28,24 @@ module Topo.Plugin.SDK.Types
   , SimulationDef(..)
   , GeneratorScopeDef(..)
   , SimulationScopeDef(..)
+  , StreamingGeneratorDef(..)
+  , StreamingSimulationDef(..)
   , GeneratorTickResult(..)
   , SimulationTickResult(..)
+  , StreamingGeneratorResult(..)
+  , StreamingSimulationResult(..)
   , defaultGeneratorTickResult
   , defaultSimulationTickResult
+  , defaultStreamingGeneratorResult
+  , defaultStreamingSimulationResult
+    -- * Streaming terrain
+  , TerrainSnapshotHeader(..)
+  , TerrainChunkRecord(..)
+  , TerrainChunkUpdate(..)
+  , TerrainChunkRemoval(..)
+  , TerrainChunkSource(..)
+  , TerrainDeltaSink(..)
+  , InvocationCancellation(..)
     -- * Data service
   , DataResourceDef(..)
   , DataHandler(..)
@@ -41,6 +56,8 @@ module Topo.Plugin.SDK.Types
   , PluginContext(..)
   , GeneratorContext(..)
   , SimulationContext(..)
+  , StreamingGeneratorContext(..)
+  , StreamingSimulationContext(..)
   , DataContext(..)
   , reportPluginProgress
   , reportGeneratorProgress
@@ -51,9 +68,12 @@ module Topo.Plugin.SDK.Types
   ) where
 
 import Data.Aeson (Value(..))
+import Data.ByteString (ByteString)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Data.Word (Word64)
+import Topo.Hex (HexGridMeta)
+import Topo.Planet (PlanetConfig, WorldSlice)
 import Topo.Plugin.DataResource (DataResourceSchema)
 import Topo.Plugin.RPC.Manifest
   ( RPCCapability
@@ -63,7 +83,7 @@ import Topo.Plugin.RPC.Manifest
   , defaultRPCStartPolicy, defaultRPCUIHints
   )
 import Topo.Plugin.RPC.Scope
-  ( RPCDataOperation, ResolvedInvocationScope )
+  ( RPCDataOperation, ResolvedInvocationScope, TerrainSection )
 import Topo.Plugin.RPC.ExternalDataSource
   ( RPCExternalDataSourceGrantMessage
   , RPCExternalDataSourceGrantRevocation
@@ -166,6 +186,84 @@ data SimulationScopeDef = SimulationScopeDef
   , ssdTick :: SimulationContext -> IO (Either Text SimulationTickResult)
   }
 
+-- | Native protocol-v5 generator callback. Unlike 'GeneratorScopeDef', terrain
+-- is exposed record-by-record and output is written through a bounded,
+-- scope-checking delta sink.
+data StreamingGeneratorDef = StreamingGeneratorDef
+  { stgdInsertAfter :: !Text
+  , stgdRequires :: ![Text]
+  , stgdScope :: !RPCInvocationScopeDecl
+  , stgdRun :: StreamingGeneratorContext -> IO (Either Text StreamingGeneratorResult)
+  }
+
+-- | Native protocol-v5 simulation callback.
+data StreamingSimulationDef = StreamingSimulationDef
+  { stsdDependencies :: ![Text]
+  , stsdSchedule :: !(Maybe SimulationScheduleDecl)
+  , stsdScope :: !RPCInvocationScopeDecl
+  , stsdTick :: StreamingSimulationContext -> IO (Either Text StreamingSimulationResult)
+  }
+
+-- | Immutable metadata needed to decode streamed terrain chunks.
+data TerrainSnapshotHeader = TerrainSnapshotHeader
+  { tshChunkSize :: !Int
+  , tshHexGrid :: !HexGridMeta
+  , tshPlanet :: !PlanetConfig
+  , tshSlice :: !WorldSlice
+  } deriving (Eq, Show)
+
+-- | One complete, validated chunk from a terrain snapshot.
+data TerrainChunkRecord = TerrainChunkRecord
+  { tcrSection :: !TerrainSection
+  , tcrChunkId :: !Int
+  , tcrBytes :: !ByteString
+  } deriving (Eq, Show)
+
+-- | One complete chunk replacement for a terrain delta.
+data TerrainChunkUpdate = TerrainChunkUpdate
+  { tcuSection :: !TerrainSection
+  , tcuChunkId :: !Int
+  , tcuBytes :: !ByteString
+  } deriving (Eq, Show)
+
+-- | One chunk removal. Removals are distinct from zero-filled updates.
+data TerrainChunkRemoval = TerrainChunkRemoval
+  { tcrmSection :: !TerrainSection
+  , tcrmChunkId :: !Int
+  } deriving (Eq, Ord, Show)
+
+-- | Replayable snapshot source. The runtime validates every stream and chunk
+-- before exposing this value, so user callbacks never observe partial input.
+data TerrainChunkSource = TerrainChunkSource
+  { tcsHeader :: !TerrainSnapshotHeader
+  , tcsFoldChunks :: forall a.
+      a -> (a -> TerrainChunkRecord -> IO (Either Text a)) -> IO (Either Text a)
+  }
+
+-- | Scope-checking result sink. A logical @(section, chunk)@ key may be written
+-- exactly once, either as an update or a removal.
+data TerrainDeltaSink = TerrainDeltaSink
+  { tdsWriteChunk :: TerrainChunkUpdate -> IO (Either Text ())
+  , tdsRemoveChunk :: TerrainChunkRemoval -> IO (Either Text ())
+  }
+
+-- | Cooperative cancellation token for a streamed invocation.
+data InvocationCancellation = InvocationCancellation
+  { icCancellationReason :: IO (Maybe Text)
+  , icAwaitCancellation :: IO Text
+  }
+
+-- | Result fields that remain inline for a native generator invocation.
+data StreamingGeneratorResult = StreamingGeneratorResult
+  { stgrOverlay :: !(Maybe Value)
+  , stgrMetadata :: !(Maybe Value)
+  } deriving (Eq, Show)
+
+-- | Result fields that remain inline for a native simulation invocation.
+data StreamingSimulationResult = StreamingSimulationResult
+  { stsrOverlay :: !Value
+  } deriving (Eq, Show)
+
 -- | Result payload returned by a generator callback.
 data GeneratorTickResult = GeneratorTickResult
   { gtrTerrain  :: !Value
@@ -202,6 +300,14 @@ defaultSimulationTickResult = SimulationTickResult
   { strOverlay = Object mempty
   , strTerrainWrites = Nothing
   }
+
+-- | Empty inline result for a native generator callback.
+defaultStreamingGeneratorResult :: StreamingGeneratorResult
+defaultStreamingGeneratorResult = StreamingGeneratorResult Nothing Nothing
+
+-- | Empty inline result for a native simulation callback.
+defaultStreamingSimulationResult :: StreamingSimulationResult
+defaultStreamingSimulationResult = StreamingSimulationResult (Object mempty)
 
 ------------------------------------------------------------------------
 -- Context
@@ -271,6 +377,39 @@ data SimulationContext = SimulationContext
   , scLog :: Text -> IO ()
   , scProgress :: Text -> Double -> IO ()
   , scWorldPath :: !(Maybe FilePath)
+  }
+
+-- | Native generator context. Terrain is omitted when the resolved scope grants
+-- no terrain input.
+data StreamingGeneratorContext = StreamingGeneratorContext
+  { stgcParams :: !(Map Text Value)
+  , stgcTerrainHeader :: !(Maybe TerrainSnapshotHeader)
+  , stgcTerrain :: !(Maybe TerrainChunkSource)
+  , stgcTerrainDelta :: !TerrainDeltaSink
+  , stgcSeed :: !Word64
+  , stgcScope :: !ResolvedInvocationScope
+  , stgcCancellation :: !InvocationCancellation
+  , stgcLog :: Text -> IO ()
+  , stgcProgress :: Text -> Double -> IO ()
+  , stgcWorldPath :: !(Maybe FilePath)
+  }
+
+-- | Native simulation context.
+data StreamingSimulationContext = StreamingSimulationContext
+  { stscParams :: !(Map Text Value)
+  , stscTerrainHeader :: !(Maybe TerrainSnapshotHeader)
+  , stscTerrain :: !(Maybe TerrainChunkSource)
+  , stscTerrainDelta :: !TerrainDeltaSink
+  , stscOwnOverlay :: !(Maybe Value)
+  , stscOverlays :: !(Map Text Value)
+  , stscWorldTime :: !Word64
+  , stscDeltaTicks :: !Word64
+  , stscCalendar :: !Value
+  , stscScope :: !ResolvedInvocationScope
+  , stscCancellation :: !InvocationCancellation
+  , stscLog :: Text -> IO ()
+  , stscProgress :: Text -> Double -> IO ()
+  , stscWorldPath :: !(Maybe FilePath)
   }
 
 -- | Data-resource callback identity. This context deliberately has no world,
@@ -404,9 +543,13 @@ data PluginDef = PluginDef
   , pdSimulation :: !(Maybe SimulationDef)
     -- ^ Explicit broad protocol-v4 simulation compatibility adapter.
   , pdGeneratorScope :: !(Maybe GeneratorScopeDef)
-    -- ^ Native protocol-v5 scoped generator declaration and callback.
+    -- ^ Protocol-v5 scoped staging adapter with a materialized world callback.
   , pdSimulationScope :: !(Maybe SimulationScopeDef)
-    -- ^ Native protocol-v5 scoped simulation declaration and callback.
+    -- ^ Protocol-v5 scoped staging adapter with a materialized world callback.
+  , pdStreamingGenerator :: !(Maybe StreamingGeneratorDef)
+    -- ^ Native protocol-v5 streamed generator callback.
+  , pdStreamingSimulation :: !(Maybe StreamingSimulationDef)
+    -- ^ Native protocol-v5 streamed simulation callback.
   , pdCapabilities :: ![RPCCapability]
     -- ^ Explicit additional manifest capabilities. The SDK adds these to its
     -- safe inferred capabilities. Use this for capabilities that cannot be
@@ -464,6 +607,8 @@ defaultPluginDef = PluginDef
   , pdSimulation    = Nothing
   , pdGeneratorScope = Nothing
   , pdSimulationScope = Nothing
+  , pdStreamingGenerator = Nothing
+  , pdStreamingSimulation = Nothing
   , pdCapabilities  = []
   , pdDataDirectory = Nothing
   , pdDataResources = []

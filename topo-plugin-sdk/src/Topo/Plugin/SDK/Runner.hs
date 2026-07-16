@@ -37,7 +37,16 @@ module Topo.Plugin.SDK.Runner
   , writePluginManifestToDirectory
   ) where
 
-import Control.Exception (Exception, SomeException, catch, finally, fromException, onException, throwIO)
+import Control.Concurrent (forkFinally, forkIO, killThread)
+import Control.Concurrent.MVar
+  ( MVar, newEmptyMVar, newMVar, putMVar, readMVar, tryTakeMVar, withMVar )
+import Control.Concurrent.STM
+  ( TChan, TMVar, atomically, newEmptyTMVarIO, newTChanIO, orElse
+  , putTMVar, readTChan, readTMVar, writeTChan
+  )
+import Control.Exception
+  ( Exception, SomeException, catch, finally, fromException, mask_, onException, throwIO )
+import Control.Monad (foldM)
 import Data.Aeson (Value(..), (.=), object)
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IntSet
@@ -46,8 +55,10 @@ import Data.Maybe (isJust)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
@@ -55,13 +66,18 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
-import Data.Word (Word64)
-import System.Directory (createDirectoryIfMissing, getCurrentDirectory)
+import Data.Word (Word32, Word64)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Directory
+  ( createDirectoryIfMissing, doesFileExist, getCurrentDirectory
+  , getTemporaryDirectory, removeFile
+  )
 import System.Environment (getArgs, lookupEnv, unsetEnv)
 import System.Exit (exitFailure)
 import System.FilePath ((</>), takeDirectory)
-import System.IO (stderr, stdin, stdout)
+import System.IO (hClose, openBinaryTempFile, stderr, stdin, stdout)
 import System.IO.Unsafe (unsafePerformIO)
+import System.Timeout (timeout)
 
 import Topo.Plugin.RPC.Manifest
   ( Capability(..)
@@ -125,6 +141,7 @@ import Topo.Plugin.RPC.Transport
   , closeTransport
   , connectPluginFromEnvironment
   , pluginAuthTokenEnv
+  , pluginProtocolEnv
   , pluginSessionEnv
   , readRPCPayloadLimitsFromEnvironment
   )
@@ -140,10 +157,54 @@ import Topo.Plugin.RPC.DataService
   , MutateResource(..), MutateResult(..)
   , dataResourceErrorCodeText, dataResourceErrorRPCCode, dataResourceFailureFromText
   )
-import Topo.Plugin.SDK.Payload (decodeTerrainPayloadWithLimits)
+import Topo.Plugin.SDK.Payload
+  ( decodeTerrainPayloadWithLimits
+  , decodeTerrainSnapshotHeader
+  , diffTerrainWorldAgainstSnapshot
+  , terrainChunkSourceFromFiles
+  , terrainChunkSourceFromRecords
+  , terrainChunkSourceToRecords
+  , terrainChunkRecordsToPayload
+  , terrainChunkUpdatesFromWorld
+  , writeTerrainWritesToSink
+  )
 import Topo.Plugin.RPC
   ( applyGeneratorTerrainValueScopedWithLimits
   , decodeTerrainWritesValueScopedWithLimits
+  )
+import Topo.Plugin.RPC.Stream
+  ( NegotiatedStreamV1(..)
+  , StreamCancel(..)
+  , StreamCodec(..)
+  , StreamEffect(..)
+  , StreamEnd(..)
+  , StreamEnvelope(..)
+  , StreamFailure(..)
+  , StreamFailureClass(..)
+  , StreamId(..)
+  , StreamOpen(..)
+  , StreamPayloadKind(..)
+  , StreamProposal
+  , StreamProtocolError(..)
+  , StreamRecord(..)
+  , StreamRecordKey(..)
+  , StreamRole(..)
+  , consumeStreamRecord
+  , defaultStreamProposal
+  , encodeStreamRecord
+  , endOutboundStream
+  , expireStreams
+  , markParentResultReceived
+  , negotiateStreamV1
+  , newStreamMachine
+  , openOutboundStream
+  , parentResultReady
+  , receiveStreamEnvelopeWithFrameBytes
+  , registerStreamRequest
+  , sendOutboundRecord
+  , streamEnvelopeFrameBytes
+  , streamFailureEffects
+  , streamRecordsDigest
   )
 import Topo.Plugin.RPC.Scope
   ( RPCDataOperation(..)
@@ -155,7 +216,7 @@ import Topo.Plugin.RPC.Scope
   )
 import Topo.Simulation.Schedule (defaultScheduleDecl)
 import Topo.Types (WorldConfig(..))
-import Topo.World (TerrainWorld, emptyWorld)
+import Topo.World (TerrainWorld(..), emptyWorld, emptyWorldWithPlanet)
 
 import Topo.Plugin.SDK.Types
 
@@ -232,38 +293,53 @@ protocolRange pd
       "PluginDef mixes generator/simulation adapters without a complete protocol-v4 or protocol-v5 implementation"
   where
     hasScoped = isJust scopedGenerator || isJust scopedSimulation
+      || isJust streamingGenerator || isJust streamingSimulation
     generatorParticipates = isJust legacyGenerator || isJust scopedGenerator
+      || isJust streamingGenerator
     simulationParticipates = isJust legacySimulation || isJust scopedSimulation
+      || isJust streamingSimulation
     supportsV4 = (not generatorParticipates || isJust legacyGenerator)
       && (not simulationParticipates || isJust legacySimulation)
-    supportsV5 = (not generatorParticipates || isJust scopedGenerator)
-      && (not simulationParticipates || isJust scopedSimulation)
+    supportsV5 = (not generatorParticipates || isJust scopedGenerator || isJust streamingGenerator)
+      && (not simulationParticipates || isJust scopedSimulation || isJust streamingSimulation)
     legacyGenerator = pdGenerator pd
     legacySimulation = pdSimulation pd
     scopedGenerator = pdGeneratorScope pd
     scopedSimulation = pdSimulationScope pd
+    streamingGenerator = pdStreamingGenerator pd
+    streamingSimulation = pdStreamingSimulation pd
 
 generatorDecl :: PluginDef -> Maybe RPCGeneratorDecl
-generatorDecl pd = case pdGeneratorScope pd of
-  Just scoped -> Just RPCGeneratorDecl
-    { rgdInsertAfter = gsdInsertAfter scoped
-    , rgdRequires = gsdRequires scoped
+generatorDecl pd = case pdStreamingGenerator pd of
+  Just streaming -> Just RPCGeneratorDecl
+    { rgdInsertAfter = stgdInsertAfter streaming
+    , rgdRequires = stgdRequires streaming
     }
-  Nothing -> fmap (\legacy -> RPCGeneratorDecl
-    { rgdInsertAfter = gdInsertAfter legacy
-    , rgdRequires = gdRequires legacy
-    }) (pdGenerator pd)
+  Nothing -> case pdGeneratorScope pd of
+    Just scoped -> Just RPCGeneratorDecl
+      { rgdInsertAfter = gsdInsertAfter scoped
+      , rgdRequires = gsdRequires scoped
+      }
+    Nothing -> fmap (\legacy -> RPCGeneratorDecl
+      { rgdInsertAfter = gdInsertAfter legacy
+      , rgdRequires = gdRequires legacy
+      }) (pdGenerator pd)
 
 simulationDecl :: PluginDef -> Maybe RPCSimulationDecl
-simulationDecl pd = case pdSimulationScope pd of
-  Just scoped -> Just RPCSimulationDecl
-    { rsdDependencies = ssdDependencies scoped
-    , rsdSchedule = maybe defaultScheduleDecl id (ssdSchedule scoped)
+simulationDecl pd = case pdStreamingSimulation pd of
+  Just streaming -> Just RPCSimulationDecl
+    { rsdDependencies = stsdDependencies streaming
+    , rsdSchedule = maybe defaultScheduleDecl id (stsdSchedule streaming)
     }
-  Nothing -> fmap (\legacy -> RPCSimulationDecl
-    { rsdDependencies = sdDependencies legacy
-    , rsdSchedule = maybe defaultScheduleDecl id (sdSchedule legacy)
-    }) (pdSimulation pd)
+  Nothing -> case pdSimulationScope pd of
+    Just scoped -> Just RPCSimulationDecl
+      { rsdDependencies = ssdDependencies scoped
+      , rsdSchedule = maybe defaultScheduleDecl id (ssdSchedule scoped)
+      }
+    Nothing -> fmap (\legacy -> RPCSimulationDecl
+      { rsdDependencies = sdDependencies legacy
+      , rsdSchedule = maybe defaultScheduleDecl id (sdSchedule legacy)
+      }) (pdSimulation pd)
 
 invocationScopes :: PluginDef -> Maybe RPCInvocationScopes
 invocationScopes pd
@@ -274,13 +350,17 @@ invocationScopes pd
       , riscSimulation = simulationScope
       }
   where
-    generatorScope = case pdGeneratorScope pd of
-      Just scoped -> Just (gsdScope scoped)
-      Nothing -> fmap (const legacyGen) (pdGenerator pd)
-    simulationScope = case pdSimulationScope pd of
-      Just scoped -> Just (ssdScope scoped)
-      Nothing -> fmap (\legacy -> legacySimulationScope (sdDependencies legacy) legacyBudgets)
-        (pdSimulation pd)
+    generatorScope = case pdStreamingGenerator pd of
+      Just streaming -> Just (stgdScope streaming)
+      Nothing -> case pdGeneratorScope pd of
+        Just scoped -> Just (gsdScope scoped)
+        Nothing -> fmap (const legacyGen) (pdGenerator pd)
+    simulationScope = case pdStreamingSimulation pd of
+      Just streaming -> Just (stsdScope streaming)
+      Nothing -> case pdSimulationScope pd of
+        Just scoped -> Just (ssdScope scoped)
+        Nothing -> fmap (\legacy -> legacySimulationScope (sdDependencies legacy) legacyBudgets)
+          (pdSimulation pd)
     broadGenerator = legacyGeneratorScope legacyBudgets
     legacyGen = broadGenerator
       { risdOutput = (risdOutput broadGenerator)
@@ -329,12 +409,16 @@ inferCapabilities pd = concat
     legacySimulation = isJust (pdSimulation pd)
     scopedDeclarations =
       [gsdScope scope | Just scope <- [pdGeneratorScope pd]] <>
-      [ssdScope scope | Just scope <- [pdSimulationScope pd]]
+      [ssdScope scope | Just scope <- [pdSimulationScope pd]] <>
+      [stgdScope scope | Just scope <- [pdStreamingGenerator pd]] <>
+      [stsdScope scope | Just scope <- [pdStreamingSimulation pd]]
     scopedTerrainRead = any (not . null . rsiTerrainSections . risdInput) scopedDeclarations
     scopedOverlayRead = any (\scope -> rsiOwnOverlay (risdInput scope)
       || not (null (rsiDependencyOverlays (risdInput scope)))) scopedDeclarations
-    scopedSimulationTerrainWrite = maybe False
-      (not . null . rsoTerrainSections . risdOutput . ssdScope) (pdSimulationScope pd)
+    scopedSimulationTerrainWrite = any
+      (not . null . rsoTerrainSections . risdOutput)
+      ([ssdScope scope | Just scope <- [pdSimulationScope pd]] <>
+       [stsdScope scope | Just scope <- [pdStreamingSimulation pd]])
     scopedOverlayWrite = any (rsoOwnedOverlay . risdOutput) scopedDeclarations
     hasData = not (null (pdDataResources pd))
     hasDataWriteOps = any hasWriteOps (pdDataResources pd)
@@ -380,9 +464,15 @@ data SDKSessionError
   = SDKReceiveFailure !TransportError
   | SDKSendFailure !RPCMessageType !(Maybe Word64) !Int !Integer !TransportError
   | SDKRequestPayloadRejected !RPCMessageType !Word64 !Int !Integer
+  | SDKPeerCancelled !Text
   deriving (Show)
 
 instance Exception SDKSessionError
+
+data SDKSessionShutdown = SDKSessionShutdown
+  deriving (Show)
+
+instance Exception SDKSessionShutdown
 
 -- | Run a plugin.
 --
@@ -481,7 +571,14 @@ runPluginSessionWithLimits
 runPluginSessionWithLimits limits pd transport params = do
   resetExternalOperationCache pd
   negotiatedVersion <- newIORef (protocolMax pd)
-  messageLoop limits pd transport params Nothing negotiatedVersion
+  negotiatedStreams <- newIORef Nothing
+  nextPluginStreamId <- newIORef 2
+  inbound <- newTChanIO
+  sendLock <- newMVar ()
+  readerThread <- forkIO (transportReader limits transport inbound)
+  (messageLoop limits pd transport sendLock inbound params Nothing negotiatedVersion negotiatedStreams nextPluginStreamId
+    `catch` \SDKSessionShutdown -> pure ())
+    `finally` killThread readerThread
     `onException` closeTransport transport
 
 type ExternalOperationKey = (RPCExternalDataSourceOperation, Text)
@@ -565,11 +662,127 @@ scrubLaunchAuthEnvironment = do
   unsetEnv pluginSessionEnv
   unsetEnv pluginAuthTokenEnv
 
+validateSelectedProtocolEnvironment :: Int -> IO (Either Text ())
+validateSelectedProtocolEnvironment requested = do
+  selected <- lookupEnv pluginProtocolEnv
+  pure $ case selected of
+    Nothing -> Right ()
+    Just raw -> case reads raw of
+      [(value, "")]
+        | value == requested -> Right ()
+        | otherwise -> Left
+            ("handshake protocol does not match TOPO_PLUGIN_PROTOCOL: selected="
+              <> Text.pack (show value) <> ", handshake=" <> Text.pack (show requested))
+      _ -> Left "TOPO_PLUGIN_PROTOCOL is not a valid protocol version"
+
+type InboundQueue = TChan (Either TransportError BS.ByteString)
+
+transportReader :: RPCPayloadLimits -> Transport -> InboundQueue -> IO ()
+transportReader limits transport inbound = do
+  result <- recvMessageWithLimit (fromIntegral (rplMaxFrameSizeBytes limits)) transport
+  atomically (writeTChan inbound result)
+  case result of
+    Left _ -> pure ()
+    Right _ -> transportReader limits transport inbound
+
+readInbound :: InboundQueue -> IO (Either TransportError BS.ByteString)
+readInbound = atomically . readTChan
+
+monotonicMicros :: IO Word64
+monotonicMicros = (`div` 1000) <$> getMonotonicTimeNSec
+
+saturatingAdd :: Word64 -> Word64 -> Word64
+saturatingAdd left right
+  | maxBound - left < right = maxBound
+  | otherwise = left + right
+
+streamInvocationDeadline :: NegotiatedStreamV1 -> IO Word64
+streamInvocationDeadline streamLimits = do
+  now <- monotonicMicros
+  pure (saturatingAdd now (nsvIdleTimeoutMicros streamLimits))
+
+readInboundUntil
+  :: Word64 -> InboundQueue
+  -> IO (Either Text (Either TransportError BS.ByteString))
+readInboundUntil deadline inbound = do
+  now <- monotonicMicros
+  if now >= deadline
+    then pure (Left "stream deadline expired")
+    else do
+      let remaining = deadline - now
+          micros = fromInteger (min (toInteger remaining) (toInteger (maxBound :: Int)))
+      result <- timeout micros (readInbound inbound)
+      pure (maybe (Left "stream deadline expired") Right result)
+
+data ActiveInbound
+  = ActiveStream !BS.ByteString !StreamEnvelope
+  | ActiveContinue
+  | ActiveShutdown
+
+classifyActiveInbound
+  :: RPCPayloadLimits -> Transport -> MVar () -> BS.ByteString -> IO ActiveInbound
+classifyActiveInbound limits transport sendLock bytes =
+  case decodeMessage bytes of
+    Left err -> throwIO (SDKReceiveFailure
+      (TransportFramingError ("invalid frame during streamed invocation: " <> err)))
+    Right envelope -> case envType envelope of
+      MsgStreamOpen -> decodeStream
+      MsgStreamData -> decodeStream
+      MsgStreamWindow -> decodeStream
+      MsgStreamEnd -> decodeStream
+      MsgStreamCancel -> decodeStream
+      MsgStreamError -> decodeStream
+      MsgHeartbeat -> do
+        withMVar sendLock $ \_ -> sendSDKEnvelope limits transport RPCEnvelope
+          { envType = MsgHeartbeat
+          , envPayload = Aeson.toJSON (Heartbeat "ok")
+          , envRequestId = envRequestId envelope
+          }
+        pure ActiveContinue
+      MsgHealthCheck -> do
+        withMVar sendLock $ \_ -> sendSDKEnvelope limits transport RPCEnvelope
+          { envType = MsgHealthStatus
+          , envPayload = Aeson.toJSON (HealthStatus True "ok")
+          , envRequestId = envRequestId envelope
+          }
+        pure ActiveContinue
+      MsgShutdown -> pure ActiveShutdown
+      _ -> throwIO (SDKReceiveFailure (TransportFramingError
+        "pipelined request is not allowed while a streamed invocation is active"))
+  where
+    decodeStream = case Aeson.eitherDecodeStrict' bytes of
+      Left err -> throwIO (SDKReceiveFailure
+        (TransportFramingError ("invalid stream frame: " <> Text.pack err)))
+      Right frame -> pure (ActiveStream bytes frame)
+
+classifyActiveInboundUntil
+  :: Word64 -> RPCPayloadLimits -> Transport -> MVar () -> BS.ByteString
+  -> IO (Either Text ActiveInbound)
+classifyActiveInboundUntil deadline limits transport sendLock bytes = do
+  now <- monotonicMicros
+  if now >= deadline
+    then pure (Left "stream deadline expired")
+    else do
+      let remaining = fromInteger (min (toInteger (deadline - now))
+            (toInteger (maxBound :: Int)))
+      classified <- timeout remaining
+        (classifyActiveInbound limits transport sendLock bytes)
+      case classified of
+        Just active -> pure (Right active)
+        Nothing -> do
+          -- The timeout may have interrupted a framed write. Closing is the
+          -- only safe recovery because a partial frame cannot be rolled back.
+          closeTransport transport
+          throwIO (SDKReceiveFailure TransportClosed)
+
 -- | Main message loop. Reads RPC envelopes with the same limit used for every
 -- response. Any receive or send failure aborts the session deterministically.
-messageLoop :: RPCPayloadLimits -> PluginDef -> Transport -> Map Text Value -> Maybe FilePath -> IORef Int -> IO ()
-messageLoop limits pd transport params worldPath negotiatedVersionRef = do
-  result <- recvMessageWithLimit (fromIntegral (rplMaxFrameSizeBytes limits)) transport
+messageLoop
+  :: RPCPayloadLimits -> PluginDef -> Transport -> MVar () -> InboundQueue
+  -> Map Text Value -> Maybe FilePath
+  -> IORef Int -> IORef (Maybe NegotiatedStreamV1) -> IORef Word64 -> IO ()
+messageLoop limits pd transport sendLock inbound params worldPath negotiatedVersionRef negotiatedStreamsRef nextStreamIdRef = do
+  result <- readInbound inbound
   nextState <- case result of
     Left err -> throwIO (SDKReceiveFailure err)
     Right bs -> case decodeMessage bs of
@@ -580,7 +793,7 @@ messageLoop limits pd transport params worldPath negotiatedVersionRef = do
   case nextState of
     Nothing -> pure ()
     Just (nextParams, nextWorldPath) ->
-      messageLoop limits pd transport nextParams nextWorldPath negotiatedVersionRef
+      messageLoop limits pd transport sendLock inbound nextParams nextWorldPath negotiatedVersionRef negotiatedStreamsRef nextStreamIdRef
   where
     next nextParams nextWorldPath = pure (Just (nextParams, nextWorldPath))
 
@@ -616,19 +829,35 @@ messageLoop limits pd transport params worldPath negotiatedVersionRef = do
                 , haSessionId = fst <$> mAuthProof
                 , haAuthProof = snd <$> mAuthProof
                 }
+          selectedEnvironment <- validateSelectedProtocolEnvironment requestedVersion
           if not supported
             then do
               sendErrorResponse limits transport (envRequestId envelope) 8
                 "Handshake protocol is outside this plugin definition's advertised range"
               next params worldPath
-            else do
-              writeIORef negotiatedVersionRef requestedVersion
-              sendSDKEnvelope limits transport RPCEnvelope
-                { envType = MsgHandshakeAck
-                , envPayload = Aeson.toJSON ack
-                , envRequestId = envRequestId envelope
-                }
-              next params newWorldPath
+            else case selectedEnvironment of
+              Left selectedErr -> do
+                sendErrorResponse limits transport (envRequestId envelope) 8 selectedErr
+                next params worldPath
+              Right () -> case negotiateSDKStreams limits
+                  (isJust (pdStreamingGenerator pd) || isJust (pdStreamingSimulation pd))
+                  requestedVersion (envPayload envelope) of
+                Left streamErr -> do
+                  sendErrorResponse limits transport (envRequestId envelope) 8 streamErr
+                  next params worldPath
+                Right negotiated -> do
+                  writeIORef negotiatedVersionRef requestedVersion
+                  writeIORef negotiatedStreamsRef negotiated
+                  let ackPayload = case (Aeson.toJSON ack, negotiated) of
+                        (Object fields, Just streamLimits) -> Object
+                          (KM.insert "stream_v1" (Aeson.toJSON streamLimits) fields)
+                        (value, _) -> value
+                  sendSDKEnvelope limits transport RPCEnvelope
+                    { envType = MsgHandshakeAck
+                    , envPayload = ackPayload
+                    , envRequestId = envRequestId envelope
+                    }
+                  next params newWorldPath
 
       MsgWorldChanged -> case Aeson.fromJSON (envPayload envelope) of
         Aeson.Error _ -> next params worldPath
@@ -729,8 +958,10 @@ messageLoop limits pd transport params worldPath negotiatedVersionRef = do
         Aeson.Success (ig :: InvokeGenerator) -> do
           negotiatedVersion <- readIORef negotiatedVersionRef
           let mergedParams = Map.union (igConfig ig) params
-              logFn = sendLogMessage limits transport (envRequestId envelope)
-              progressFn = sendProgress limits transport (envRequestId envelope)
+              logFn message = withMVar sendLock $ \_ ->
+                sendLogMessage limits transport (envRequestId envelope) message
+              progressFn message fraction = withMVar sendLock $ \_ ->
+                sendProgress limits transport (envRequestId envelope) message fraction
           preserveStateOnRejected mergedParams worldPath $
             if negotiatedVersion <= currentProtocolVersion
               then case pdGenerator pd of
@@ -747,19 +978,25 @@ messageLoop limits pd transport params worldPath negotiatedVersionRef = do
                       (sendGeneratorResult limits transport (envRequestId envelope)) runResult
                     next mergedParams worldPath
               else case igInvocationScope ig of
-                Just binding -> case pdGeneratorScope pd of
-                  Nothing -> rejectInvocation 6 "generator scope is unknown to this plugin" mergedParams
-                  Just scoped -> case prepareGeneratorContext limits pd scoped binding mergedParams ig worldPath logFn progressFn of
-                    Left err -> rejectInvocation 6 err mergedParams
-                    Right (ctx, validationWorld) -> do
-                      runResult <- catchPluginResult (gsdRun scoped ctx)
-                      case runResult >>= validateGeneratorResult limits (gcScope ctx) validationWorld of
-                        Left errMsg -> sendErrorResponse limits transport (envRequestId envelope) 3 errMsg
-                        Right generatorResult -> sendGeneratorResult limits transport
-                          (envRequestId envelope) generatorResult
-                      next mergedParams worldPath
                 Nothing -> rejectInvocation 6
                   "protocol 5 generator invocation is missing its scope binding" mergedParams
+                Just binding -> do
+                  negotiatedStreams <- readIORef negotiatedStreamsRef
+                  case negotiatedStreams of
+                    Nothing -> case pdGeneratorScope pd of
+                      Nothing -> sendErrorResponse limits transport (envRequestId envelope) 6
+                        "protocol 5 invocation was not preceded by stream_v1 negotiation"
+                      Just scoped -> case prepareGeneratorContext limits pd scoped binding mergedParams ig worldPath logFn progressFn of
+                        Left err -> sendErrorResponse limits transport (envRequestId envelope) 6 err
+                        Right (ctx, validationWorld) -> do
+                          runResult <- catchPluginResult (gsdRun scoped ctx)
+                          case runResult >>= validateGeneratorResult limits (gcScope ctx) validationWorld of
+                            Left errMsg -> sendErrorResponse limits transport (envRequestId envelope) 3 errMsg
+                            Right generatorResult -> sendGeneratorResult limits transport
+                              (envRequestId envelope) generatorResult
+                    Just streamLimits -> handleV5GeneratorInvocation limits streamLimits pd transport sendLock inbound
+                      nextStreamIdRef mergedParams worldPath envelope ig binding logFn progressFn
+                  next mergedParams worldPath
           where
             rejectInvocation code err nextParams = do
               sendErrorResponse limits transport (envRequestId envelope) code err
@@ -773,8 +1010,10 @@ messageLoop limits pd transport params worldPath negotiatedVersionRef = do
         Aeson.Success (is' :: InvokeSimulation) -> do
           negotiatedVersion <- readIORef negotiatedVersionRef
           let mergedParams = Map.union (isConfig is') params
-              logFn = sendLogMessage limits transport (envRequestId envelope)
-              progressFn = sendProgress limits transport (envRequestId envelope)
+              logFn message = withMVar sendLock $ \_ ->
+                sendLogMessage limits transport (envRequestId envelope) message
+              progressFn message fraction = withMVar sendLock $ \_ ->
+                sendProgress limits transport (envRequestId envelope) message fraction
           preserveStateOnRejected mergedParams worldPath $
             if negotiatedVersion <= currentProtocolVersion
               then case pdSimulation pd of
@@ -791,19 +1030,25 @@ messageLoop limits pd transport params worldPath negotiatedVersionRef = do
                       (sendSimulationResult limits transport (envRequestId envelope)) runResult
                     next mergedParams worldPath
               else case isInvocationScope is' of
-                Just binding -> case pdSimulationScope pd of
-                  Nothing -> rejectInvocation 7 "simulation scope is unknown to this plugin" mergedParams
-                  Just scoped -> case prepareSimulationContext limits pd scoped binding mergedParams is' worldPath logFn progressFn of
-                    Left err -> rejectInvocation 7 err mergedParams
-                    Right (ctx, validationWorld) -> do
-                      runResult <- catchPluginResult (ssdTick scoped ctx)
-                      case runResult >>= validateSimulationResult limits pd (scScope ctx) validationWorld of
-                        Left errMsg -> sendErrorResponse limits transport (envRequestId envelope) 5 errMsg
-                        Right simulationResult -> sendSimulationResult limits transport
-                          (envRequestId envelope) simulationResult
-                      next mergedParams worldPath
                 Nothing -> rejectInvocation 7
                   "protocol 5 simulation invocation is missing its scope binding" mergedParams
+                Just binding -> do
+                  negotiatedStreams <- readIORef negotiatedStreamsRef
+                  case negotiatedStreams of
+                    Nothing -> case pdSimulationScope pd of
+                      Nothing -> sendErrorResponse limits transport (envRequestId envelope) 7
+                        "protocol 5 invocation was not preceded by stream_v1 negotiation"
+                      Just scoped -> case prepareSimulationContext limits pd scoped binding mergedParams is' worldPath logFn progressFn of
+                        Left err -> sendErrorResponse limits transport (envRequestId envelope) 7 err
+                        Right (ctx, validationWorld) -> do
+                          runResult <- catchPluginResult (ssdTick scoped ctx)
+                          case runResult >>= validateSimulationResult limits pd (scScope ctx) validationWorld of
+                            Left errMsg -> sendErrorResponse limits transport (envRequestId envelope) 5 errMsg
+                            Right simulationResult -> sendSimulationResult limits transport
+                              (envRequestId envelope) simulationResult
+                    Just streamLimits -> handleV5SimulationInvocation limits streamLimits pd transport sendLock inbound
+                      nextStreamIdRef mergedParams worldPath envelope is' binding logFn progressFn
+                  next mergedParams worldPath
           where
             rejectInvocation code err nextParams = do
               sendErrorResponse limits transport (envRequestId envelope) code err
@@ -886,6 +1131,933 @@ catchPluginResult action = catch action $ \err ->
   case fromException err :: Maybe SDKSessionError of
     Just transportFailure -> throwIO transportFailure
     Nothing -> pure (Left (Text.pack (show (err :: SomeException))))
+
+------------------------------------------------------------------------
+-- Protocol-v5 streamed invocations
+------------------------------------------------------------------------
+
+-- The v5 wire additions intentionally live beside the v4 payload fields.
+-- Older Aeson decoders ignore them, while the selected-v5 runner requires and
+-- validates them before granting any receive credit.
+data SnapshotReference = SnapshotReference
+  { snapshotScopeId :: !Text
+  , snapshotHeader :: !TerrainSnapshotHeader
+  , snapshotStreamIds :: !(Set StreamId)
+  }
+
+data DeltaValue
+  = DeltaUpdate !BS.ByteString
+  | DeltaRemoval
+
+type DeltaMap = Map (TerrainSection, Int) DeltaValue
+
+data SpoolChunk = SpoolChunk
+  { spoolPath :: !FilePath
+  , spoolNextPart :: !Word32
+  , spoolNextOffset :: !Word64
+  }
+
+data SnapshotSpool = SnapshotSpool
+  { spoolRecordKeys :: !(Set StreamRecordKey)
+  , spoolChunks :: !(Map (TerrainSection, Int) SpoolChunk)
+  }
+
+negotiateSDKStreams
+  :: RPCPayloadLimits -> Bool -> Int -> Value -> Either Text (Maybe NegotiatedStreamV1)
+negotiateSDKStreams _ _ protocolVersion _ | protocolVersion <= currentProtocolVersion = Right Nothing
+negotiateSDKStreams limits requirePeerOffer _ payload = do
+  let local = defaultStreamProposal (fromIntegral (rplMaxFrameSizeBytes limits))
+  case payload of
+    Object fields -> case KM.lookup "stream_v1" fields of
+      Nothing | requirePeerOffer -> Left "protocol 5 handshake omits stream_v1"
+      Nothing -> Right Nothing
+      Just peerValue -> do
+        peer <- case Aeson.fromJSON peerValue of
+          Aeson.Error err -> Left ("invalid stream_v1 offer: " <> Text.pack err)
+          Aeson.Success proposal -> Right (proposal :: StreamProposal)
+        Just <$> negotiateStreamV1 local peer
+    _ -> Left "protocol 5 handshake payload must be an object"
+
+parseSnapshotReference :: ResolvedInvocationScope -> Value -> Either Text (Maybe SnapshotReference)
+parseSnapshotReference scope (Object fields) = case KM.lookup "terrain_snapshot" fields of
+  Nothing
+    | Set.null (risTerrainInputSections scope) -> Right Nothing
+    | otherwise -> Left "protocol 5 invocation omitted its terrain_snapshot reference"
+  Just value -> Just <$> case AesonTypes.parseEither parser value of
+    Left err -> Left (Text.pack err)
+    Right reference -> Right reference
+  where
+    parser = Aeson.withObject "terrain_snapshot" $ \snapshot -> do
+      payloadVersion <- snapshot Aeson..: "payload_version"
+      if payloadVersion /= (1 :: Int) then fail "unsupported terrain_snapshot payload version" else pure ()
+      scopeId <- snapshot Aeson..: "scope_id"
+      if scopeId /= risScopeId scope then fail "terrain_snapshot scope_id does not match invocation scope" else pure ()
+      headerValue <- snapshot Aeson..: "header"
+      header <- either (fail . Text.unpack) pure (decodeTerrainSnapshotHeader headerValue)
+      streamIds <- Set.fromList <$> snapshot Aeson..: "stream_ids"
+      if Set.null streamIds && not (Set.null (risTerrainInputSections scope))
+        then fail "terrain_snapshot stream_ids must not be empty for granted terrain input"
+        else pure ()
+      pure (SnapshotReference scopeId header streamIds)
+parseSnapshotReference _ _ = Left "protocol 5 invocation payload must be an object"
+
+handleV5GeneratorInvocation
+  :: RPCPayloadLimits -> NegotiatedStreamV1 -> PluginDef -> Transport -> MVar () -> InboundQueue
+  -> IORef Word64 -> Map Text Value -> Maybe FilePath -> RPCEnvelope -> InvokeGenerator
+  -> RPCInvocationScopeBinding -> (Text -> IO ()) -> (Text -> Double -> IO ()) -> IO ()
+handleV5GeneratorInvocation limits streamLimits pd transport sendLock inbound nextStreamIdRef params worldPath envelope invocation binding logFn progressFn =
+  case (pdStreamingGenerator pd, pdGeneratorScope pd) of
+    (Nothing, Nothing) -> failRequest "generator scope is unknown to this plugin"
+    (Just _, Just _) -> failRequest "plugin defines both native and staging v5 generator callbacks"
+    (native, staged) -> case validateHostScope pd InvocationGenerator declaration binding of
+      Left err -> failRequest err
+      Right scope -> case parseSnapshotReference scope (envPayload envelope) of
+        Left err -> failRequest err
+        Right reference -> do
+          deadline <- streamInvocationDeadline streamLimits
+          snapshotResult <- receiveSnapshot limits streamLimits transport sendLock inbound deadline requestId scope reference
+          case snapshotResult of
+            Left err -> failRequest err
+            Right (source, terrainHeader, cleanup, validationWorld) -> flip finally cleanup $ do
+              deltaRef <- newIORef (Map.empty, 0 :: Word64)
+              (cancellation, cancelCallback) <- newCancellation
+              let guardedSource = fmap (guardTerrainChunkSource deadline cancellation) source
+                  sink = makeDeltaSink streamLimits scope terrainHeader deadline cancellation deltaRef
+              callbackResult <- runWithStreamCancellation limits streamLimits transport sendLock inbound deadline requestId cancelCallback $ case native of
+                Just definition -> do
+                  result <- catchPluginResult (stgdRun definition StreamingGeneratorContext
+                    { stgcParams = params
+                    , stgcTerrainHeader = terrainHeader
+                    , stgcTerrain = guardedSource
+                    , stgcTerrainDelta = sink
+                    , stgcSeed = igSeed invocation
+                    , stgcScope = scope
+                    , stgcCancellation = cancellation
+                    , stgcLog = logFn
+                    , stgcProgress = progressFn
+                    , stgcWorldPath = worldPath
+                    })
+                  pure (result >>= validateStreamingGeneratorResult scope)
+                Nothing -> case staged of
+                  Nothing -> pure (Left "generator callback is unavailable")
+                  Just definition -> do
+                    terrainPayloadResult <- case guardedSource of
+                      Nothing -> pure $ case terrainHeader of
+                        Nothing -> Right (igTerrain invocation)
+                        Just header -> terrainChunkRecordsToPayload header []
+                      Just terrainSource -> do
+                        recordsResult <- terrainChunkSourceToRecords terrainSource
+                        pure (recordsResult >>= terrainChunkRecordsToPayload (tcsHeader terrainSource))
+                    case terrainPayloadResult of
+                      Left err -> pure (Left err)
+                      Right terrainPayload -> case prepareGeneratorContext limits pd definition binding params
+                          invocation { igTerrain = terrainPayload } worldPath logFn progressFn of
+                        Left err -> pure (Left err)
+                        Right (context, baseWorld) -> do
+                          result <- catchPluginResult (gsdRun definition context)
+                          case result >>= validateGeneratorResult limits scope baseWorld of
+                            Left err -> pure (Left err)
+                            Right legacyResult -> case applyGeneratorTerrainValueScopedWithLimits
+                                limits scope baseWorld (gtrTerrain legacyResult) of
+                              Left err -> pure (Left err)
+                              Right updated -> do
+                                diffResult <- case guardedSource of
+                                  Just terrainSource -> diffTerrainWorldAgainstSnapshot scope terrainSource updated sink
+                                  Nothing -> case terrainChunkUpdatesFromWorld scope updated of
+                                    Left err -> pure (Left err)
+                                    Right updates -> writeUpdatesToSink sink updates
+                                pure (diffResult >> Right StreamingGeneratorResult
+                                  { stgrOverlay = gtrOverlay legacyResult
+                                  , stgrMetadata = gtrMetadata legacyResult
+                                  })
+              case callbackResult of
+                Left err -> failRequest err
+                Right inlineResult -> do
+                  deltas <- fst <$> readIORef deltaRef
+                  sendStreamingGeneratorResult limits streamLimits transport sendLock inbound deadline nextStreamIdRef
+                    requestId scope inlineResult deltas
+  where
+    requestId = maybe 0 id (envRequestId envelope)
+    declaration = maybe (maybe (error "unreachable") gsdScope (pdGeneratorScope pd))
+      stgdScope (pdStreamingGenerator pd)
+    failRequest err = sendErrorResponse limits transport (envRequestId envelope) 3 err
+
+handleV5SimulationInvocation
+  :: RPCPayloadLimits -> NegotiatedStreamV1 -> PluginDef -> Transport -> MVar () -> InboundQueue
+  -> IORef Word64 -> Map Text Value -> Maybe FilePath -> RPCEnvelope -> InvokeSimulation
+  -> RPCInvocationScopeBinding -> (Text -> IO ()) -> (Text -> Double -> IO ()) -> IO ()
+handleV5SimulationInvocation limits streamLimits pd transport sendLock inbound nextStreamIdRef params worldPath envelope invocation binding logFn progressFn =
+  case (pdStreamingSimulation pd, pdSimulationScope pd) of
+    (Nothing, Nothing) -> failRequest "simulation scope is unknown to this plugin"
+    (Just _, Just _) -> failRequest "plugin defines both native and staging v5 simulation callbacks"
+    (native, staged) -> case validateHostScope pd InvocationSimulation declaration binding of
+      Left err -> failRequest err
+      Right scope -> case validateStreamingSimulationInputs scope invocation of
+        Left err -> failRequest err
+        Right (ownOverlay, overlays) -> case parseSnapshotReference scope (envPayload envelope) of
+          Left err -> failRequest err
+          Right reference -> do
+            deadline <- streamInvocationDeadline streamLimits
+            snapshotResult <- receiveSnapshot limits streamLimits transport sendLock inbound deadline requestId scope reference
+            case snapshotResult of
+              Left err -> failRequest err
+              Right (source, terrainHeader, cleanup, validationWorld) -> flip finally cleanup $ do
+                deltaRef <- newIORef (Map.empty, 0 :: Word64)
+                (cancellation, cancelCallback) <- newCancellation
+                let guardedSource = fmap (guardTerrainChunkSource deadline cancellation) source
+                    sink = makeDeltaSink streamLimits scope terrainHeader deadline cancellation deltaRef
+                callbackResult <- runWithStreamCancellation limits streamLimits transport sendLock inbound deadline requestId cancelCallback $ case native of
+                  Just definition -> do
+                    result <- catchPluginResult (stsdTick definition StreamingSimulationContext
+                      { stscParams = params
+                      , stscTerrainHeader = terrainHeader
+                      , stscTerrain = guardedSource
+                      , stscTerrainDelta = sink
+                      , stscOwnOverlay = ownOverlay
+                      , stscOverlays = overlays
+                      , stscWorldTime = isWorldTime invocation
+                      , stscDeltaTicks = isDeltaTicks invocation
+                      , stscCalendar = isCalendar invocation
+                      , stscScope = scope
+                      , stscCancellation = cancellation
+                      , stscLog = logFn
+                      , stscProgress = progressFn
+                      , stscWorldPath = worldPath
+                      })
+                    pure (result >>= validateStreamingSimulationResult limits pd scope validationWorld)
+                  Nothing -> case staged of
+                    Nothing -> pure (Left "simulation callback is unavailable")
+                    Just definition -> do
+                      terrainPayloadResult <- case guardedSource of
+                        Nothing -> pure $ case terrainHeader of
+                          Nothing -> Right (isTerrain invocation)
+                          Just header -> terrainChunkRecordsToPayload header []
+                        Just terrainSource -> do
+                          recordsResult <- terrainChunkSourceToRecords terrainSource
+                          pure (recordsResult >>= terrainChunkRecordsToPayload (tcsHeader terrainSource))
+                      case terrainPayloadResult of
+                        Left err -> pure (Left err)
+                        Right terrainPayload -> case prepareSimulationContext limits pd definition binding params
+                            invocation { isTerrain = terrainPayload } worldPath logFn progressFn of
+                          Left err -> pure (Left err)
+                          Right (context, baseWorld) -> do
+                            result <- catchPluginResult (ssdTick definition context)
+                            case result >>= validateSimulationResult limits pd scope baseWorld of
+                              Left err -> pure (Left err)
+                              Right legacyResult -> case decodeTerrainWritesValueScopedWithLimits
+                                  limits scope baseWorld (strTerrainWrites legacyResult) of
+                                Left err -> pure (Left err)
+                                Right writes -> do
+                                  sinkResult <- writeTerrainWritesToSink (twConfig baseWorld) sink writes
+                                  pure (sinkResult >> Right StreamingSimulationResult
+                                    { stsrOverlay = strOverlay legacyResult })
+                case callbackResult of
+                  Left err -> failRequest err
+                  Right inlineResult -> do
+                    deltas <- fst <$> readIORef deltaRef
+                    sendStreamingSimulationResult limits streamLimits transport sendLock inbound deadline nextStreamIdRef
+                      requestId scope inlineResult deltas
+  where
+    requestId = maybe 0 id (envRequestId envelope)
+    declaration = maybe (maybe (error "unreachable") ssdScope (pdSimulationScope pd))
+      stsdScope (pdStreamingSimulation pd)
+    failRequest err = sendErrorResponse limits transport (envRequestId envelope) 5 err
+
+validateStreamingSimulationInputs
+  :: ResolvedInvocationScope -> InvokeSimulation -> Either Text (Maybe Value, Map Text Value)
+validateStreamingSimulationInputs scope invocation = do
+  validateOverlayInputBudget scope (isOverlays invocation) (isOwnOverlay invocation)
+  overlays <- case isOverlays invocation of
+    Object _ -> Right (valueObjectToMap (isOverlays invocation))
+    _ -> Left "dependency overlay collection must be an object"
+  let granted = Map.keysSet (risDependencyOverlayChunkIds scope)
+  if Map.keysSet overlays == granted then pure ()
+    else Left "host dependency overlay names do not exactly match the resolved scope"
+  mapM_ (\(name, value) -> maybe
+      (Left ("dependency overlay is outside resolved scope: " <> name))
+      (\chunks -> validateOverlayPayloadChunks ("dependency overlay " <> name) chunks value)
+      (Map.lookup name (risDependencyOverlayChunkIds scope))) (Map.toList overlays)
+  own <- case risOwnedOverlayIdentity scope of
+    Nothing -> case isOwnOverlay invocation of
+      Null -> Right Nothing
+      _ -> Left "host supplied own overlay without a resolved read grant"
+    Just _ -> validateOverlayPayloadChunks "own overlay input"
+      (risOwnOverlayReadChunkIds scope) (isOwnOverlay invocation) >> Right (Just (isOwnOverlay invocation))
+  Right (own, overlays)
+
+receiveSnapshot
+  :: RPCPayloadLimits -> NegotiatedStreamV1 -> Transport -> MVar () -> InboundQueue
+  -> Word64 -> Word64 -> ResolvedInvocationScope -> Maybe SnapshotReference
+  -> IO (Either Text (Maybe TerrainChunkSource, Maybe TerrainSnapshotHeader, IO (), TerrainWorld))
+receiveSnapshot _ _ _ _ _ _ _ scope Nothing
+  | Set.null (risTerrainInputSections scope) = pure (Right (Nothing, Nothing, pure (), stubWorld))
+receiveSnapshot limits streamLimits transport sendLock inbound deadline requestId scope (Just reference)
+  | requestId == 0 = pure (Left "streamed invocation requires a nonzero correlated request ID")
+  | otherwise = do
+      now <- monotonicMicros
+      case registerStreamRequest requestId scope deadline
+          (newStreamMachine StreamPlugin streamLimits) >>= markParentResultReceived requestId
+            (snapshotStreamIds reference) of
+        Left failure -> pure (Left (sfMessage failure))
+        Right machine -> loop machine (SnapshotSpool Set.empty Map.empty)
+  where
+    loop machine spool = (do
+      current <- monotonicMicros
+      checked <- expireMachine current machine
+      case checked of
+        Left err -> failWith spool err
+        Right liveMachine
+          | parentResultReady requestId liveMachine -> finishSnapshot liveMachine spool
+          | otherwise -> do
+              received <- readInboundUntil deadline inbound
+              case received of
+                Left _ -> do
+                  expiredAt <- monotonicMicros
+                  expired <- expireMachine expiredAt liveMachine
+                  failWith spool (either id (const "stream deadline expired") expired)
+                Right (Left err) -> failWith spool
+                  ("stream receive failed: " <> Text.pack (show err))
+                Right (Right bytes) -> do
+                  classified <- classifyActiveInboundUntil deadline limits transport sendLock bytes
+                  case classified of
+                    Left _ -> do
+                      expiredAt <- monotonicMicros
+                      expired <- expireMachine expiredAt liveMachine
+                      failWith spool (either id (const "stream deadline expired") expired)
+                    Right active -> case active of
+                      ActiveContinue -> loop liveMachine spool
+                      ActiveShutdown -> do
+                        cleanupSnapshotSpool spool
+                        throwIO SDKSessionShutdown
+                      ActiveStream original frame -> handleStream liveMachine spool original frame)
+      `onException` cleanupSnapshotSpool spool
+
+    finishSnapshot machine spool = do
+      current <- monotonicMicros
+      checked <- expireMachine current machine
+      case checked of
+        Left err -> failWith spool err
+        Right _ -> do
+          let files =
+                [ (section, chunkId, spoolPath chunk)
+                | ((section, chunkId), chunk) <- Map.toAscList (spoolChunks spool)
+                ]
+              cleanup = cleanupSnapshotSpool spool
+              header = snapshotHeader reference
+              world = emptyWorldWithPlanet
+                (WorldConfig (tshChunkSize header)) (tshHexGrid header)
+                (tshPlanet header) (tshSlice header)
+          sourceResult <- terrainChunkSourceFromFiles header files
+            `catch` \(err :: SomeException) -> pure
+              (Left ("failed to validate staged terrain snapshot: " <> Text.pack (show err)))
+          finishedAt <- monotonicMicros
+          if finishedAt >= deadline
+            then cleanup >> pure (Left "stream deadline expired")
+            else case sourceResult of
+              Left err -> cleanup >> pure (Left err)
+              Right source -> pure (Right
+                ( if Set.null (risTerrainInputSections scope) then Nothing else Just source
+                , Just header
+                , cleanup
+                , world
+                ))
+
+    handleStream machine spool bytes frame = case frame of
+      StreamOpenEnvelope open | soPayloadKind open /= TerrainSnapshot -> do
+        _ <- sendStreamEffectsLocked streamLimits transport sendLock
+          [SendStreamError (StreamProtocolError (soStreamId open)
+            (soParentRequestId open) "wrong_payload_kind"
+            "referenced invocation input stream is not terrain_snapshot")]
+        failWith spool "referenced invocation input stream is not terrain_snapshot"
+      _ -> do
+        now <- monotonicMicros
+        let (machine1, outcome) = receiveStreamEnvelopeWithFrameBytes now
+              (fromIntegral (BS.length bytes)) frame machine
+        case outcome of
+          Left failure -> do
+            _ <- sendStreamEffectsLocked streamLimits transport sendLock
+              (streamFailureEffects failure)
+            case sfClass failure of
+              StreamConnectionCorruption -> do
+                cleanupSnapshotSpool spool
+                throwIO (SDKReceiveFailure (TransportFramingError (sfMessage failure)))
+              StreamRequestFailure -> failWith spool (sfMessage failure)
+          Right effects -> do
+            sent <- sendStreamEffectsLocked streamLimits transport sendLock effects
+            case sent of
+              Left err -> failWith spool err
+              Right () -> consumeDelivered machine1 spool effects
+
+    consumeDelivered machine spool [] = loop machine spool
+    consumeDelivered machine spool (effect:rest) = case effect of
+      DeliverStreamRecord streamId _ key raw -> do
+        spooled <- spoolSnapshotFragment spool key raw
+          `catch` \(err :: SomeException) -> pure
+            (Left ("failed to spool terrain snapshot: " <> Text.pack (show err)))
+        case spooled of
+          Left err -> failWith spool err
+          Right spool' -> do
+            now <- monotonicMicros
+            case consumeStreamRecord now streamId machine of
+              Left failure -> failWith spool' (sfMessage failure)
+              Right (machine', more) -> do
+                sent <- sendStreamEffectsLocked streamLimits transport sendLock more
+                case sent of
+                  Left err -> failWith spool' err
+                  Right () -> consumeDelivered machine' spool' rest
+      ParentRequestCancelled _ reason -> failWith spool reason
+      ConnectionMustClose reason -> failWith spool reason
+      _ -> consumeDelivered machine spool rest
+
+    expireMachine now machine = do
+      let (machine', effects) = expireStreams now machine
+      sent <- sendStreamEffectsLockedBounded streamLimits transport sendLock effects
+      pure (machine' <$ sent)
+
+    failWith spool err = cleanupSnapshotSpool spool >> pure (Left err)
+receiveSnapshot _ _ _ _ _ _ _ _ Nothing = pure (Left "host omitted granted terrain snapshot")
+
+spoolSnapshotFragment
+  :: SnapshotSpool -> StreamRecordKey -> BS.ByteString
+  -> IO (Either Text SnapshotSpool)
+spoolSnapshotFragment spool key raw
+  | Set.member key (spoolRecordKeys spool) =
+      pure (Left "terrain snapshot contains duplicate records across streams")
+  | srkPart key == maxBound = pure (Left "terrain snapshot contains a removal record")
+  | otherwise = case Map.lookup logicalKey (spoolChunks spool) of
+      Nothing
+        | srkPart key /= 0 || srkOffset key /= 0 ->
+            pure (Left "terrain snapshot chunk does not begin at part and offset zero")
+        | otherwise -> do
+            temp <- getTemporaryDirectory
+            (path, handle) <- openBinaryTempFile temp "topo-sdk-snapshot.chunk"
+            let cleanupCreated = do
+                  hClose handle `catch` \(_ :: SomeException) -> pure ()
+                  removeFile path `catch` \(_ :: SomeException) -> pure ()
+            (hClose handle >> BS.writeFile path raw >> pure (Right (insertChunk path)))
+              `onException` cleanupCreated
+      Just chunk
+        | srkPart key /= spoolNextPart chunk ->
+            pure (Left "terrain snapshot chunk parts are not contiguous")
+        | srkOffset key /= spoolNextOffset chunk ->
+            pure (Left "terrain snapshot chunk offsets are not contiguous")
+        | otherwise -> do
+            BS.appendFile (spoolPath chunk) raw
+            pure (Right (advanceChunk chunk))
+  where
+    logicalKey = (srkSection key, srkChunkId key)
+    amount = fromIntegral (BS.length raw)
+    withKey chunks = SnapshotSpool
+      (Set.insert key (spoolRecordKeys spool)) chunks
+    insertChunk path = withKey (Map.insert logicalKey
+      (SpoolChunk path 1 amount) (spoolChunks spool))
+    advanceChunk chunk = withKey (Map.insert logicalKey chunk
+      { spoolNextPart = spoolNextPart chunk + 1
+      , spoolNextOffset = spoolNextOffset chunk + amount
+      } (spoolChunks spool))
+
+cleanupSnapshotSpool :: SnapshotSpool -> IO ()
+cleanupSnapshotSpool spool = mapM_ remove
+  [spoolPath chunk | chunk <- Map.elems (spoolChunks spool)]
+  where
+    remove path = (do
+      exists <- doesFileExist path
+      if exists then removeFile path else pure ())
+      `catch` \(_ :: SomeException) -> pure ()
+
+guardTerrainChunkSource
+  :: Word64 -> InvocationCancellation -> TerrainChunkSource -> TerrainChunkSource
+guardTerrainChunkSource deadline cancellation source = TerrainChunkSource
+  { tcsHeader = tcsHeader source
+  , tcsFoldChunks = \initial step -> do
+      active <- ensureInvocationActive deadline cancellation
+      case active of
+        Left err -> pure (Left err)
+        Right () -> tcsFoldChunks source initial $ \acc record -> do
+          before <- ensureInvocationActive deadline cancellation
+          case before of
+            Left err -> pure (Left err)
+            Right () -> do
+              stepped <- step acc record
+              case stepped of
+                Left err -> pure (Left err)
+                Right next -> do
+                  after <- ensureInvocationActive deadline cancellation
+                  pure (next <$ after)
+  }
+
+ensureInvocationActive :: Word64 -> InvocationCancellation -> IO (Either Text ())
+ensureInvocationActive deadline cancellation = do
+  reason <- icCancellationReason cancellation
+  case reason of
+    Just value -> pure (Left value)
+    Nothing -> do
+      now <- monotonicMicros
+      pure $ if now >= deadline then Left "stream deadline expired" else Right ()
+
+makeDeltaSink
+  :: NegotiatedStreamV1 -> ResolvedInvocationScope -> Maybe TerrainSnapshotHeader
+  -> Word64 -> InvocationCancellation -> IORef (DeltaMap, Word64) -> TerrainDeltaSink
+makeDeltaSink streamLimits scope header deadline cancellation ref = TerrainDeltaSink
+  { tdsWriteChunk = \update -> do
+      active <- ensureInvocationActive deadline cancellation
+      case active of
+        Left err -> pure (Left err)
+        Right () -> case header of
+          Nothing -> pure (Left "terrain delta updates require immutable snapshot geometry")
+          Just snapshotHeader -> case terrainChunkSourceFromRecords snapshotHeader
+              [TerrainChunkRecord (tcuSection update) (tcuChunkId update) (tcuBytes update)] of
+            Left err -> pure (Left ("invalid terrain delta chunk: " <> err))
+            Right _ -> add (tcuSection update) (tcuChunkId update)
+              (DeltaUpdate (tcuBytes update)) (fromIntegral (BS.length (tcuBytes update)))
+  , tdsRemoveChunk = \removal -> add
+      (tcrmSection removal) (tcrmChunkId removal) DeltaRemoval 0
+  }
+  where
+    add section chunkId value amount = do
+      active <- ensureInvocationActive deadline cancellation
+      case active of
+        Left err -> pure (Left err)
+        Right () -> atomicModifyIORef' ref $ \current@(entries, used) ->
+          let key = (section, chunkId)
+              allowed = Set.member section (risTerrainOutputSections scope)
+                && IntSet.member chunkId (risTerrainOutputChunkIds scope)
+              scopeBudget = rsbOutputBytes (risBudgets scope)
+              byteBudget = min scopeBudget (nsvMaxUncompressedBytes streamLimits)
+              existingItems = sum
+                [ fromIntegral (length (fragmentDelta streamLimits (entryKey, entryValue)))
+                | (entryKey, entryValue) <- Map.toList entries
+                ]
+              newItems = fromIntegral (length (fragmentDelta streamLimits (key, value)))
+              itemBudget = nsvMaxItems streamLimits
+          in if not allowed
+              then (current, Left "terrain delta key is outside the resolved output scope")
+              else if Map.member key entries
+                then (current, Left "terrain delta contains a duplicate update/removal key")
+                else if amount > byteBudget || used > byteBudget - amount
+                  then (current, Left "terrain delta exceeds the negotiated or resolved output byte budget")
+                  else if newItems > itemBudget || existingItems > itemBudget - newItems
+                    then (current, Left "terrain delta exceeds the negotiated item limit")
+                    else ((Map.insert key value entries, used + amount), Right ())
+
+newCancellation :: IO (InvocationCancellation, Text -> IO ())
+newCancellation = do
+  reasonRef <- newIORef Nothing
+  signal <- newEmptyMVar
+  let cancel reason = do
+        first <- atomicModifyIORef' reasonRef $ \current -> case current of
+          Nothing -> (Just reason, True)
+          Just _ -> (current, False)
+        if first then putMVar signal reason else pure ()
+  pure
+    ( InvocationCancellation
+        { icCancellationReason = readIORef reasonRef
+        , icAwaitCancellation = readMVar signal
+        }
+    , cancel
+    )
+
+-- Run user code away from the sole transport reader so peer controls and the
+-- absolute invocation deadline can interrupt a slow callback. The worker is
+-- always joined before staged snapshot files are released.
+runWithStreamCancellation
+  :: RPCPayloadLimits -> NegotiatedStreamV1 -> Transport -> MVar () -> InboundQueue
+  -> Word64 -> Word64 -> (Text -> IO ())
+  -> IO (Either Text a) -> IO (Either Text a)
+runWithStreamCancellation limits _ transport sendLock inbound deadline requestId cancel action = do
+  callbackResult <- newEmptyTMVarIO
+  callbackThread <- forkFinally action $ \result ->
+    atomically (putTMVar callbackResult result)
+  let await remaining = timeout remaining $ atomically $
+        (Right <$> readTChan inbound) `orElse` (Left <$> readTMVar callbackResult)
+      terminateWorker = mask_ $ do
+        token <- tryTakeMVar sendLock
+        case token of
+          Just () -> do
+            -- Holding the token prevents the callback from entering a framed
+            -- send while it is asynchronously cancelled.
+            result <- (killThread callbackThread
+              >> atomically (readTMVar callbackResult))
+              `finally` putMVar sendLock ()
+            pure (False, result)
+          Nothing -> do
+            -- The callback may be inside a framed write. Abort the connection
+            -- before cancellation rather than risk continuing a partial frame.
+            closeTransport transport
+            killThread callbackThread
+            result <- atomically (readTMVar callbackResult)
+            pure (True, result)
+      stop reason = do
+        cancel reason
+        (connectionClosed, _) <- terminateWorker
+        if connectionClosed
+          then throwIO (SDKReceiveFailure TransportClosed)
+          else pure (Left reason)
+      stopShutdown = do
+        cancel "host requested shutdown"
+        _ <- terminateWorker
+        throwIO SDKSessionShutdown
+      loop = do
+        now <- monotonicMicros
+        if now >= deadline
+          then stop "stream deadline expired"
+          else do
+            let remaining = fromInteger (min (toInteger (deadline - now))
+                  (toInteger (maxBound :: Int)))
+            event <- await remaining
+            case event of
+              Nothing -> stop "stream deadline expired"
+              Just (Left result) -> do
+                finishedAt <- monotonicMicros
+                if finishedAt >= deadline
+                  then stop "stream deadline expired"
+                  else case result of
+                    Right value -> pure value
+                    Left err -> case fromException err :: Maybe SDKSessionError of
+                      Just sdkErr -> throwIO sdkErr
+                      Nothing -> case fromException err :: Maybe SDKSessionShutdown of
+                        Just shutdown -> throwIO shutdown
+                        Nothing -> pure (Left (Text.pack (show err)))
+              Just (Right received) -> case received of
+                Left err -> do
+                  cancel ("stream transport disconnected during callback: "
+                    <> Text.pack (show err))
+                  _ <- terminateWorker
+                  throwIO (SDKReceiveFailure err)
+                Right bytes -> do
+                  classified <- classifyActiveInboundUntil deadline limits transport sendLock bytes
+                  case classified of
+                    Left reason -> stop reason
+                    Right active -> case active of
+                      ActiveContinue -> loop
+                      ActiveShutdown -> stopShutdown
+                      ActiveStream _ frame -> case frame of
+                        StreamCancelEnvelope value
+                          | scParentRequestId value == requestId -> stop (scReason value)
+                        StreamErrorEnvelope value
+                          | speParentRequestId value == requestId -> stop (speMessage value)
+                        _ -> throwIO (SDKReceiveFailure (TransportFramingError
+                          "unexpected stream frame while a plugin callback is active"))
+  loop `onException` do
+    _ <- terminateWorker
+    pure ()
+
+validateStreamingGeneratorResult
+  :: ResolvedInvocationScope -> StreamingGeneratorResult -> Either Text StreamingGeneratorResult
+validateStreamingGeneratorResult scope result = do
+  case stgrOverlay result of
+    Nothing -> pure ()
+    Just overlay -> case risOwnedOverlayIdentity scope of
+      Nothing -> Left "streaming generator emitted an unavailable owned overlay"
+      Just _ -> validateOverlayPayloadChunks "generator owned-overlay output"
+        (risOwnOverlayWriteChunkIds scope) overlay
+  case stgrMetadata result of
+    Nothing -> pure ()
+    Just _ | risGeneratorMetadataOutput scope -> pure ()
+    Just _ -> Left "generator metadata output is not granted"
+  pure result
+
+validateStreamingSimulationResult
+  :: RPCPayloadLimits -> PluginDef -> ResolvedInvocationScope -> TerrainWorld
+  -> StreamingSimulationResult -> Either Text StreamingSimulationResult
+validateStreamingSimulationResult limits pd scope world result = do
+  _ <- validateSimulationResult limits pd scope world SimulationTickResult
+    { strOverlay = stsrOverlay result, strTerrainWrites = Nothing }
+  pure result
+
+sendStreamingGeneratorResult
+  :: RPCPayloadLimits -> NegotiatedStreamV1 -> Transport -> MVar () -> InboundQueue
+  -> Word64 -> IORef Word64 -> Word64
+  -> ResolvedInvocationScope -> StreamingGeneratorResult -> DeltaMap -> IO ()
+sendStreamingGeneratorResult limits streamLimits transport sendLock inbound deadline nextId requestId scope result deltas =
+  sendStreamingResult limits streamLimits transport sendLock inbound deadline nextId requestId scope MsgGeneratorResult deltas $ \deltaRef ->
+    object $ ["terrain" .= object []]
+      <> ["overlay" .= overlay | Just overlay <- [stgrOverlay result]]
+      <> ["metadata" .= metadata | Just metadata <- [stgrMetadata result]]
+      <> ["terrain_delta" .= value | Just value <- [deltaRef]]
+
+sendStreamingSimulationResult
+  :: RPCPayloadLimits -> NegotiatedStreamV1 -> Transport -> MVar () -> InboundQueue
+  -> Word64 -> IORef Word64 -> Word64
+  -> ResolvedInvocationScope -> StreamingSimulationResult -> DeltaMap -> IO ()
+sendStreamingSimulationResult limits streamLimits transport sendLock inbound deadline nextId requestId scope result deltas =
+  sendStreamingResult limits streamLimits transport sendLock inbound deadline nextId requestId scope MsgSimulationResult deltas $ \deltaRef ->
+    object $ ["overlay" .= stsrOverlay result]
+      <> ["terrain_delta" .= value | Just value <- [deltaRef]]
+
+sendStreamingResult
+  :: RPCPayloadLimits -> NegotiatedStreamV1 -> Transport -> MVar () -> InboundQueue
+  -> Word64 -> IORef Word64 -> Word64
+  -> ResolvedInvocationScope -> RPCMessageType -> DeltaMap
+  -> (Maybe Value -> Value) -> IO ()
+sendStreamingResult limits streamLimits transport sendLock inbound deadline nextId requestId scope resultType deltas buildPayload = do
+  streamId <- if Map.null deltas then pure Nothing else Just . StreamId <$>
+    atomicModifyIORef' nextId (\value -> (value + 2, value))
+  let deltaReference = fmap (\sid -> object
+        [ "payload_version" .= (1 :: Int)
+        , "scope_id" .= risScopeId scope
+        , "stream_ids" .= [sid]
+        ]) streamId
+      payload = buildPayload deltaReference
+      inlineBytes = fromIntegral (BL.length (Aeson.encode payload))
+      deltaBytes = sum
+        [ fromIntegral (BS.length raw)
+        | DeltaUpdate raw <- Map.elems deltas
+        ]
+      outputBudget = rsbOutputBytes (risBudgets scope)
+      preflight = case streamId of
+        Nothing -> Right ()
+        Just sid -> preflightDeltaStream streamLimits requestId scope sid deltas
+  now <- monotonicMicros
+  if now >= deadline
+    then sendErrorResponse limits transport (Just requestId) 15 "stream deadline expired"
+    else if deltaBytes > outputBudget || inlineBytes > outputBudget - deltaBytes
+      then sendErrorResponse limits transport (Just requestId) 15
+        "combined terrain delta and inline overlay/metadata exceed the resolved output budget"
+      else case preflight of
+        Left err -> sendErrorResponse limits transport (Just requestId) 15 err
+        Right () -> do
+          sendSDKEnvelope limits transport RPCEnvelope
+            { envType = resultType, envPayload = payload, envRequestId = Just requestId }
+          case streamId of
+            Nothing -> pure ()
+            Just sid -> sendDeltaStream limits streamLimits transport sendLock inbound deadline requestId scope sid deltas
+              `catch` \err -> case err of
+                SDKPeerCancelled _ -> pure ()
+                _ -> throwIO err
+
+sendDeltaStream
+  :: RPCPayloadLimits -> NegotiatedStreamV1 -> Transport -> MVar () -> InboundQueue
+  -> Word64 -> Word64 -> ResolvedInvocationScope -> StreamId -> DeltaMap -> IO ()
+sendDeltaStream limits streamLimits transport sendLock inbound deadline requestId scope streamId deltas = do
+  let fragments = concatMap (fragmentDelta streamLimits) (Map.toAscList deltas)
+      encodedRecords = zipWith (\sequenceNo (key, raw) ->
+        encodeStreamRecord StreamIdentity streamId requestId sequenceNo key raw) [0..] fragments
+      records = zip encodedRecords fragments
+      totalBytes = sum (map (fromIntegral . BS.length . snd) fragments)
+      digest = streamRecordsDigest fragments
+      open = StreamOpen
+        { soStreamId = streamId
+        , soParentRequestId = requestId
+        , soScopeId = risScopeId scope
+        , soPayloadKind = TerrainDelta
+        , soPayloadVersion = 1
+        , soSections = Set.fromList [section | ((section, _), _) <- Map.toList deltas]
+        , soChunkIds = IntSet.fromList [chunkId | ((_, chunkId), _) <- Map.toList deltas]
+        , soMetadata = object []
+        , soCodec = StreamIdentity
+        , soTotalItems = Just (fromIntegral (length records))
+        , soTotalBytes = Just totalBytes
+        , soFinalSha256 = Just digest
+        }
+      start = newStreamMachine StreamPlugin streamLimits
+  now <- monotonicMicros
+  case registerStreamRequest requestId scope deadline start
+      >>= markParentResultReceived requestId (Set.singleton streamId)
+      >>= openOutboundStream now open of
+    Left failure -> throwIO (SDKReceiveFailure (TransportFramingError (sfMessage failure)))
+    Right machine -> do
+      sendStreamFrameLocked streamLimits transport sendLock (StreamOpenEnvelope open)
+      (machine', _) <- sendRecords machine 0 records
+      checked <- expireMachine machine'
+      let end = StreamEnd streamId requestId (fromIntegral (length records)) totalBytes digest
+      endedAt <- monotonicMicros
+      case endOutboundStream endedAt end checked of
+        Left failure -> throwIO (SDKReceiveFailure (TransportFramingError (sfMessage failure)))
+        Right _ -> sendStreamFrameLocked streamLimits transport sendLock (StreamEndEnvelope end)
+  where
+    sendRecords machine credit remaining = do
+      liveMachine <- expireMachine machine
+      case remaining of
+        [] -> pure (liveMachine, credit)
+        (record, (_, raw)):rest
+          | srUncompressedLength record <= credit -> do
+              now <- monotonicMicros
+              case sendOutboundRecord now record raw liveMachine of
+                Left failure -> throwIO
+                  (SDKReceiveFailure (TransportFramingError (sfMessage failure)))
+                Right machine' -> do
+                  sendStreamFrameLocked streamLimits transport sendLock
+                    (StreamDataEnvelope record)
+                  sendRecords machine' (credit - srUncompressedLength record) rest
+          | otherwise -> do
+              received <- readInboundUntil deadline inbound
+              case received of
+                Left _ -> expireMachine liveMachine >>= \_ ->
+                  throwIO (SDKPeerCancelled "stream deadline expired")
+                Right (Left err) -> throwIO (SDKReceiveFailure err)
+                Right (Right bytes) -> do
+                  classified <- classifyActiveInboundUntil deadline limits transport sendLock bytes
+                  case classified of
+                    Left reason -> expireMachine liveMachine >>= \_ ->
+                      throwIO (SDKPeerCancelled reason)
+                    Right active -> case active of
+                      ActiveContinue -> sendRecords liveMachine credit remaining
+                      ActiveShutdown -> throwIO SDKSessionShutdown
+                      ActiveStream original frame -> do
+                        frameAt <- monotonicMicros
+                        let (machine', outcome) = receiveStreamEnvelopeWithFrameBytes frameAt
+                              (fromIntegral (BS.length original)) frame liveMachine
+                        case outcome of
+                          Left failure -> do
+                            _ <- sendStreamEffectsLocked streamLimits transport sendLock
+                              (streamFailureEffects failure)
+                            case frame of
+                              StreamCancelEnvelope value -> throwIO
+                                (SDKPeerCancelled (scReason value))
+                              StreamErrorEnvelope value -> throwIO
+                                (SDKPeerCancelled (speMessage value))
+                              _ -> throwIO (SDKReceiveFailure
+                                (TransportFramingError (sfMessage failure)))
+                          Right effects -> do
+                            sent <- sendStreamEffectsLocked streamLimits transport sendLock effects
+                            case sent of
+                              Left reason -> throwIO (SDKPeerCancelled reason)
+                              Right () -> case frame of
+                                StreamWindowEnvelope sid parent amount
+                                  | sid == streamId && parent == requestId ->
+                                      sendRecords machine' (credit + amount) remaining
+                                StreamCancelEnvelope value -> throwIO
+                                  (SDKPeerCancelled (scReason value))
+                                StreamErrorEnvelope value -> throwIO
+                                  (SDKPeerCancelled (speMessage value))
+                                _ -> sendRecords machine' credit remaining
+
+    expireMachine machine = do
+      now <- monotonicMicros
+      let (machine', effects) = expireStreams now machine
+      sent <- sendStreamEffectsLockedBounded streamLimits transport sendLock effects
+      case sent of
+        Left reason -> throwIO (SDKPeerCancelled reason)
+        Right () -> pure machine'
+
+preflightDeltaStream
+  :: NegotiatedStreamV1 -> Word64 -> ResolvedInvocationScope -> StreamId
+  -> DeltaMap -> Either Text ()
+preflightDeltaStream limits requestId scope streamId deltas = do
+  let fragments = concatMap (fragmentDelta limits) (Map.toAscList deltas)
+      records = zipWith (\sequenceNo (key, raw) ->
+        encodeStreamRecord StreamIdentity streamId requestId sequenceNo key raw) [0..] fragments
+      totalBytes = sum (map (fromIntegral . BS.length . snd) fragments)
+      digest = streamRecordsDigest fragments
+      open = StreamOpen streamId requestId (risScopeId scope) TerrainDelta 1
+        (Set.fromList [section | ((section, _), _) <- Map.toList deltas])
+        (IntSet.fromList [chunkId | ((_, chunkId), _) <- Map.toList deltas])
+        (object []) StreamIdentity (Just (fromIntegral (length records)))
+        (Just totalBytes) (Just digest)
+  if fromIntegral (length records) > nsvMaxItems limits
+    then Left "terrain delta exceeds the negotiated item limit"
+    else if totalBytes > nsvMaxUncompressedBytes limits
+      then Left "terrain delta exceeds the negotiated uncompressed-byte limit"
+      else if streamEnvelopeFrameBytes (StreamOpenEnvelope open) > nsvMaxFrameBytes limits
+        then Left "terrain delta stream_open exceeds the negotiated frame limit"
+        else case filter ((> nsvMaxFrameBytes limits) . streamEnvelopeFrameBytes . StreamDataEnvelope) records of
+          [] -> Right ()
+          _ -> Left "terrain delta record exceeds the negotiated frame limit"
+
+fragmentDelta :: NegotiatedStreamV1 -> ((TerrainSection, Int), DeltaValue) -> [(StreamRecordKey, BS.ByteString)]
+fragmentDelta _ ((section, chunkId), DeltaRemoval) =
+  [(StreamRecordKey section chunkId maxBound 0, BS.empty)]
+fragmentDelta limits ((section, chunkId), DeltaUpdate raw) = go 0 0 raw
+  where
+    frameAllowance = if nsvMaxFrameBytes limits > 768 then nsvMaxFrameBytes limits - 768 else 1
+    pieceSize = fromIntegral (max 1 (min (nsvReceiveWindowBytes limits)
+      (frameAllowance * 3 `div` 4)))
+    go _ _ remaining | BS.null remaining = []
+    go part offset remaining =
+      let (piece, rest) = BS.splitAt pieceSize remaining
+      in (StreamRecordKey section chunkId part offset, piece)
+        : go (part + 1) (offset + fromIntegral (BS.length piece)) rest
+
+sendStreamEffectsLocked
+  :: NegotiatedStreamV1 -> Transport -> MVar () -> [StreamEffect]
+  -> IO (Either Text ())
+sendStreamEffectsLocked streamLimits transport sendLock effects =
+  withMVar sendLock $ \_ -> sendStreamEffects streamLimits transport effects
+
+sendStreamEffectsLockedBounded
+  :: NegotiatedStreamV1 -> Transport -> MVar () -> [StreamEffect]
+  -> IO (Either Text ())
+sendStreamEffectsLockedBounded streamLimits transport sendLock effects = do
+  sent <- timeout 1000000
+    (sendStreamEffectsLocked streamLimits transport sendLock effects)
+  case sent of
+    Just result -> pure result
+    Nothing -> do
+      -- Expiry cleanup must not wait forever for a peer that stopped reading.
+      -- A timed-out framed write makes this connection unusable.
+      closeTransport transport
+      throwIO (SDKReceiveFailure TransportClosed)
+
+sendStreamEffects
+  :: NegotiatedStreamV1 -> Transport -> [StreamEffect] -> IO (Either Text ())
+sendStreamEffects streamLimits transport = foldM sendOne (Right ())
+  where
+    sendOne (Left err) _ = pure (Left err)
+    sendOne (Right ()) effect = case effect of
+      GrantStreamWindow sid requestId credit -> send
+        (StreamWindowEnvelope sid requestId credit)
+      SendStreamCancel cancel -> send (StreamCancelEnvelope cancel)
+      SendStreamError streamErr -> send (StreamErrorEnvelope streamErr)
+      ParentRequestCancelled _ reason -> pure (Left reason)
+      ConnectionMustClose reason -> pure (Left reason)
+      _ -> pure (Right ())
+    send frame = (sendStreamFrame streamLimits transport frame >> pure (Right ()))
+      `catch` handleSendFailure
+    handleSendFailure err@(SDKSendFailure _ _ _ _ transportErr) =
+      case transportErr of
+        -- Framing limits are validated before the transport writes a header,
+        -- so the parent request may still receive a compact error response.
+        TransportFramingError _ -> pure (Left (Text.pack (show err)))
+        _ -> do
+          -- An I/O failure may follow a partial header or payload write. The
+          -- framing boundary is no longer trustworthy: close and abort the
+          -- whole session rather than trying another frame on this transport.
+          closeTransport transport
+          throwIO err
+    handleSendFailure (err :: SDKSessionError) = do
+      closeTransport transport
+      throwIO err
+
+sendStreamFrameLocked
+  :: NegotiatedStreamV1 -> Transport -> MVar () -> StreamEnvelope -> IO ()
+sendStreamFrameLocked streamLimits transport sendLock frame =
+  withMVar sendLock $ \_ -> sendStreamFrame streamLimits transport frame
+
+sendStreamFrame :: NegotiatedStreamV1 -> Transport -> StreamEnvelope -> IO ()
+sendStreamFrame streamLimits transport frame = do
+  let encoded = Aeson.encode frame
+      actual = fromIntegral (BL.length encoded)
+      limit = fromIntegral (nsvMaxFrameBytes streamLimits)
+  result <- sendLazyMessageWithLimit limit transport encoded
+  case result of
+    Right () -> pure ()
+    Left err -> throwIO (SDKSendFailure (streamFrameType frame)
+      (Just (streamRequestId frame)) actual (toInteger limit) err)
+
+streamFrameType :: StreamEnvelope -> RPCMessageType
+streamFrameType frame = case frame of
+  StreamOpenEnvelope _ -> MsgStreamOpen
+  StreamDataEnvelope _ -> MsgStreamData
+  StreamWindowEnvelope _ _ _ -> MsgStreamWindow
+  StreamEndEnvelope _ -> MsgStreamEnd
+  StreamCancelEnvelope _ -> MsgStreamCancel
+  StreamErrorEnvelope _ -> MsgStreamError
+
+streamRequestId :: StreamEnvelope -> Word64
+streamRequestId frame = case frame of
+  StreamOpenEnvelope value -> soParentRequestId value
+  StreamDataEnvelope value -> srParentRequestId value
+  StreamWindowEnvelope _ value _ -> value
+  StreamEndEnvelope value -> seParentRequestId value
+  StreamCancelEnvelope value -> scParentRequestId value
+  StreamErrorEnvelope value -> speParentRequestId value
+
+writeUpdatesToSink :: TerrainDeltaSink -> [TerrainChunkUpdate] -> IO (Either Text ())
+writeUpdatesToSink sink = foldM step (Right ())
+  where
+    step (Left err) _ = pure (Left err)
+    step (Right ()) update = tdsWriteChunk sink update
 
 ------------------------------------------------------------------------
 -- External data-source callbacks
@@ -1349,8 +2521,10 @@ validateTerrainInput scope Null
   | otherwise = Left "host omitted granted terrain input"
 validateTerrainInput scope (Object payload)
   | Set.null allowedSections =
-      if KM.null payload then Right ()
-      else Left "host supplied terrain fields when the resolved scope grants no terrain"
+      let geometryKeys = Set.fromList ["chunk_size", "hex_grid", "planet", "slice", "encoding"]
+          supplied = Set.fromList (map Key.toText (KM.keys payload))
+      in if supplied `Set.isSubsetOf` geometryKeys then Right ()
+          else Left "host supplied terrain chunk fields when the resolved scope grants no terrain"
   | otherwise = do
       let allowedKeys = Set.fromList
             (["chunk_size", "hex_grid", "planet", "slice", "encoding"]
