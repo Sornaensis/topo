@@ -37,7 +37,7 @@ import Control.Concurrent
   , tryReadMVar
   )
 import Control.Exception (finally, mask, onException)
-import Control.Monad (void)
+import Control.Monad (forM_, void)
 import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
@@ -52,7 +52,6 @@ import Data.Time (getCurrentTime)
 import Data.Word (Word64)
 import Hyperspace.Actor (call)
 import Seer.Command.Dispatch (CommandContext(..))
-import Seer.DataBrowser.Executor (waitDataBrowserExecutorIdle)
 import Seer.Headless
   ( HeadlessApp
   , defaultHeadlessConfig
@@ -128,20 +127,75 @@ spec = describe "DataResource CRUD service/API/UI e2e" $ do
       Just () -> pure ()
 
   it "returns accepted mutation clicks while direct service and HTTP calls await the same gate" $ do
-    gate <- RpcGate <$> newEmptyMVar <*> newEmptyMVar
+    gate <- RpcGate <$> newEmptyMVar <*> newEmptyMVar <*> newIORef False
     result <- timeout 30000000 $ withGatedCrudFixtureApp gate $ \app -> do
-      selected <- expectE2EWithin "resource click acceptance" $ clickWidget app
-        ("WidgetDataResourceSelect:" <> crudPluginName <> ":" <> crudResourceName)
+      listed <- httpOk app (mkRequest "GET" ["ui", "widgets"])
+      resourceWidget <- case find (Text.isInfixOf "WidgetDataResourceSelect")
+          (widgetTexts listed) of
+        Just widgetId -> pure widgetId
+        Nothing -> expectationFailure "resource widget was not publicly advertised" >> pure ""
+      selectedResponse <- expectE2EWithin "resource click acceptance" $
+        request app (mkRequest "POST" ["ui", "widgets", "click"])
+          { hreqBody = Just (object ["widget_id" .= resourceWidget]) }
+      hresStatusCode selectedResponse `shouldBe` 200
+      let selected = hresBody selectedResponse
+      lookupValue "widget_id" selected `shouldBe` Just (String resourceWidget)
       lookupValue "status" selected `shouldBe` Just (String "accepted")
+      lookupValue "operation" selected `shouldBe` Just (String "list_records")
+      lookupValue "request_id" selected `shouldSatisfy`
+        maybe False (\case Number _ -> True; _ -> False)
+      map (`lookupValue` selected) ["info", "changed", "saved", "deleted"]
+        `shouldBe` replicate 4 Nothing
       expectE2EWithin "selected-resource RPC start" (takeMVar (rgStarted gate))
-      putMVar (rgRelease gate) ()
-      expectE2EWithin "selected-resource worker idle" $ waitDataBrowserExecutorIdle
-        (ccDataBrowserExecutor (headlessCommandContext (cfaHeadlessApp app)))
 
-      _ <- clickWidget app "WidgetDataRecordSelect:0"
-      _ <- clickWidget app "WidgetDataDeleteBtn"
-      acceptedDelete <- expectE2EWithin "delete click acceptance" $
-        clickWidget app "WidgetDataDeleteConfirm"
+      pendingState <- httpOk app (mkRequest "GET" ["data", "state"])
+      pendingUi <- httpOk app (mkRequest "GET" ["ui", "state"])
+      pendingWidgets <- httpOk app (mkRequest "GET" ["ui", "widgets"])
+      pendingWidget <- httpOk app (mkRequest "GET" ["ui", "widget-state"])
+        { hreqQuery = [("widget_id", Just resourceWidget)] }
+      let pending = lookupValue "pending" pendingState
+      lookupValue "loading" pendingState `shouldBe` Just (Bool True)
+      lookupNestedValue ["data_browser", "loading"] pendingUi `shouldBe` Just (Bool True)
+      lookupNestedValue ["data_browser", "pending"] pendingUi `shouldBe` pending
+      lookupNestedValue ["data_browser_state", "pending"] pendingWidgets `shouldBe` pending
+      lookupValue "pending" pendingWidget `shouldBe` pending
+      lookupValue "request_id" selected
+        `shouldBe` (pending >>= lookupValue "request_id")
+      lookupValue "operation" selected
+        `shouldBe` (pending >>= lookupValue "operation")
+      (lookupNestedValue ["target", "plugin"] =<< pending)
+        `shouldBe` Just (String crudPluginName)
+      (lookupNestedValue ["target", "resource"] =<< pending)
+        `shouldBe` Just (String crudResourceName)
+      widgetTexts pendingWidgets `shouldContain` [resourceWidget]
+      forM_ ["WidgetDataRecordSelect", "WidgetDataPage", "WidgetDataCreateNew"] $ \constructor ->
+        widgetTexts pendingWidgets `shouldSatisfy` (all (not . Text.isInfixOf constructor))
+      tryReadMVar (rgRelease gate) `shouldReturn` Nothing
+
+      putMVar (rgRelease gate) ()
+      completedSelection <- waitDataBrowserPublicIdle app
+      lookupValue "pending" completedSelection `shouldBe` Just Null
+      lookupValue "selected_resource" completedSelection
+        `shouldBe` Just (String crudResourceName)
+      lookupValue "record_count" completedSelection `shouldBe` Just (Number 2)
+
+      selectionInventory <- httpOk app (mkRequest "GET" ["ui", "widgets"])
+      recordWidget <- case find (Text.isInfixOf "WidgetDataRecordSelect")
+          (widgetTexts selectionInventory) of
+        Just widgetId -> pure widgetId
+        Nothing -> expectationFailure "record widget was not publicly advertised" >> pure ""
+      _ <- httpOk app (mkRequest "POST" ["ui", "widgets", "click"])
+        { hreqBody = Just (object ["widget_id" .= recordWidget]) }
+      _ <- httpOk app (mkRequest "POST" ["ui", "widgets", "click"])
+        { hreqBody = Just (object ["widget_id" .= ("WidgetDataDeleteBtn" :: Text)]) }
+      confirmationWidgets <- httpOk app (mkRequest "GET" ["ui", "widgets"])
+      widgetTexts confirmationWidgets
+        `shouldBe` ["WidgetDataDeleteConfirm", "WidgetDataDeleteCancel"]
+      acceptedDeleteResponse <- expectE2EWithin "delete click acceptance" $
+        request app (mkRequest "POST" ["ui", "widgets", "click"])
+          { hreqBody = Just (object ["widget_id" .= ("WidgetDataDeleteConfirm" :: Text)]) }
+      hresStatusCode acceptedDeleteResponse `shouldBe` 200
+      let acceptedDelete = hresBody acceptedDeleteResponse
       lookupValue "status" acceptedDelete `shouldBe` Just (String "accepted")
       lookupValue "operation" acceptedDelete `shouldBe` Just (String "delete_record")
       lookupValue "request_id" acceptedDelete `shouldSatisfy`
@@ -150,26 +204,68 @@ spec = describe "DataResource CRUD service/API/UI e2e" $ do
       lookupValue "saved" acceptedDelete `shouldBe` Nothing
       lookupValue "deleted" acceptedDelete `shouldBe` Nothing
       expectE2EWithin "delete RPC start" (takeMVar (rgStarted gate))
-      pendingState <- serviceOk app "data_get_state" Null
-      lookupValue "loading" pendingState `shouldBe` Just (Bool True)
+      pendingDelete <- httpOk app (mkRequest "GET" ["data", "state"])
+      lookupValue "loading" pendingDelete `shouldBe` Just (Bool True)
+      mutationInventory <- httpOk app (mkRequest "GET" ["ui", "widgets"])
+      lookupTextArray "data_browser" "categories" mutationInventory `shouldBe` []
       tryReadMVar (rgRelease gate) `shouldReturn` Nothing
 
-      busy <- expectE2EWithin "busy click rejection" $ serviceResult app "click_widget" $ object
-        [ "widget_id" .= ("WidgetDataDeleteConfirm" :: Text) ]
-      case busy of
-        Left err -> serviceErrorText err `shouldSatisfy`
-          Text.isInfixOf "widget is not visible"
-        Right _ -> expectationFailure "duplicate mutation click was accepted while busy"
-      invalid <- expectE2EWithin "invalid click rejection" $ serviceResult app "click_widget" $ object
-        [ "widget_id" .= ("WidgetDataNotAControl" :: Text) ]
-      case invalid of
-        Left err -> serviceErrorText err `shouldSatisfy` Text.isInfixOf "unknown widget_id"
-        Right _ -> expectationFailure "invalid widget click was accepted"
+      busy <- expectE2EWithin "busy click rejection" $
+        request app (mkRequest "POST" ["ui", "widgets", "click"])
+          { hreqBody = Just (object ["widget_id" .= ("WidgetDataDeleteConfirm" :: Text)]) }
+      hresStatusCode busy `shouldBe` 503
+      lookupNestedText ["error", "code"] (hresBody busy) `shouldBe` Just "unavailable"
+      invalid <- expectE2EWithin "invalid click rejection" $
+        request app (mkRequest "POST" ["ui", "widgets", "click"])
+          { hreqBody = Just (object ["widget_id" .= ("WidgetDataNotAControl" :: Text)]) }
+      hresStatusCode invalid `shouldBe` 404
+      lookupNestedText ["error", "code"] (hresBody invalid) `shouldBe` Just "not_found"
       tryReadMVar (rgStarted gate) `shouldReturn` Nothing
 
       putMVar (rgRelease gate) ()
-      expectE2EWithin "delete worker idle" $ waitDataBrowserExecutorIdle
-        (ccDataBrowserExecutor (headlessCommandContext (cfaHeadlessApp app)))
+      completedDelete <- waitDataBrowserPublicIdle app
+      lookupValue "pending" completedDelete `shouldBe` Just Null
+      lookupValue "record_count" completedDelete `shouldBe` Just (Number 1)
+      lookupValue "total_count" completedDelete `shouldBe` Just (Number 2)
+      lookupValue "has_selection" completedDelete `shouldBe` Just (Bool False)
+      refreshedWidgets <- httpOk app (mkRequest "GET" ["ui", "widgets"])
+      length (filter (Text.isInfixOf "WidgetDataRecordSelect") (widgetTexts refreshedWidgets))
+        `shouldBe` 1
+
+      atomicModifyIORef' (rgFailNext gate) (const (True, ()))
+      failedAcceptance <- httpOk app (mkRequest "POST" ["ui", "widgets", "click"])
+        { hreqBody = Just (object ["widget_id" .= resourceWidget]) }
+      lookupValue "status" failedAcceptance `shouldBe` Just (String "accepted")
+      expectE2EWithin "failing resource RPC start" (takeMVar (rgStarted gate))
+      putMVar (rgRelease gate) ()
+      failedState <- waitDataBrowserPublicIdle app
+      let asyncError = lookupValue "async_error" failedState
+      asyncError `shouldSatisfy` maybe False (/= Null)
+      lookupValue "request_id" failedAcceptance
+        `shouldBe` (asyncError >>= lookupValue "request_id")
+      lookupValue "operation" failedAcceptance
+        `shouldBe` (asyncError >>= lookupValue "operation")
+      (lookupNestedValue ["target", "plugin"] =<< asyncError)
+        `shouldBe` Just (String crudPluginName)
+      (lookupNestedValue ["target", "resource"] =<< asyncError)
+        `shouldBe` Just (String crudResourceName)
+      (asyncError >>= lookupText "message")
+        `shouldSatisfy` maybe False (Text.isInfixOf "gated fixture failure")
+      failedUi <- httpOk app (mkRequest "GET" ["ui", "state"])
+      failedWidgets <- httpOk app (mkRequest "GET" ["ui", "widgets"])
+      failedWidget <- httpOk app (mkRequest "GET" ["ui", "widget-state"])
+        { hreqQuery = [("widget_id", Just resourceWidget)] }
+      lookupNestedValue ["data_browser", "async_error"] failedUi `shouldBe` asyncError
+      lookupNestedValue ["data_browser_state", "async_error"] failedWidgets `shouldBe` asyncError
+      lookupValue "async_error" failedWidget `shouldBe` asyncError
+
+      retryAcceptance <- httpOk app (mkRequest "POST" ["ui", "widgets", "click"])
+        { hreqBody = Just (object ["widget_id" .= resourceWidget]) }
+      lookupValue "status" retryAcceptance `shouldBe` Just (String "accepted")
+      expectE2EWithin "retry resource RPC start" (takeMVar (rgStarted gate))
+      putMVar (rgRelease gate) ()
+      retriedState <- waitDataBrowserPublicIdle app
+      lookupValue "async_error" retriedState `shouldBe` Just Null
 
       serviceDone <- newEmptyMVar
       _ <- forkIO $ serviceResult app "data_list_records" (object
@@ -242,6 +338,7 @@ data CrudFixtureApp = CrudFixtureApp
 data RpcGate = RpcGate
   { rgStarted :: !(MVar ())
   , rgRelease :: !(MVar ())
+  , rgFailNext :: !(IORef Bool)
   }
 
 data FixtureRpcWorker = FixtureRpcWorker
@@ -556,33 +653,44 @@ crudFixtureRpcLoop rpcGate recordsRef transport = do
           _ <- sendMessage transport (encodeMessage (handshakeAckEnvelope (envRequestId envelope) currentProtocolVersion))
           crudFixtureRpcLoop rpcGate recordsRef transport
         MsgQueryResource -> do
-          awaitRpcGate rpcGate
-          case Aeson.fromJSON (envPayload envelope) of
-            Aeson.Success queryRequest -> do
-              queryResult <- queryCrudRecords recordsRef queryRequest
-              _ <- sendMessage transport (encodeMessage (queryResultEnvelope (envRequestId envelope) queryResult))
+          failRequest <- awaitRpcGate rpcGate
+          if failRequest
+            then do
+              _ <- sendMessage transport (encodeMessage
+                (pluginErrorEnvelope (envRequestId envelope) 1005 "gated fixture failure"))
               crudFixtureRpcLoop rpcGate recordsRef transport
-            Aeson.Error err -> do
-              _ <- sendMessage transport (encodeMessage (pluginErrorEnvelope (envRequestId envelope) 1005 (Text.pack err)))
-              crudFixtureRpcLoop rpcGate recordsRef transport
+            else case Aeson.fromJSON (envPayload envelope) of
+              Aeson.Success queryRequest -> do
+                queryResult <- queryCrudRecords recordsRef queryRequest
+                _ <- sendMessage transport (encodeMessage (queryResultEnvelope (envRequestId envelope) queryResult))
+                crudFixtureRpcLoop rpcGate recordsRef transport
+              Aeson.Error err -> do
+                _ <- sendMessage transport (encodeMessage (pluginErrorEnvelope (envRequestId envelope) 1005 (Text.pack err)))
+                crudFixtureRpcLoop rpcGate recordsRef transport
         MsgMutateResource -> do
-          awaitRpcGate rpcGate
-          case Aeson.fromJSON (envPayload envelope) of
-            Aeson.Success mutateRequest -> do
-              mutateResult <- mutateCrudRecords recordsRef mutateRequest
-              _ <- sendMessage transport (encodeMessage (mutateResultEnvelope (envRequestId envelope) mutateResult))
+          failRequest <- awaitRpcGate rpcGate
+          if failRequest
+            then do
+              _ <- sendMessage transport (encodeMessage
+                (pluginErrorEnvelope (envRequestId envelope) 1005 "gated fixture failure"))
               crudFixtureRpcLoop rpcGate recordsRef transport
-            Aeson.Error err -> do
-              _ <- sendMessage transport (encodeMessage (pluginErrorEnvelope (envRequestId envelope) 1005 (Text.pack err)))
-              crudFixtureRpcLoop rpcGate recordsRef transport
+            else case Aeson.fromJSON (envPayload envelope) of
+              Aeson.Success mutateRequest -> do
+                mutateResult <- mutateCrudRecords recordsRef mutateRequest
+                _ <- sendMessage transport (encodeMessage (mutateResultEnvelope (envRequestId envelope) mutateResult))
+                crudFixtureRpcLoop rpcGate recordsRef transport
+              Aeson.Error err -> do
+                _ <- sendMessage transport (encodeMessage (pluginErrorEnvelope (envRequestId envelope) 1005 (Text.pack err)))
+                crudFixtureRpcLoop rpcGate recordsRef transport
         MsgShutdown -> closeTransport transport
         _ -> crudFixtureRpcLoop rpcGate recordsRef transport
 
-awaitRpcGate :: Maybe RpcGate -> IO ()
-awaitRpcGate Nothing = pure ()
+awaitRpcGate :: Maybe RpcGate -> IO Bool
+awaitRpcGate Nothing = pure False
 awaitRpcGate (Just gate) = do
   putMVar (rgStarted gate) ()
   takeMVar (rgRelease gate)
+  atomicModifyIORef' (rgFailNext gate) (\shouldFail -> (False, shouldFail))
 
 queryCrudRecords :: IORef [DataRecord] -> QueryResource -> IO QueryResult
 queryCrudRecords recordsRef queryRequest = do
@@ -726,6 +834,17 @@ mkRequest method path = HttpRequest
 clickWidget :: CrudFixtureApp -> Text -> IO Value
 clickWidget app widgetId = serviceOk app "click_widget" (object ["widget_id" .= widgetId])
 
+waitDataBrowserPublicIdle :: CrudFixtureApp -> IO Value
+waitDataBrowserPublicIdle app = go (200 :: Int)
+  where
+    go remaining = do
+      state <- httpOk app (mkRequest "GET" ["data", "state"])
+      case lookupValue "loading" state of
+        Just (Bool False) -> pure state
+        _ | remaining <= 0 -> expectationFailure
+              ("Data Browser did not complete; last state: " <> show state) >> pure state
+          | otherwise -> threadDelay 20000 >> go (remaining - 1)
+
 matchesQuery :: DataQuery -> DataRecord -> Bool
 matchesQuery QueryAll _ = True
 matchesQuery (QueryByKey key) row = recordHasField "id" key row
@@ -792,6 +911,18 @@ lookupNestedText :: [Text] -> Value -> Maybe Text
 lookupNestedText [] _ = Nothing
 lookupNestedText [key] value = lookupText key value
 lookupNestedText (key:rest) value = lookupValue key value >>= lookupNestedText rest
+
+lookupNestedValue :: [Text] -> Value -> Maybe Value
+lookupNestedValue [] value = Just value
+lookupNestedValue (key:rest) value = lookupValue key value >>= lookupNestedValue rest
+
+lookupTextArray :: Text -> Text -> Value -> [Text]
+lookupTextArray field parent value =
+  [ text
+  | Just (Object parentObject) <- [lookupValue parent value]
+  , Just (Array values) <- [KM.lookup (Key.fromText field) parentObject]
+  , String text <- toList values
+  ]
 
 lookupValue :: Text -> Value -> Maybe Value
 lookupValue key (Object obj) = KM.lookup (Key.fromText key) obj

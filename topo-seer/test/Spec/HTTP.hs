@@ -21,7 +21,10 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Actor.AtlasManager (AtlasJob(..), atlasJobsForSelection, atlasJobsForSelectionTransition, drainAtlasJobs)
-import Actor.Data (getDataSnapshot, getTerrainSnapshot, setOverlayStoreData, setTerrainChunkData)
+import Actor.Data
+  ( getDataSnapshot, getTerrainSnapshot, setOverlayStoreData, setTerrainChunkCount
+  , setTerrainChunkData
+  )
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshot(..), getLogSnapshot)
 import Actor.SnapshotReceiver
   ( RenderSnapshot(..)
@@ -44,6 +47,8 @@ import Actor.UI
   , getUiSnapshot
   )
 import Actor.UiActions (ActorHandles(..))
+import Actor.UI.Setters
+  ( setUiPluginNames, setUiPluginParam, setUiPluginParamSpecs, setUiWorldConfig )
 import Network.HTTP.Client
   ( Manager
   , RequestBody(..)
@@ -94,6 +99,7 @@ import Seer.HTTP.Server
   )
 import Seer.Command.Dispatch (CommandContext(..))
 import Seer.Config.Runtime (TopoSeerConfig(..))
+import Seer.Config.Snapshot (defaultSnapshot)
 import Seer.Editor.Types (EditorState(..), EditorTool(..))
 import Seer.Render.ZoomStage (orderedZoomStagesForZoom, stageForZoom)
 import Seer.System.Cache (RenderCacheState, initialRenderCacheState)
@@ -367,6 +373,394 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupText "source" (hresBody screenshot) `shouldBe` Just "headless"
       lookupText "image_base64" (hresBody screenshot) `shouldSatisfy` maybe False (not . Text.null)
       lookupValue "view" (hresBody after) `shouldBe` lookupValue "view" (hresBody before)
+
+  describe "public headless widget automation parity" $ do
+    it "round-trips the canonical live inventory and publishes synchronous clicks immediately" $
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        initial <- assertCanonicalWidgetInventory app
+        forM_ ["WidgetChunkMinus", "WidgetLeftTabTopo", "WidgetConfigToggle"] $ \widgetId ->
+          widgetIds initial `shouldSatisfy` (elem widgetId)
+
+        chunkDown <- clickWidgetHttp app "WidgetChunkMinus" Nothing Nothing
+        assertCompletedWidgetClick "WidgetChunkMinus" True chunkDown
+        immediateState <- request app (mkRequest "GET" ["state"])
+        immediateUi <- request app (mkRequest "GET" ["ui", "state"])
+        lookupValue "chunk_size" (hresBody immediateState) `shouldBe` Just (Number 56)
+        lookupValue "chunk_size" (hresBody immediateUi) `shouldBe` Just (Number 56)
+
+        idempotent <- clickWidgetHttp app "WidgetLeftTabTopo" Nothing Nothing
+        assertCompletedWidgetClick "WidgetLeftTabTopo" False idempotent
+        lookupValue "chunk_size" . hresBody <$> request app (mkRequest "GET" ["state"])
+          `shouldReturn` Just (Number 56)
+
+        opened <- clickWidgetHttp app "WidgetConfigToggle" Nothing Nothing
+        assertCompletedWidgetClick "WidgetConfigToggle" True opened
+        climate <- clickWidgetHttp app "WidgetConfigTabClimate" Nothing Nothing
+        assertCompletedWidgetClick "WidgetConfigTabClimate" True climate
+        climateInventory <- assertCanonicalWidgetInventory app
+        climateSliders <- request app (mkRequest "GET" ["config", "sliders"])
+          { hreqQuery = [("tab", Just "climate")] }
+        hresStatusCode climateSliders `shouldBe` 200
+        length (categoryWidgetIds "sliders" climateInventory)
+          `shouldBe` 2 * arrayFieldLength "sliders" (hresBody climateSliders)
+        activeClimate <- getWidgetStateHttp app "WidgetConfigTabClimate"
+        lookupValue "active" (hresBody activeClimate) `shouldBe` Just (Bool True)
+        terrainTab <- getWidgetStateHttp app "WidgetConfigTabTerrain"
+        lookupValue "active" (hresBody terrainTab) `shouldBe` Just (Bool False)
+
+        _ <- clickWidgetHttp app "WidgetConfigToggle" Nothing Nothing
+        closed <- assertCanonicalWidgetInventory app
+        categoryWidgetIds "sliders" closed `shouldBe` []
+        _ <- clickWidgetHttp app "WidgetConfigToggle" Nothing Nothing
+        reopened <- assertCanonicalWidgetInventory app
+        categoryWidgetIds "sliders" reopened `shouldBe` categoryWidgetIds "sliders" climateInventory
+
+    it "converges panel and log widgets with their direct HTTP routes from fresh fixtures" $ do
+      let cases =
+            [ ( "WidgetLeftToggle"
+              , withBody "PUT" ["ui", "left-panel"] (object ["visible" .= False])
+              )
+            , ( "WidgetLeftTabView"
+              , withBody "PUT" ["ui", "left-tab"] (object ["tab" .= ("view" :: Text)])
+              )
+            , ( "WidgetConfigToggle"
+              , withBody "POST" ["ui", "config-panel", "toggle"] (object [])
+              )
+            , ( "WidgetLogHeader"
+              , withBody "PUT" ["ui", "log", "collapsed"] (object ["collapsed" .= True])
+              )
+            , ( "WidgetLogWarn"
+              , withBody "PUT" ["ui", "log", "level"] (object ["level" .= ("warn" :: Text)])
+              )
+            ]
+      forM_ cases $ \(widgetId, directRequest) -> do
+        widgetProjection <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+          clicked <- clickWidgetHttp app widgetId Nothing Nothing
+          hresStatusCode clicked `shouldBe` 200
+          immediatePanelLogProjection app
+        directProjection <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+          direct <- request app directRequest
+          hresStatusCode direct `shouldBe` 200
+          immediatePanelLogProjection app
+        widgetProjection `shouldBe` directProjection
+
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        initial <- request app (mkRequest "GET" ["ui", "panels"])
+        _ <- clickWidgetHttp app "WidgetLeftToggle" Nothing Nothing
+        first <- request app (mkRequest "GET" ["ui", "panels"])
+        lookupNestedValue ["left_panel", "visible"] (hresBody first)
+          `shouldBe` Just (Bool False)
+        _ <- clickWidgetHttp app "WidgetLeftToggle" Nothing Nothing
+        final <- request app (mkRequest "GET" ["ui", "panels"])
+        hresBody final `shouldBe` hresBody initial
+
+    it "converges representative view, slider, plugin, and editor widgets with direct routes" $ do
+      widgetView <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        _ <- clickWidgetHttp app "WidgetLeftTabView" Nothing Nothing
+        clicked <- clickWidgetHttp app "WidgetViewBaseBiome" Nothing Nothing
+        assertCompletedWidgetClick "WidgetViewBaseBiome" True clicked
+        _ <- clickWidgetHttp app "WidgetViewOverlayTemperature" Nothing Nothing
+        _ <- clickWidgetHttp app "WidgetViewBasisAverage" Nothing Nothing
+        viewProjection app
+      directView <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        rsp <- request app $ withBody "POST" ["ui", "view"] (object
+          [ "base_mode" .= ("biome" :: Text)
+          , "overlay_mode" .= ("temperature" :: Text)
+          , "weather_basis" .= ("average" :: Text)
+          ])
+        hresStatusCode rsp `shouldBe` 200
+        viewProjection app
+      widgetView `shouldBe` directView
+
+      widgetSlider <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        _ <- clickWidgetHttp app "WidgetConfigToggle" Nothing Nothing
+        inventory <- request app (mkRequest "GET" ["ui", "widgets"])
+        sliderPlus <- case filter (Text.isPrefixOf "WidgetSliderPlus:")
+            (categoryWidgetIds "sliders" (hresBody inventory)) of
+          wid:_ -> pure wid
+          [] -> expectationFailure "terrain slider plus widget was not advertised" >> pure ""
+        sliderName <- case Text.stripPrefix "WidgetSliderPlus:" sliderPlus of
+          Just name -> pure name
+          Nothing -> expectationFailure "unexpected slider widget codec" >> pure ""
+        beforeSlider <- request app $ withBody "POST" ["config", "sliders", "get"]
+          (object ["name" .= sliderName])
+        clicked <- clickWidgetHttp app sliderPlus Nothing Nothing
+        hresStatusCode clicked `shouldBe` 200
+        slider <- request app $ withBody "POST" ["config", "sliders", "get"]
+          (object ["name" .= sliderName])
+        hresStatusCode slider `shouldBe` 200
+        case (lookupValue "value" (hresBody beforeSlider), lookupValue "value" (hresBody slider)) of
+          (Just (Number beforeValue), Just (Number afterValue)) ->
+            afterValue `shouldSatisfy`
+              (\actual -> abs (actual - min 1 (beforeValue + 0.05)) < 0.000001)
+          values -> expectationFailure ("slider values were not numeric: " <> show values)
+        pure (sliderName, hresBody slider)
+      let (sliderName, sliderState) = widgetSlider
+      sliderValue <- case lookupValue "value" sliderState of
+        Just value -> pure value
+        Nothing -> expectationFailure "slider state omitted value" >> pure Null
+      directSlider <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        rsp <- request app $ withBody "POST" ["config", "sliders"]
+          (object ["name" .= sliderName, "value" .= sliderValue])
+        hresStatusCode rsp `shouldBe` 200
+        hresBody <$> request app (withBody "POST" ["config", "sliders", "get"]
+          (object ["name" .= sliderName]))
+      directSlider `shouldBe` sliderState
+
+      withHttpPluginDir $ do
+        let cfg = defaultHeadlessConfig { hcDiscoverPlugins = True }
+        widgetPlugin <- withHeadlessApp cfg $ \app -> do
+          installHttpPluginUiFixture app
+          _ <- clickWidgetHttp app "WidgetConfigToggle" Nothing Nothing
+          _ <- clickWidgetHttp app "WidgetConfigTabPipeline" Nothing Nothing
+          inventory <- request app (mkRequest "GET" ["ui", "widgets"])
+          expandId <- requireAdvertisedWidget "WidgetPluginExpand" (hresBody inventory)
+          _ <- clickWidgetHttp app expandId Nothing Nothing
+          expanded <- request app (mkRequest "GET" ["ui", "widgets"])
+          sliderId <- requireAdvertisedWidget "WidgetPluginParamSlider" (hresBody expanded)
+          checkId <- requireAdvertisedWidget "WidgetPluginParamCheck" (hresBody expanded)
+          missingArgument <- clickWidgetHttp app sliderId Nothing Nothing
+          assertWidgetError 400 "invalid_request" missingArgument
+          forM_ [String "nope", Number (-0.1), Number 1.1] $ \invalidPosition -> do
+            invalid <- request app $ withBody "POST" ["ui", "widgets", "click"] (object
+              [ "widget_id" .= sliderId
+              , "normalized_position" .= invalidPosition
+              ])
+            hresStatusCode invalid `shouldBe` 400
+          forM_ [(0, Number 10), (1, Number 20), (0.25, Number 12.5)] $
+            \(position, expected) -> do
+              clicked <- clickWidgetHttp app sliderId (Just position) Nothing
+              assertCompletedWidgetClick sliderId True clicked
+              plugins <- request app (mkRequest "GET" ["plugins"])
+              pluginParamValue "http-example" "density" (hresBody plugins)
+                `shouldBe` Just expected
+          checked <- clickWidgetHttp app checkId Nothing Nothing
+          assertCompletedWidgetClick checkId True checked
+          plugins <- request app (mkRequest "GET" ["plugins"])
+          pure
+            ( pluginParamValue "http-example" "density" (hresBody plugins)
+            , pluginParamValue "http-example" "enabled" (hresBody plugins)
+            )
+        directPlugin <- withHeadlessApp cfg $ \app -> do
+          forM_
+            ([ ("density", Number 12.5)
+             , ("enabled", Bool False)
+             ] :: [(Text, Value)]) $ \(paramName, value) -> do
+              rsp <- request app $ withBody "PATCH" ["plugins", "params"] (object
+                [ "plugin" .= ("http-example" :: Text)
+                , "param" .= paramName
+                , "value" .= value
+                ])
+              hresStatusCode rsp `shouldBe` 200
+          plugins <- request app (mkRequest "GET" ["plugins"])
+          pure
+            ( pluginParamValue "http-example" "density" (hresBody plugins)
+            , pluginParamValue "http-example" "enabled" (hresBody plugins)
+            )
+        widgetPlugin `shouldBe` directPlugin
+
+        widgetEnabled <- withHeadlessApp cfg $ \app -> do
+          installHttpPluginUiFixture app
+          _ <- clickWidgetHttp app "WidgetConfigToggle" Nothing Nothing
+          _ <- clickWidgetHttp app "WidgetConfigTabPipeline" Nothing Nothing
+          inventory <- request app (mkRequest "GET" ["ui", "widgets"])
+          toggleId <- requireAdvertisedWidget "WidgetPluginToggle" (hresBody inventory)
+          toggled <- clickWidgetHttp app toggleId Nothing Nothing
+          hresStatusCode toggled `shouldBe` 200
+          plugins <- request app (mkRequest "GET" ["plugins"])
+          pure (firstArrayObjectValue "plugins" "enabled" (hresBody plugins))
+        directEnabled <- withHeadlessApp cfg $ \app -> do
+          toggled <- request app $ withBody "PATCH" ["plugins", "enabled"] (object
+            [ "name" .= ("http-example" :: Text), "enabled" .= False ])
+          hresStatusCode toggled `shouldBe` 200
+          plugins <- request app (mkRequest "GET" ["plugins"])
+          pure (firstArrayObjectValue "plugins" "enabled" (hresBody plugins))
+        widgetEnabled `shouldBe` directEnabled
+
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        _ <- clickWidgetHttp app "WidgetEditorReopen" Nothing Nothing
+        let tools =
+              [ "raise", "lower", "smooth", "flatten", "noise"
+              , "paint_biome", "paint_form", "set_hardness", "erode"
+              ]
+        forM_ (zip [0 :: Int ..] tools) $ \(slot, expectedTool) -> do
+          clicked <- clickWidgetHttp app
+            ("WidgetEditorTool:" <> Text.pack (show slot)) Nothing Nothing
+          hresStatusCode clicked `shouldBe` 200
+          editor <- request app (mkRequest "GET" ["editor"])
+          lookupText "tool" (hresBody editor) `shouldBe` Just expectedTool
+        beforeWrongSlot <- request app (mkRequest "GET" ["editor"])
+        wrongSlot <- clickWidgetHttp app "WidgetEditorTool:9" Nothing Nothing
+        hresStatusCode wrongSlot `shouldBe` 503
+        afterWrongSlot <- request app (mkRequest "GET" ["editor"])
+        hresBody afterWrongSlot `shouldBe` hresBody beforeWrongSlot
+        _ <- clickWidgetHttp app "WidgetEditorClose" Nothing Nothing
+        hiddenTool <- clickWidgetHttp app "WidgetEditorTool:0" Nothing Nothing
+        hresStatusCode hiddenTool `shouldBe` 503
+        reopened <- clickWidgetHttp app "WidgetEditorReopen" Nothing Nothing
+        hresStatusCode reopened `shouldBe` 200
+
+    it "covers built-in pipeline, simulation, overlay alternatives, and real dialog persistence" $ do
+      widgetPipeline <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        _ <- clickWidgetHttp app "WidgetConfigToggle" Nothing Nothing
+        _ <- clickWidgetHttp app "WidgetConfigTabPipeline" Nothing Nothing
+        inventory <- request app (mkRequest "GET" ["ui", "widgets"])
+        pipelineWidget <- requireAdvertisedWidget "WidgetPipelineToggle" (hresBody inventory)
+        pipelineBefore <- request app (mkRequest "GET" ["pipeline"])
+        stageName <- case firstArrayObjectText "stages" "id" (hresBody pipelineBefore) of
+          Just value | Text.isInfixOf value pipelineWidget -> pure value
+          _ -> expectationFailure "advertised pipeline widget did not match the first public stage" >> pure ""
+        toggled <- clickWidgetHttp app pipelineWidget Nothing Nothing
+        hresStatusCode toggled `shouldBe` 200
+        pipelineAfter <- request app (mkRequest "GET" ["pipeline"])
+        pure (stageName, hresBody pipelineAfter)
+      let (stageName, widgetPipelineState) = widgetPipeline
+      directPipelineState <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        toggled <- request app $ withBody "PATCH" ["pipeline", "stages"] (object
+          [ "stage" .= stageName, "enabled" .= False ])
+        hresStatusCode toggled `shouldBe` 200
+        hresBody <$> request app (mkRequest "GET" ["pipeline"])
+      widgetPipelineState `shouldBe` directPipelineState
+
+      widgetSimulation <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        installSimulationFixture app
+        _ <- clickWidgetHttp app "WidgetConfigToggle" Nothing Nothing
+        _ <- clickWidgetHttp app "WidgetConfigTabPipeline" Nothing Nothing
+        ticked <- clickWidgetHttp app "WidgetSimTick" Nothing Nothing
+        hresStatusCode ticked `shouldBe` 200
+        hresBody <$> request app (mkRequest "GET" ["simulation"])
+      directSimulation <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        installSimulationFixture app
+        ticked <- request app $ withBody "POST" ["simulation", "tick"]
+          (object ["count" .= (1 :: Int)])
+        hresStatusCode ticked `shouldBe` 200
+        hresBody <$> request app (mkRequest "GET" ["simulation"])
+      widgetSimulation `shouldBe` directSimulation
+
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        installHttpOverlayTerrain app
+        _ <- clickWidgetHttp app "WidgetLeftTabView" Nothing Nothing
+        forM_
+          [ "WidgetOverlayManager", "WidgetOverlaySchema", "WidgetOverlayProvenance"
+          , "WidgetOverlayExport", "WidgetOverlayImportValidate"
+          ] $ \widgetId -> do
+            capability <- getWidgetStateHttp app widgetId
+            lookupValue "support" (hresBody capability)
+              `shouldBe` Just (String "non_clickable")
+            rejected <- clickWidgetHttp app widgetId Nothing Nothing
+            assertWidgetError 400 "invalid_request" rejected
+        hresStatusCode <$> request app (mkRequest "GET" ["overlays"]) `shouldReturn` 200
+        hresStatusCode <$> request app (mkRequest "GET" ["overlays", "schema"])
+          { hreqQuery = [("overlay", Just "weather")] } `shouldReturn` 200
+        hresStatusCode <$> request app (mkRequest "GET" ["overlays", "provenance"])
+          { hreqQuery = [("overlay", Just "weather")] } `shouldReturn` 200
+        exported <- request app $ withBody "POST" ["overlays", "export"]
+          (object ["overlay" .= ("weather" :: Text)])
+        hresStatusCode exported `shouldBe` 200
+        validated <- request app $ withBody "POST" ["overlays", "import", "validate"] badDenseOverlayImport
+        hresStatusCode validated `shouldBe` 200
+
+      withHttpSmokeTempHome $ \home -> withTemporaryTopoHome home $
+        withHeadlessApp defaultHeadlessConfig $ \app -> do
+          _ <- clickWidgetHttp app "WidgetConfigToggle" Nothing Nothing
+          opened <- clickWidgetHttp app "WidgetConfigPresetSave" Nothing Nothing
+          hresStatusCode opened `shouldBe` 200
+          textSet <- request app $ withBody "PUT" ["ui", "dialog", "text"]
+            (object ["text" .= ("http-parity-preset" :: Text)])
+          hresStatusCode textSet `shouldBe` 200
+          confirmed <- request app $ withBody "POST" ["ui", "key"]
+            (object ["key" .= ("enter" :: Text)])
+          hresStatusCode confirmed `shouldBe` 200
+          presets <- request app (mkRequest "GET" ["presets"])
+          arrayFieldContainsText "presets" "http-parity-preset" (hresBody presets)
+            `shouldBe` True
+          lookupText "menu_mode" . hresBody <$> request app (mkRequest "GET" ["ui", "dialog"])
+            `shouldReturn` Just "none"
+          _ <- clickWidgetHttp app "WidgetConfigPresetLoad" Nothing Nothing
+          missingIndex <- clickWidgetHttp app "WidgetPresetLoadItem" Nothing Nothing
+          assertWidgetError 400 "invalid_request" missingIndex
+          outOfRange <- clickWidgetHttp app "WidgetPresetLoadItem" Nothing (Just 99)
+          assertWidgetError 400 "invalid_request" outOfRange
+          selected <- clickWidgetHttp app "WidgetPresetLoadItem" Nothing (Just 0)
+          hresStatusCode selected `shouldBe` 200
+          loaded <- clickWidgetHttp app "WidgetPresetLoadOk" Nothing Nothing
+          hresStatusCode loaded `shouldBe` 200
+          _ <- clickWidgetHttp app "WidgetConfigPresetSave" Nothing Nothing
+          _ <- request app $ withBody "PUT" ["ui", "dialog", "text"]
+            (object ["text" .= ("http-direct-confirm" :: Text)])
+          directConfirmed <- request app (mkRequest "POST" ["ui", "dialog", "confirm"])
+          hresStatusCode directConfirmed `shouldBe` 200
+          _ <- clickWidgetHttp app "WidgetConfigPresetLoad" Nothing Nothing
+          cancelled <- request app (mkRequest "POST" ["ui", "dialog", "cancel"])
+          hresStatusCode cancelled `shouldBe` 200
+
+    it "locks visibility, modal, unsupported, argument, and error mappings without state drift" $
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        _ <- clickWidgetHttp app "WidgetLeftToggle" Nothing Nothing
+        hiddenState <- getWidgetStateHttp app "WidgetChunkMinus"
+        lookupValue "visible" (hresBody hiddenState) `shouldBe` Just (Bool False)
+        lookupValue "enabled" (hresBody hiddenState) `shouldBe` Just (Bool False)
+        beforeHidden <- publicUiReadSet app
+        hidden <- clickWidgetHttp app "WidgetChunkMinus" Nothing Nothing
+        assertWidgetError 503 "unavailable" hidden
+        publicUiReadSet app `shouldReturn` beforeHidden
+
+        _ <- clickWidgetHttp app "WidgetLeftToggle" Nothing Nothing
+        _ <- clickWidgetHttp app "WidgetLeftTabView" Nothing Nothing
+        basis <- getWidgetStateHttp app "WidgetViewBasisAverage"
+        lookupValue "visible" (hresBody basis) `shouldBe` Just (Bool True)
+        lookupValue "enabled" (hresBody basis) `shouldBe` Just (Bool False)
+        beforeBasis <- viewProjection app
+        disabled <- clickWidgetHttp app "WidgetViewBasisAverage" Nothing Nothing
+        assertWidgetError 409 "rejected" disabled
+        viewProjection app `shouldReturn` beforeBasis
+
+        manager <- getWidgetStateHttp app "WidgetOverlayManager"
+        lookupValue "support" (hresBody manager) `shouldBe` Just (String "non_clickable")
+        lookupValue "alternative" (hresBody manager) `shouldBe` Just (String "get_overlays")
+        unsupported <- clickWidgetHttp app "WidgetOverlayManager" Nothing Nothing
+        assertWidgetError 400 "invalid_request" unsupported
+        hresStatusCode <$> request app (mkRequest "GET" ["overlays"]) `shouldReturn` 200
+
+        _ <- clickWidgetHttp app "WidgetLeftTabTopo" Nothing Nothing
+        localOnly <- clickWidgetHttp app "WidgetSeedValue" Nothing Nothing
+        assertWidgetError 400 "invalid_request" localOnly
+        randomLocal <- clickWidgetHttp app "WidgetSeedRandom" Nothing Nothing
+        assertWidgetError 400 "invalid_request" randomLocal
+        compatibility <- getWidgetStateHttp app "WidgetViewElevation"
+        lookupValue "support" (hresBody compatibility)
+          `shouldBe` Just (String "compatibility_only")
+        compatibilityClick <- clickWidgetHttp app "WidgetViewElevation" Nothing Nothing
+        hresStatusCode compatibilityClick `shouldBe` 200
+        seed <- request app $ withBody "POST" ["ui", "seed"] (object ["seed" .= (9 :: Int)])
+        hresStatusCode seed `shouldBe` 200
+
+        unknown <- clickWidgetHttp app "WidgetDefinitelyUnknown" Nothing Nothing
+        assertWidgetError 404 "not_found" unknown
+        missing <- request app $ withBody "POST" ["ui", "widgets", "click"] (object [])
+        hresStatusCode missing `shouldBe` 400
+
+        escape <- request app $ withBody "POST" ["ui", "key"]
+          (object ["key" .= ("escape" :: Text)])
+        hresStatusCode escape `shouldBe` 200
+        dialog <- request app (mkRequest "GET" ["ui", "dialog"])
+        lookupText "menu_mode" (hresBody dialog) `shouldBe` Just "escape_menu"
+        menuInventory <- request app (mkRequest "GET" ["ui", "widgets"])
+        widgetIds (hresBody menuInventory)
+          `shouldBe` ["WidgetMenuSave", "WidgetMenuLoad", "WidgetMenuExit"]
+        menuExit <- clickWidgetHttp app "WidgetMenuExit" Nothing Nothing
+        assertWidgetError 400 "invalid_request" menuExit
+        modalBefore <- publicUiReadSet app
+        blocked <- clickWidgetHttp app "WidgetChunkMinus" Nothing Nothing
+        assertWidgetError 503 "unavailable" blocked
+        publicUiReadSet app `shouldReturn` modalBefore
+        _ <- clickWidgetHttp app "WidgetMenuSave" Nothing Nothing
+        saveDialog <- request app (mkRequest "GET" ["ui", "dialog"])
+        lookupText "menu_mode" (hresBody saveDialog) `shouldBe` Just "world_save"
+        cancelled <- clickWidgetHttp app "WidgetWorldSaveCancel" Nothing Nothing
+        hresStatusCode cancelled `shouldBe` 200
+        lookupText "menu_mode" . hresBody <$> request app (mkRequest "GET" ["ui", "dialog"])
+          `shouldReturn` Just "none"
 
   describe "ordered HTTP mutation publication matrix" $ do
     forM_ httpUiPublicationCases $ \(label, setup, routeRequest, atlasExpectation, assertUi) ->
@@ -1441,6 +1835,7 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/ui/overlay", "put", "UiOverlaySetResponse")
           , ("/ui/widgets", "get", "WidgetListResponse")
           , ("/ui/widget-state", "get", "WidgetStateResponse")
+          , ("/ui/widgets/click", "post", "WidgetClickResponse")
           , ("/terrain/hex", "get", "TerrainHexResponse")
           ] :: [(Text, Text, Text)]
         requestRefs =
@@ -1459,6 +1854,7 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/ui/view-mode", "post", "UiViewModeSetRequest")
           , ("/ui/view", "post", "UiViewSetRequest")
           , ("/ui/overlay", "put", "UiOverlaySetRequest")
+          , ("/ui/widgets/click", "post", "WidgetClickRequest")
           ] :: [(Text, Text, Text)]
     forM_ responseRefs $ \(path, routeMethod, schemaName) -> do
       operationResponseSchemaRef doc path routeMethod "200" `shouldBe` Just schemaName
@@ -1482,6 +1878,23 @@ spec = describe "Seer.HTTP.Server" $ do
       `shouldBe` Just ["renderer", "headless"]
     componentPropertyDescription doc "ScreenshotTakeRequest" "path"
       `shouldSatisfy` maybe False (Text.isInfixOf "sandbox-relative")
+    componentPropertyNames doc "WidgetClickRequest"
+      `shouldBe` Just ["item_index", "normalized_position", "widget_id"]
+    componentRequiredFields doc "WidgetClickRequest" `shouldBe` Just ["widget_id"]
+    (lookupValue "minimum" =<< componentProperty doc "WidgetClickRequest" "normalized_position")
+      `shouldBe` Just (Number 0)
+    (lookupValue "maximum" =<< componentProperty doc "WidgetClickRequest" "normalized_position")
+      `shouldBe` Just (Number 1)
+    (lookupValue "minimum" =<< componentProperty doc "WidgetClickRequest" "item_index")
+      `shouldBe` Just (Number 0)
+    componentPropertyNames doc "WidgetClickResponse"
+      `shouldBe` Just ["changed", "info", "operation", "request_id", "status", "widget_id"]
+    componentPropertyEnum doc "WidgetClickResponse" "status"
+      `shouldBe` Just ["completed", "accepted"]
+    queryParameterInfo doc "/ui/widget-state" "get"
+      `shouldBe` Just [("widget_id", True)]
+    operationResponseStatuses doc "/ui/widgets/click" "post"
+      `shouldSatisfy` maybe False (\statuses -> all (`elem` statuses) ["400", "404", "409", "503"])
     componentPropertyNames doc "WidgetListResponse"
       `shouldSatisfy` maybe False (\actual -> all (`elem` actual)
         ["widgets", "widget_count", "categories", "capabilities", "data_browser_state"])
@@ -2020,6 +2433,144 @@ assertHttpAtlasJobsMatch actual expected = do
   map (\job -> (ajHexRadius job, ajAtlasScale job)) actual
     `shouldBe` map (\job -> (ajHexRadius job, ajAtlasScale job)) expected
 
+widgetIds :: Value -> [Text]
+widgetIds body =
+  [ widgetId
+  | Just (Array values) <- [lookupValue "widgets" body]
+  , String widgetId <- toList values
+  ]
+
+categoryWidgetIds :: Text -> Value -> [Text]
+categoryWidgetIds category body =
+  [ widgetId
+  | Just (Object categories) <- [lookupValue "categories" body]
+  , Just (Array values) <- [KM.lookup (Key.fromText category) categories]
+  , String widgetId <- toList values
+  ]
+
+widgetCapabilitiesFrom :: Value -> [Value]
+widgetCapabilitiesFrom body = case lookupValue "capabilities" body of
+  Just (Array values) -> toList values
+  _ -> []
+
+assertCanonicalWidgetInventory :: HeadlessApp -> IO Value
+assertCanonicalWidgetInventory app = do
+  listed <- request app (mkRequest "GET" ["ui", "widgets"])
+  hresStatusCode listed `shouldBe` 200
+  let body = hresBody listed
+      ids = widgetIds body
+      capabilities = widgetCapabilitiesFrom body
+      categories =
+        [ "navigation", "generation", "config", "view_modes", "log"
+        , "simulation", "sliders", "pipeline", "plugins", "data_browser"
+        , "editor", "menu"
+        ]
+  lookupValue "widget_count" body `shouldBe` Just (Number (fromIntegral (length ids)))
+  length ids `shouldBe` length (nub ids)
+  map (lookupText "widget_id") capabilities `shouldBe` map Just ids
+  let categorized = concatMap (`categoryWidgetIds` body) categories
+  sort categorized `shouldBe` sort ids
+  forM_ categories $ \category -> do
+    let members = categoryWidgetIds category body
+    filter (`elem` members) ids `shouldBe` members
+  forM_ capabilities $ \capability ->
+    lookupValue "visible" capability `shouldBe` Just (Bool True)
+  forM_ (zip ids capabilities) $ \(widgetId, capability) -> do
+    state <- getWidgetStateHttp app widgetId
+    hresStatusCode state `shouldBe` 200
+    forM_
+      [ "widget_id", "component", "category", "active", "visible", "enabled"
+      , "preconditions", "support", "required_argument", "alternative"
+      ] $ \field ->
+        lookupValue field (hresBody state) `shouldBe` lookupValue field capability
+  pure body
+
+clickWidgetHttp
+  :: HeadlessApp
+  -> Text
+  -> Maybe Double
+  -> Maybe Int
+  -> IO HttpResponse
+clickWidgetHttp app widgetId normalizedPosition itemIndex =
+  request app (mkRequest "POST" ["ui", "widgets", "click"])
+    { hreqBody = Just $ object $
+        [ "widget_id" .= widgetId ]
+        ++ maybe [] (\position -> ["normalized_position" .= position]) normalizedPosition
+        ++ maybe [] (\index -> ["item_index" .= index]) itemIndex
+    }
+
+getWidgetStateHttp :: HeadlessApp -> Text -> IO HttpResponse
+getWidgetStateHttp app widgetId = request app (mkRequest "GET" ["ui", "widget-state"])
+  { hreqQuery = [("widget_id", Just widgetId)] }
+
+assertCompletedWidgetClick :: Text -> Bool -> HttpResponse -> Expectation
+assertCompletedWidgetClick widgetId changed response = do
+  hresStatusCode response `shouldBe` 200
+  lookupText "widget_id" (hresBody response) `shouldBe` Just widgetId
+  lookupText "status" (hresBody response) `shouldBe` Just "completed"
+  lookupValue "changed" (hresBody response) `shouldBe` Just (Bool changed)
+  objectHasKey "info" (hresBody response) `shouldBe` True
+
+assertWidgetError :: Int -> Text -> HttpResponse -> Expectation
+assertWidgetError status code response = do
+  hresStatusCode response `shouldBe` status
+  lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just code
+  lookupValue "status" (hresBody response) `shouldBe` Nothing
+
+immediatePanelLogProjection :: HeadlessApp -> IO Value
+immediatePanelLogProjection app = do
+  panels <- request app (mkRequest "GET" ["ui", "panels"])
+  uiState <- request app (mkRequest "GET" ["ui", "state"])
+  logs <- request app (mkRequest "GET" ["logs"])
+  map hresStatusCode [panels, uiState, logs] `shouldBe` [200, 200, 200]
+  pure $ object
+    [ "panels" .= hresBody panels
+    , "ui_state" .= hresBody uiState
+    , "logs" .= hresBody logs
+    ]
+
+viewProjection :: HeadlessApp -> IO Value
+viewProjection app = do
+  views <- request app (mkRequest "GET" ["state", "views"])
+  uiState <- request app (mkRequest "GET" ["ui", "state"])
+  map hresStatusCode [views, uiState] `shouldBe` [200, 200]
+  pure $ object
+    [ "views" .= lookupValue "view" (hresBody views)
+    , "ui_view" .= lookupValue "view" (hresBody uiState)
+    ]
+
+publicUiReadSet :: HeadlessApp -> IO [Value]
+publicUiReadSet app = mapM (fmap hresBody . request app)
+  [ mkRequest "GET" ["state"]
+  , mkRequest "GET" ["ui", "state"]
+  , mkRequest "GET" ["ui", "widgets"]
+  ]
+
+requireAdvertisedWidget :: Text -> Value -> IO Text
+requireAdvertisedWidget constructor body = case filter (Text.isInfixOf constructor) (widgetIds body) of
+  widgetId:_ -> pure widgetId
+  [] -> expectationFailure ("missing advertised widget constructor " <> Text.unpack constructor) >> pure ""
+
+firstArrayObjectValue :: Text -> Text -> Value -> Maybe Value
+firstArrayObjectValue arrayField objectField body = do
+  Array values <- lookupValue arrayField body
+  Object firstValue <- case toList values of
+    value:_ -> Just value
+    [] -> Nothing
+  KM.lookup (Key.fromText objectField) firstValue
+
+firstArrayObjectText :: Text -> Text -> Value -> Maybe Text
+firstArrayObjectText arrayField objectField body = do
+  String text <- firstArrayObjectValue arrayField objectField body
+  pure text
+
+pluginParamValue :: Text -> Text -> Value -> Maybe Value
+pluginParamValue pluginName paramName body = do
+  Array plugins <- lookupValue "plugins" body
+  Object plugin <- find (\value -> lookupText "name" value == Just pluginName) (toList plugins)
+  Object params <- KM.lookup "params" plugin
+  KM.lookup (Key.fromText paramName) params
+
 request :: HeadlessApp -> HttpRequest -> IO HttpResponse
 request app req = handleHttpRequest defaultHttpServerConfig headlessAppService (headlessServiceContext app) req
 
@@ -2303,6 +2854,12 @@ assertFriendlyHttpEvent ctx requestId topic operationId routeMethod path service
     _ -> expectationFailure
       ("expected one friendly HTTP event for " <> Text.unpack requestId <> ", got " <> show events)
 
+arrayFieldLength :: Text -> Value -> Int
+arrayFieldLength field (Object obj) = case KM.lookup (Key.fromText field) obj of
+  Just (Array values) -> length values
+  _ -> 0
+arrayFieldLength _ _ = 0
+
 arrayFieldContainsText :: Text -> Text -> Value -> Bool
 arrayFieldContainsText field expected (Object obj) = case KM.lookup (Key.fromText field) obj of
   Just (Array values) -> String expected `elem` toList values
@@ -2392,6 +2949,12 @@ installTerrainFixture app = do
       chunkId = chunkIdFromCoord (ChunkCoord 0 0)
   setTerrainChunkData (ahDataHandle handles) (wcChunkSize cfg) [(chunkId, emptyTerrainChunk cfg)]
   publishHttpTerrainFixture handles
+
+installSimulationFixture :: HeadlessApp -> IO ()
+installSimulationFixture app = do
+  installTerrainFixture app
+  setTerrainChunkCount (ahDataHandle (httpHandles app)) 1
+  setUiWorldConfig (ahUiHandle (httpHandles app)) (Just defaultSnapshot)
 
 badDenseOverlayImport :: Value
 badDenseOverlayImport = object
@@ -2622,6 +3185,14 @@ withHttpPluginDir action = bracket setup teardown (const action)
 httpPluginDirEnv :: String
 httpPluginDirEnv = "TOPO_PLUGIN_DIR"
 
+installHttpPluginUiFixture :: HeadlessApp -> IO ()
+installHttpPluginUiFixture app = do
+  let uiHandle = ahUiHandle (httpHandles app)
+  setUiPluginNames uiHandle ["http-example"]
+  setUiPluginParamSpecs uiHandle (Map.singleton "http-example" httpPluginParamSpecs)
+  setUiPluginParam uiHandle "http-example" "enabled" (Bool True)
+  setUiPluginParam uiHandle "http-example" "density" (Number 15)
+
 httpPluginManifest :: Value
 httpPluginManifest = object
   [ "manifestVersion" .= manifestV3
@@ -2645,6 +3216,14 @@ httpPluginParamSpecs =
       , rpsType = ParamBool
       , rpsRange = Nothing
       , rpsDefault = Bool True
+      , rpsTooltip = ""
+      }
+  , RPCParamSpec
+      { rpsName = "density"
+      , rpsLabel = "Density"
+      , rpsType = ParamFloat
+      , rpsRange = Just (Number 10, Number 20)
+      , rpsDefault = Number 15
       , rpsTooltip = ""
       }
   ]
