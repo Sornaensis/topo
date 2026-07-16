@@ -32,7 +32,7 @@ import Topo.Plugin.RPC.Manifest
   , RPCManifest(..), RPCManifestRuntime(..), RPCOverlayDecl(..), RPCSimulationDecl(..), RPCUIHints(..)
   , manifestV3, parseManifestFile, validateManifest
   )
-import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
+import Topo.Plugin.RPC.Protocol (currentProtocolVersion, maximumSupportedProtocolVersion)
 import Topo.Plugin.SDK (generateManifest, pluginManifestFileName)
 import Topo.Simulation.Schedule (hourlyScheduleDecl)
 
@@ -43,7 +43,7 @@ main = hspec $ do
       let manifest = generateManifest CivExample.civPlugin
       rmManifestVersion manifest `shouldBe` manifestV3
       rmrProtocolMin (rmRuntime manifest) `shouldBe` currentProtocolVersion
-      rmrProtocolMax (rmRuntime manifest) `shouldBe` currentProtocolVersion
+      rmrProtocolMax (rmRuntime manifest) `shouldBe` maximumSupportedProtocolVersion
       rmrTopoMin (rmRuntime manifest) `shouldBe` Just "1.0"
       ruiDisplayName (rmUiHints manifest) `shouldBe` Just "Civilization"
       rmGenerator manifest `shouldSatisfy` maybe False (const True)

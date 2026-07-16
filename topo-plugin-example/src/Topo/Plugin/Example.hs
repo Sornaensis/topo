@@ -60,11 +60,48 @@ terrainRoughenPlugin = defaultPluginDef
       , gdRequires    = ["erosion"]
       , gdRun         = runRoughenGenerator
       }
+  , pdGeneratorScope = Just GeneratorScopeDef
+      { gsdInsertAfter = "erosion"
+      , gsdRequires = ["erosion"]
+      , gsdScope = terrainOnlyScope
+      , gsdRun = runScopedRoughenGenerator
+      }
   }
 
 ------------------------------------------------------------------------
 -- Generator: roughen terrain
 ------------------------------------------------------------------------
+
+-- | Exact terrain-only v5 declaration. The legacy callback above is the broad
+-- v4 fallback, so this example intentionally advertises protocol 4..5.
+terrainOnlyScope :: RPCInvocationScopeDecl
+terrainOnlyScope = RPCInvocationScopeDecl
+  { risdInput = RPCScopeInput
+      { rsiTerrainSections = [TerrainElevation]
+      , rsiChunkSelector = SelectAllInvocationChunks
+      , rsiDependencyOverlays = []
+      , rsiOwnOverlay = False
+      }
+  , risdOutput = RPCScopeOutput
+      { rsoTerrainSections = [TerrainElevation]
+      , rsoChunkSelector = SelectAllInvocationChunks
+      , rsoOwnedOverlay = False
+      , rsoGeneratorMetadata = False
+      }
+  , risdBudgets = RPCScopeBudgets maxBound maxBound maxBound
+  }
+
+runScopedRoughenGenerator :: GeneratorContext -> IO (Either Text GeneratorTickResult)
+runScopedRoughenGenerator ctx = do
+  gcLog ctx "terrain-roughen: scoped generator invoked"
+  case gcTerrain ctx of
+    Nothing -> pure (Left "terrain-roughen: resolved scope omitted elevation")
+    Just world -> do
+      let roughness = paramFloat (gcParams ctx) "roughness" 0.3
+          iters = paramInt (gcParams ctx) "iterations" 2
+          roughened = applyRoughening (gcSeed ctx) roughness iters world
+      reportGeneratorProgress ctx "terrain-roughen: terrain modified" 0.8
+      pure (generatorResultFromScopedTerrain ctx roughened)
 
 -- | Apply pseudo-random elevation perturbations to the terrain.
 --

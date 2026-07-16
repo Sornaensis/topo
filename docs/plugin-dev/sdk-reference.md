@@ -14,11 +14,14 @@ Top-level plugin definition. Use `defaultPluginDef` as a starting point.
 | `pdRuntimeTopoMin` / `pdRuntimeTopoMax` | `Maybe Text` | Optional Topo host version bounds |
 | `pdParams` | `[ParamDef]` | User-facing parameters |
 | `pdSchemaFile` | `Maybe FilePath` | Overlay schema file |
-| `pdGenerator` | `Maybe GeneratorDef` | Generator participation |
-| `pdSimulation` | `Maybe SimulationDef` | Plugin simulation declaration; dependencies are simulation node IDs and may reference host built-ins like `weather` |
+| `pdGenerator` | `Maybe GeneratorDef` | Explicit broad protocol-v4 generator adapter |
+| `pdSimulation` | `Maybe SimulationDef` | Explicit broad protocol-v4 simulation adapter |
+| `pdGeneratorScope` | `Maybe GeneratorScopeDef` | Native protocol-v5 generator scope and narrowed callback |
+| `pdSimulationScope` | `Maybe SimulationScopeDef` | Native protocol-v5 simulation scope and narrowed callback |
 | `pdCapabilities` | `[RPCCapability]` | Explicit extra capabilities, for example `CapWriteTerrain` |
 | `pdDataDirectory` | `Maybe FilePath` | Plugin data directory under the world save |
-| `pdDataResources` | `[DataResourceDef]` | Data-service resource schemas and handlers |
+| `pdDataResources` | `[DataResourceDef]` | Data-service resource schemas and legacy handlers |
+| `pdScopedDataHandlers` | `Map Text ScopedDataHandler` | Native data-only callbacks keyed by resource name |
 | `pdUiHints` | `RPCUIHints` | Manifest v3 UI presentation hints |
 | `pdExternalDataSources` | `[RPCExternalDataSourceDecl]` | Provider-owned external data sources, grants, status, opaque config refs, and connection metadata |
 | `pdExternalDataSourceRefs` | `[RPCExternalDataSourceRef]` | Consumed external data sources, requested grants, status, opaque config refs, and reference metadata |
@@ -67,7 +70,39 @@ Use `generatorResultFromTerrain` or related payload helpers when returning modif
 `defaultSimulationTickResult` returns an empty overlay payload with no terrain writes.
 Simulation plugins that return terrain writes should add `CapWriteTerrain` to `pdCapabilities`.
 
-## PluginContext
+## Protocol-v5 scoped definitions
+
+`GeneratorScopeDef` and `SimulationScopeDef` pair pipeline metadata with an
+`RPCInvocationScopeDecl` and a narrowed callback. Terrain sections, chunk
+selection, dependency overlays, own-overlay access, output sections, output
+chunks, metadata policy, and budgets are explicit. The SDK infers capabilities
+from these declarations: an `ssdTick` alone does not imply `readTerrain`.
+Scoped-only definitions advertise protocol 5; a definition with both legacy and
+scoped adapters advertises 4..5 and uses the broad v4 callback only as fallback.
+
+The runner requires an inline, digest-bound `ResolvedInvocationScope`, rejects
+unknown or widened grants before callback entry, filters dependency overlays,
+and validates terrain sections/chunks, duplicate writes, owned-overlay output,
+and generator metadata before sending a result.
+
+Common declarations include:
+
+- terrain-only generator: input/output `[TerrainElevation]`, no overlays;
+- no-terrain overlay simulation: empty terrain sections, own overlay enabled;
+- dependency subset: list only required names in `rsiDependencyOverlays`;
+- simulation writer: list output sections/chunks; `CapWriteTerrain` is inferred.
+
+`GeneratorContext` and `SimulationContext` expose `Maybe TerrainWorld` and
+`Maybe Value` inputs. `Nothing` means unavailable, not an empty global world.
+`DataContext` exposes exact resource, operation, page, query/mutation identity,
+parameters, logging, progress, and world path only—never terrain, overlays, or
+seed. Put native handlers in `pdScopedDataHandlers`; `drdHandler` remains the
+explicit legacy stub-world adapter.
+
+## PluginContext (legacy adapter)
+
+`PluginContext` is retained for the broad v4 generator/simulation and legacy
+data-handler adapters. New protocol-v5 callbacks should use the scoped contexts.
 
 Runtime context provided to callbacks.
 

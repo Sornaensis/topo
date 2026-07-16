@@ -9,7 +9,9 @@ import Data.Aeson (Value(..), (.:), (.=), object)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes (parseMaybe)
 import Data.IORef (atomicModifyIORef', newIORef)
+import qualified Data.IntSet as IntSet
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -72,11 +74,17 @@ import Topo.Plugin.RPC.Manifest
   , RPCExternalDataSourceStatus(..)
   , RPCExternalDataSourceStatusState(..)
   , RPCManifest(..), RPCManifestRuntime(..), RPCSimulationDecl(..)
+  , RPCInvocationScopes(..), RPCInvocationScopeDecl(..)
+  , RPCScopeInput(..), RPCScopeOutput(..), RPCScopeBudgets(..)
+  , RPCChunkSelector(..), TerrainSection(..)
   , RPCRestartMode(..), RPCStartPolicy(..), RPCUIHints(..)
   , defaultRPCExternalDataSourceStatus
   , defaultRPCStartPolicy, defaultRPCUIHints
   , manifestV3, parseManifestFile, validateManifest
   )
+import Topo.Plugin.RPC.Scope
+  ( RPCDataOperation(..), RPCInvocationKind(..), RPCInvocationScopeBinding(..)
+  , ResolvedInvocationScope(..), resolvedInvocationScopeDigest )
 import Topo.Plugin.RPC.ExternalDataSource
   ( RPCExternalDataSourceGrantMessage(..)
   , RPCExternalDataSourceGrantRevocation(..)
@@ -130,6 +138,7 @@ spec = describe "SDK runner pipe integration" $ do
     ruiDisplayName (rmUiHints manifest) `shouldBe` Just (pdName generatorPlugin)
     rmExternalDataSources manifest `shouldBe` []
     rmExternalDataSourceRefs manifest `shouldBe` []
+    (riscGenerator =<< rmInvocationScopes manifest) `shouldSatisfy` maybe False (const True)
     validateManifest manifest `shouldBe` []
 
   it "maps PluginDef v3 manifest fields without hand-edited compatibility JSON" $ do
@@ -187,6 +196,136 @@ spec = describe "SDK runner pipe integration" $ do
     rmCapabilities manifest `shouldSatisfy` notElem CapWriteTerrain
     (rsdSchedule <$> rmSimulation manifest) `shouldBe` Just hourlyScheduleDecl
     validateManifest manifest `shouldBe` []
+
+  it "emits protocol 5 scopes and infers capabilities from exact native declarations" $ do
+    let manifest = generateManifest nativeNoTerrainSimulationPlugin
+    rmrProtocolMin (rmRuntime manifest) `shouldBe` 5
+    rmrProtocolMax (rmRuntime manifest) `shouldBe` 5
+    rmCapabilities manifest `shouldSatisfy` notElem CapReadTerrain
+    rmCapabilities manifest `shouldSatisfy` elem CapReadOverlay
+    rmCapabilities manifest `shouldSatisfy` elem CapWriteOverlay
+    (riscSimulation =<< rmInvocationScopes manifest) `shouldBe` Just noTerrainSimulationScope
+    validateManifest manifest `shouldBe` []
+    case Aeson.fromJSON (Aeson.toJSON manifest) of
+      Aeson.Error err -> expectationFailure err
+      Aeson.Success roundTripped -> roundTripped `shouldBe` manifest
+    let writerScope = noTerrainSimulationScope
+          { risdOutput = (risdOutput noTerrainSimulationScope)
+              { rsoTerrainSections = [TerrainElevation] }
+          }
+        writer = nativeNoTerrainSimulationPlugin
+          { pdSimulationScope = fmap (\definition -> definition { ssdScope = writerScope })
+              (pdSimulationScope nativeNoTerrainSimulationPlugin)
+          }
+    rmCapabilities (generateManifest writer) `shouldSatisfy` elem CapWriteTerrain
+
+  it "advertises 4..5 only when legacy and scoped adapters are both present" $ do
+    let manifest = generateManifest (nativeNoTerrainSimulationPlugin
+          { pdSimulation = pdSimulation simulationPlugin })
+    rmrProtocolMin (rmRuntime manifest) `shouldBe` 4
+    rmrProtocolMax (rmRuntime manifest) `shouldBe` 5
+
+  it "acknowledges protocol 5 and rejects missing bindings instead of falling back to v4" $
+    withTransportPair $ \host plugin -> do
+      seen <- newEmptyMVar
+      let dual = (nativeGeneratorPlugin seen False)
+            { pdGenerator = pdGenerator generatorPlugin }
+      done <- startSession dual plugin
+      sendEnvelope host RPCEnvelope
+        { envType = MsgHandshake
+        , envPayload = Aeson.toJSON Handshake
+            { hsProtocolVersion = 5
+            , hsWorldPath = Nothing
+            , hsHostCapabilities = []
+            , hsAuthChallenge = Nothing
+            }
+        , envRequestId = Just 810
+        }
+      ackEnvelope <- recvEnvelope host
+      case Aeson.fromJSON (envPayload ackEnvelope) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (ack :: HandshakeAck) -> haProtocolVersion ack `shouldBe` 5
+      sendEnvelope host (generatorInvoke 812)
+      rejected <- recvEnvelope host
+      envType rejected `shouldBe` MsgError
+      timeout 100000 (takeMVar seen) `shouldReturn` Nothing
+      shutdownAndWait host done
+
+  it "uses the explicit broad adapter after protocol 4 negotiation even when a binding is present" $
+    withTransportPair $ \host plugin -> do
+      seen <- newEmptyMVar
+      let dual = (nativeGeneratorPlugin seen False)
+            { pdGenerator = pdGenerator generatorPlugin }
+      done <- startSession dual plugin
+      sendEnvelope host RPCEnvelope
+        { envType = MsgHandshake
+        , envPayload = Aeson.toJSON Handshake
+            { hsProtocolVersion = 4
+            , hsWorldPath = Nothing
+            , hsHostCapabilities = []
+            , hsAuthChallenge = Nothing
+            }
+        , envRequestId = Just 814
+        }
+      _ <- recvEnvelope host
+      sendEnvelope host (nativeGeneratorInvoke emptyGeneratorResolvedScope)
+      response <- recvEnvelope host
+      envType response `shouldBe` MsgGeneratorResult
+      timeout 100000 (takeMVar seen) `shouldReturn` Nothing
+      shutdownAndWait host done
+
+  it "passes a verified narrowed scope to a native callback without fabricating terrain" $
+    withTransportPair $ \host plugin -> do
+      seen <- newEmptyMVar
+      done <- startSession (nativeGeneratorPlugin seen False) plugin
+      sendEnvelope host (nativeGeneratorInvoke emptyGeneratorResolvedScope)
+      result <- recvEnvelope host
+      envType result `shouldBe` MsgGeneratorResult
+      (terrainSeen, scopeSeen) <- takeMVar seen
+      terrainSeen `shouldBe` False
+      risScopeId scopeSeen `shouldBe` risScopeId emptyGeneratorResolvedScope
+      shutdownAndWait host done
+
+  it "delivers only scoped simulation overlays and rejects out-of-scope overlay writes" $
+    withTransportPair $ \host plugin -> do
+      seen <- newEmptyMVar
+      done <- startSession (nativeSimulationPlugin seen False) plugin
+      sendEnvelope host (nativeSimulationInvoke emptySimulationResolvedScope)
+      response <- recvEnvelope host
+      envType response `shouldBe` MsgSimulationResult
+      (terrainSeen, ownSeen, overlayNames) <- takeMVar seen
+      terrainSeen `shouldBe` False
+      ownSeen `shouldBe` True
+      overlayNames `shouldBe` ["weather"]
+      shutdownAndWait host done
+      withTransportPair $ \host2 plugin2 -> do
+        seen2 <- newEmptyMVar
+        done2 <- startSession (nativeSimulationPlugin seen2 True) plugin2
+        sendEnvelope host2 (nativeSimulationInvoke emptySimulationResolvedScope)
+        rejected <- recvEnvelope host2
+        envType rejected `shouldBe` MsgError
+        shutdownAndWait host2 done2
+
+  it "rejects widened host scopes and out-of-scope generator metadata before sending results" $
+    withTransportPair $ \host plugin -> do
+      seen <- newEmptyMVar
+      done <- startSession (nativeGeneratorPlugin seen False) plugin
+      sendEnvelope host (nativeGeneratorInvoke widenedGeneratorResolvedScope)
+      widened <- recvEnvelope host
+      envType widened `shouldBe` MsgError
+      timeout 100000 (takeMVar seen) `shouldReturn` Nothing
+      shutdownAndWait host done
+      withTransportPair $ \host2 plugin2 -> do
+        seen2 <- newEmptyMVar
+        done2 <- startSession (nativeGeneratorPlugin seen2 True) plugin2
+        sendEnvelope host2 (nativeGeneratorInvoke emptyGeneratorResolvedScope)
+        rejected <- recvEnvelope host2
+        envType rejected `shouldBe` MsgError
+        case Aeson.fromJSON (envPayload rejected) of
+          Aeson.Error err -> expectationFailure err
+          Aeson.Success (pluginErr :: PluginError) ->
+            peMessage pluginErr `shouldSatisfy` Text.isInfixOf "metadata output is not granted"
+        shutdownAndWait host2 done2
 
   it "emits explicit terrain write capability when a simulation requests it" $ do
     let manifest = generateManifest (simulationPlugin
@@ -319,6 +458,32 @@ spec = describe "SDK runner pipe integration" $ do
       envRequestId resultEnv `shouldBe` Just 142
       shutdownAndWait host done
 
+  it "passes exact resource, operation, page, and query identity to scoped data callbacks" $
+    withTransportPair $ \host plugin -> do
+      seen <- newEmptyMVar
+      done <- startSession (scopedDataPlugin seen) plugin
+      let request = QueryResource
+            { qrResource = "items"
+            , qrQuery = QueryByField "name" (String "Shield")
+            , qrPageSize = Just 25
+            , qrPageOffset = Just 50
+            }
+      sendEnvelope host RPCEnvelope
+        { envType = MsgQueryResource
+        , envPayload = Aeson.toJSON request
+        , envRequestId = Just 144
+        }
+      response <- recvEnvelope host
+      envType response `shouldBe` MsgQueryResult
+      context <- takeMVar seen
+      dcResource context `shouldBe` "items"
+      dcOperation context `shouldBe` DataQueryByField
+      dcPageSize context `shouldBe` Just 25
+      dcPageOffset context `shouldBe` Just 50
+      dcQuery context `shouldBe` Just (QueryByField "name" (String "Shield"))
+      dcMutation context `shouldBe` Nothing
+      shutdownAndWait host done
+
   it "emits mutate_resource progress before mutate_result with the request id" $
     withTransportPair $ \host plugin -> do
       done <- startSession progressDataPlugin plugin
@@ -393,7 +558,7 @@ spec = describe "SDK runner pipe integration" $ do
       let hs = RPCEnvelope
             { envType = MsgHandshake
             , envPayload = Aeson.toJSON Handshake
-                { hsProtocolVersion = 1
+                { hsProtocolVersion = currentProtocolVersion
                 , hsWorldPath = Just "/world/save"
                 , hsHostCapabilities = []
                 , hsAuthChallenge = Nothing
@@ -1370,6 +1535,147 @@ shutdownAndWait host done = do
     Nothing -> expectationFailure "plugin session did not shut down in time"
     Just () -> pure ()
 
+scopeBudgets :: RPCScopeBudgets
+scopeBudgets = RPCScopeBudgets 1048576 1048576 1048576
+
+emptyGeneratorScope :: RPCInvocationScopeDecl
+emptyGeneratorScope = RPCInvocationScopeDecl
+  { risdInput = RPCScopeInput [] SelectAllInvocationChunks [] False
+  , risdOutput = RPCScopeOutput [] SelectAllInvocationChunks False False
+  , risdBudgets = scopeBudgets
+  }
+
+noTerrainSimulationScope :: RPCInvocationScopeDecl
+noTerrainSimulationScope = RPCInvocationScopeDecl
+  { risdInput = RPCScopeInput [] SelectAllInvocationChunks ["weather"] True
+  , risdOutput = RPCScopeOutput [] SelectAllInvocationChunks True False
+  , risdBudgets = scopeBudgets
+  }
+
+nativeNoTerrainSimulationPlugin :: PluginDef
+nativeNoTerrainSimulationPlugin = defaultPluginDef
+  { pdName = "native-overlay-simulation"
+  , pdVersion = "1.0"
+  , pdSchemaFile = Just "native.toposchema"
+  , pdSimulationScope = Just SimulationScopeDef
+      { ssdDependencies = ["weather"]
+      , ssdSchedule = Just hourlyScheduleDecl
+      , ssdScope = noTerrainSimulationScope
+      , ssdTick = \_ -> pure (Right defaultSimulationTickResult)
+      }
+  }
+
+nativeGeneratorPlugin :: MVar (Bool, ResolvedInvocationScope) -> Bool -> PluginDef
+nativeGeneratorPlugin seen emitMetadata = defaultPluginDef
+  { pdName = "native-generator"
+  , pdVersion = "1.0"
+  , pdGeneratorScope = Just GeneratorScopeDef
+      { gsdInsertAfter = "erosion"
+      , gsdRequires = ["erosion"]
+      , gsdScope = emptyGeneratorScope
+      , gsdRun = \ctx -> do
+          putMVar seen (maybe False (const True) (gcTerrain ctx), gcScope ctx)
+          pure (Right defaultGeneratorTickResult
+            { gtrMetadata = if emitMetadata then Just (object ["bad" .= True]) else Nothing })
+      }
+  }
+
+emptyGeneratorResolvedScope :: ResolvedInvocationScope
+emptyGeneratorResolvedScope = withScopeDigest ResolvedInvocationScope
+  { risScopeId = ""
+  , risKind = InvocationGenerator
+  , risTerrainInputSections = Set.empty
+  , risTerrainInputChunkIds = IntSet.empty
+  , risDependencyOverlayChunkIds = Map.empty
+  , risOwnOverlayReadChunkIds = IntSet.empty
+  , risTerrainOutputSections = Set.empty
+  , risTerrainOutputChunkIds = IntSet.empty
+  , risOwnedOverlayIdentity = Nothing
+  , risOwnOverlayWriteChunkIds = IntSet.empty
+  , risGeneratorMetadataOutput = False
+  , risDataResource = Nothing
+  , risBudgets = scopeBudgets
+  }
+
+emptySimulationResolvedScope :: ResolvedInvocationScope
+emptySimulationResolvedScope = withScopeDigest emptyGeneratorResolvedScope
+  { risScopeId = ""
+  , risKind = InvocationSimulation
+  , risDependencyOverlayChunkIds = Map.singleton "weather" IntSet.empty
+  , risOwnedOverlayIdentity = Just "native-overlay-simulation"
+  }
+
+nativeSimulationPlugin :: MVar (Bool, Bool, [Text]) -> Bool -> PluginDef
+nativeSimulationPlugin seen emitBadChunk = nativeNoTerrainSimulationPlugin
+  { pdSimulationScope = fmap (\definition -> definition
+      { ssdTick = \ctx -> do
+          putMVar seen
+            ( maybe False (const True) (scTerrain ctx)
+            , maybe False (const True) (scOwnOverlay ctx)
+            , Map.keys (scOverlays ctx)
+            )
+          pure (Right defaultSimulationTickResult
+            { strOverlay = if emitBadChunk
+                then object
+                  [ "storage" .= ("sparse" :: Text)
+                  , "chunks" .= [object ["chunk_id" .= (1 :: Int), "tiles" .= ([] :: [Value])]]
+                  ]
+                else emptyOverlayPayload
+            })
+      }) (pdSimulationScope nativeNoTerrainSimulationPlugin)
+  }
+
+emptyOverlayPayload :: Value
+emptyOverlayPayload = object
+  [ "storage" .= ("sparse" :: Text)
+  , "chunks" .= ([] :: [Value])
+  ]
+
+nativeSimulationInvoke :: ResolvedInvocationScope -> RPCEnvelope
+nativeSimulationInvoke scope = RPCEnvelope
+  { envType = MsgInvokeSimulation
+  , envPayload = Aeson.toJSON InvokeSimulation
+      { isPayloadVersion = 1
+      , isNodeId = "native-overlay-simulation"
+      , isWorldTime = 5
+      , isDeltaTicks = 1
+      , isCalendar = object ["year" .= (0 :: Int)]
+      , isConfig = Map.empty
+      , isTerrain = Null
+      , isOverlays = object ["weather" .= emptyOverlayPayload]
+      , isOwnOverlay = emptyOverlayPayload
+      , isInvocationScope = Just RPCInvocationScopeBinding
+          { risbScopeId = risScopeId scope
+          , risbDescriptor = Just scope
+          }
+      }
+  , envRequestId = Just 813
+  }
+
+widenedGeneratorResolvedScope :: ResolvedInvocationScope
+widenedGeneratorResolvedScope = withScopeDigest emptyGeneratorResolvedScope
+  { risScopeId = ""
+  , risTerrainInputSections = Set.singleton TerrainElevation
+  }
+
+withScopeDigest :: ResolvedInvocationScope -> ResolvedInvocationScope
+withScopeDigest scope = scope { risScopeId = resolvedInvocationScopeDigest scope }
+
+nativeGeneratorInvoke :: ResolvedInvocationScope -> RPCEnvelope
+nativeGeneratorInvoke scope = (generatorInvoke 811)
+  { envPayload = Aeson.toJSON InvokeGenerator
+      { igPayloadVersion = 1
+      , igStageId = "plugin:native-generator"
+      , igSeed = 811
+      , igConfig = Map.empty
+      , igTerrain = Null
+      , igInvocationScope = Just RPCInvocationScopeBinding
+          { risbScopeId = risScopeId scope
+          , risbDescriptor = Just scope
+          }
+      }
+  }
+
 generatorPlugin :: PluginDef
 generatorPlugin = defaultPluginDef
   { pdName = "generator"
@@ -1548,6 +1854,15 @@ dataPlugin = defaultPluginDef
               }
           }
       ]
+  }
+
+scopedDataPlugin :: MVar DataContext -> PluginDef
+scopedDataPlugin seen = dataPlugin
+  { pdScopedDataHandlers = Map.singleton "items" noScopedDataHandler
+      { sdhQuery = Just $ \context _ -> do
+          putMVar seen context
+          pure (Right (QueryResult "items" [] (Just 0)))
+      }
   }
 
 progressDataPlugin :: PluginDef

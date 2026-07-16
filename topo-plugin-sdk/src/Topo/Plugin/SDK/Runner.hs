@@ -39,12 +39,17 @@ module Topo.Plugin.SDK.Runner
 
 import Control.Exception (Exception, SomeException, catch, finally, fromException, onException, throwIO)
 import Data.Aeson (Value(..), (.=), object)
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IntSet
 import Data.List (nub)
+import Data.Maybe (isJust)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as BL
-import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -62,6 +67,15 @@ import Topo.Plugin.RPC.Manifest
   ( Capability(..)
   , RPCCapability
   , RPCGeneratorDecl(..)
+  , RPCInvocationScopes(..)
+  , RPCInvocationScopeDecl(..)
+  , RPCScopeInput(..)
+  , RPCScopeOutput(..)
+  , RPCScopeBudgets(..)
+  , RPCChunkSelector(..)
+  , TerrainSection(..)
+  , legacyGeneratorScope
+  , legacySimulationScope
   , RPCManifest(..)
   , RPCManifestRuntime(..)
   , RPCOverlayDecl(..)
@@ -85,6 +99,8 @@ import Topo.Plugin.RPC.Protocol
   , HealthStatus(..)
   , PluginProgress(..)
   , currentProtocolVersion
+  , maximumSupportedProtocolVersion
+  , minimumSupportedProtocolVersion
   , handshakeAuthProof
   , encodeMessageLazy
   , decodeMessage
@@ -102,6 +118,7 @@ import Topo.Plugin.RPC.Transport
   , TransportError(..)
   , RPCPayloadLimits
   , defaultRPCPayloadLimits
+  , mkRPCPayloadLimits
   , rplMaxFrameSizeBytes
   , sendLazyMessageWithLimit
   , recvMessageWithLimit
@@ -118,12 +135,24 @@ import Topo.Plugin.DataResource.Validation
   , validateQueryResult
   )
 import Topo.Plugin.RPC.DataService
-  ( DataMutation(..), DataResourceErrorCode(..)
+  ( DataMutation(..), DataQuery(..), DataResourceErrorCode(..)
   , DataResourceFailure(..), QueryResource(..), QueryResult(..), DataRecord(..)
   , MutateResource(..), MutateResult(..)
   , dataResourceErrorCodeText, dataResourceErrorRPCCode, dataResourceFailureFromText
   )
 import Topo.Plugin.SDK.Payload (decodeTerrainPayloadWithLimits)
+import Topo.Plugin.RPC
+  ( applyGeneratorTerrainValueScopedWithLimits
+  , decodeTerrainWritesValueScopedWithLimits
+  )
+import Topo.Plugin.RPC.Scope
+  ( RPCDataOperation(..)
+  , RPCInvocationKind(..)
+  , RPCInvocationScopeBinding(..)
+  , ResolvedInvocationScope(..)
+  , ScopeError(..)
+  , validateInvocationScopeBinding
+  )
 import Topo.Simulation.Schedule (defaultScheduleDecl)
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld, emptyWorld)
@@ -166,16 +195,16 @@ generateManifest pd = RPCManifest
   , rmName          = pdName pd
   , rmVersion       = pdVersion pd
   , rmRuntime       = RPCManifestRuntime
-      { rmrProtocolMin = currentProtocolVersion
-      , rmrProtocolMax = currentProtocolVersion
+      { rmrProtocolMin = protocolMin pd
+      , rmrProtocolMax = protocolMax pd
       , rmrTopoMin = pdRuntimeTopoMin pd
       , rmrTopoMax = pdRuntimeTopoMax pd
       }
   , rmDescription   = sdkDescription pd
   , rmUiHints       = sdkUiHints pd
-  , rmGenerator     = fmap toGenDecl (pdGenerator pd)
-  , rmSimulation    = fmap toSimDecl (pdSimulation pd)
-  , rmInvocationScopes = Nothing
+  , rmGenerator     = generatorDecl pd
+  , rmSimulation    = simulationDecl pd
+  , rmInvocationScopes = invocationScopes pd
   , rmOverlay       = fmap (\f -> RPCOverlayDecl (Text.pack f)) (pdSchemaFile pd)
   , rmCapabilities  = sdkCapabilities pd
   , rmParameters    = map toRPCParamSpec (pdParams pd)
@@ -185,15 +214,79 @@ generateManifest pd = RPCManifest
   , rmExternalDataSourceRefs = pdExternalDataSourceRefs pd
   , rmStartPolicy   = pdStartPolicy pd
   }
+
+protocolMin :: PluginDef -> Int
+protocolMin pd = fst (protocolRange pd)
+
+protocolMax :: PluginDef -> Int
+protocolMax pd = snd (protocolRange pd)
+
+protocolRange :: PluginDef -> (Int, Int)
+protocolRange pd
+  | supportsV4 && supportsV5 && hasScoped =
+      (minimumSupportedProtocolVersion, maximumSupportedProtocolVersion)
+  | supportsV5 && hasScoped =
+      (maximumSupportedProtocolVersion, maximumSupportedProtocolVersion)
+  | supportsV4 && not hasScoped = (currentProtocolVersion, currentProtocolVersion)
+  | otherwise = error
+      "PluginDef mixes generator/simulation adapters without a complete protocol-v4 or protocol-v5 implementation"
   where
-    toGenDecl gd = RPCGeneratorDecl
-      { rgdInsertAfter = gdInsertAfter gd
-      , rgdRequires    = gdRequires gd
+    hasScoped = isJust scopedGenerator || isJust scopedSimulation
+    generatorParticipates = isJust legacyGenerator || isJust scopedGenerator
+    simulationParticipates = isJust legacySimulation || isJust scopedSimulation
+    supportsV4 = (not generatorParticipates || isJust legacyGenerator)
+      && (not simulationParticipates || isJust legacySimulation)
+    supportsV5 = (not generatorParticipates || isJust scopedGenerator)
+      && (not simulationParticipates || isJust scopedSimulation)
+    legacyGenerator = pdGenerator pd
+    legacySimulation = pdSimulation pd
+    scopedGenerator = pdGeneratorScope pd
+    scopedSimulation = pdSimulationScope pd
+
+generatorDecl :: PluginDef -> Maybe RPCGeneratorDecl
+generatorDecl pd = case pdGeneratorScope pd of
+  Just scoped -> Just RPCGeneratorDecl
+    { rgdInsertAfter = gsdInsertAfter scoped
+    , rgdRequires = gsdRequires scoped
+    }
+  Nothing -> fmap (\legacy -> RPCGeneratorDecl
+    { rgdInsertAfter = gdInsertAfter legacy
+    , rgdRequires = gdRequires legacy
+    }) (pdGenerator pd)
+
+simulationDecl :: PluginDef -> Maybe RPCSimulationDecl
+simulationDecl pd = case pdSimulationScope pd of
+  Just scoped -> Just RPCSimulationDecl
+    { rsdDependencies = ssdDependencies scoped
+    , rsdSchedule = maybe defaultScheduleDecl id (ssdSchedule scoped)
+    }
+  Nothing -> fmap (\legacy -> RPCSimulationDecl
+    { rsdDependencies = sdDependencies legacy
+    , rsdSchedule = maybe defaultScheduleDecl id (sdSchedule legacy)
+    }) (pdSimulation pd)
+
+invocationScopes :: PluginDef -> Maybe RPCInvocationScopes
+invocationScopes pd
+  | not (isJust generatorScope || isJust simulationScope) = Nothing
+  | otherwise = Just RPCInvocationScopes
+      { riscVersion = 1
+      , riscGenerator = generatorScope
+      , riscSimulation = simulationScope
       }
-    toSimDecl sd = RPCSimulationDecl
-      { rsdDependencies = sdDependencies sd
-      , rsdSchedule = maybe defaultScheduleDecl id (sdSchedule sd)
+  where
+    generatorScope = case pdGeneratorScope pd of
+      Just scoped -> Just (gsdScope scoped)
+      Nothing -> fmap (const legacyGen) (pdGenerator pd)
+    simulationScope = case pdSimulationScope pd of
+      Just scoped -> Just (ssdScope scoped)
+      Nothing -> fmap (\legacy -> legacySimulationScope (sdDependencies legacy) legacyBudgets)
+        (pdSimulation pd)
+    broadGenerator = legacyGeneratorScope legacyBudgets
+    legacyGen = broadGenerator
+      { risdOutput = (risdOutput broadGenerator)
+          { rsoOwnedOverlay = pdSchemaFile pd /= Nothing }
       }
+    legacyBudgets = RPCScopeBudgets maxBound maxBound maxBound
 
 sdkDescription :: PluginDef -> Text
 sdkDescription pd = case pdDescription pd of
@@ -224,15 +317,25 @@ sdkCapabilities pd = nub (inferCapabilities pd <> pdCapabilities pd)
 inferCapabilities :: PluginDef -> [RPCCapability]
 inferCapabilities pd = concat
   [ [CapLog]
-  , [CapReadTerrain | hasGen || hasSim]
-  , [CapReadOverlay | hasSim]
-  , [CapWriteOverlay | hasSim]
+  , [CapReadTerrain | legacyTerrain || scopedTerrainRead]
+  , [CapReadOverlay | legacySimulation || scopedOverlayRead]
+  , [CapWriteTerrain | scopedSimulationTerrainWrite]
+  , [CapWriteOverlay | legacySimulation || scopedOverlayWrite]
   , [CapDataRead | hasData]
   , [CapDataWrite | hasData && hasDataWriteOps]
   ]
   where
-    hasGen = case pdGenerator pd of { Just _ -> True; Nothing -> False }
-    hasSim = case pdSimulation pd of { Just _ -> True; Nothing -> False }
+    legacyTerrain = isJust (pdGenerator pd) || legacySimulation
+    legacySimulation = isJust (pdSimulation pd)
+    scopedDeclarations =
+      [gsdScope scope | Just scope <- [pdGeneratorScope pd]] <>
+      [ssdScope scope | Just scope <- [pdSimulationScope pd]]
+    scopedTerrainRead = any (not . null . rsiTerrainSections . risdInput) scopedDeclarations
+    scopedOverlayRead = any (\scope -> rsiOwnOverlay (risdInput scope)
+      || not (null (rsiDependencyOverlays (risdInput scope)))) scopedDeclarations
+    scopedSimulationTerrainWrite = maybe False
+      (not . null . rsoTerrainSections . risdOutput . ssdScope) (pdSimulationScope pd)
+    scopedOverlayWrite = any (rsoOwnedOverlay . risdOutput) scopedDeclarations
     hasData = not (null (pdDataResources pd))
     hasDataWriteOps = any hasWriteOps (pdDataResources pd)
     hasWriteOps drd =
@@ -377,7 +480,8 @@ runPluginSessionWithLimits
   -> IO ()
 runPluginSessionWithLimits limits pd transport params = do
   resetExternalOperationCache pd
-  messageLoop limits pd transport params Nothing
+  negotiatedVersion <- newIORef (protocolMax pd)
+  messageLoop limits pd transport params Nothing negotiatedVersion
     `onException` closeTransport transport
 
 type ExternalOperationKey = (RPCExternalDataSourceOperation, Text)
@@ -463,8 +567,8 @@ scrubLaunchAuthEnvironment = do
 
 -- | Main message loop. Reads RPC envelopes with the same limit used for every
 -- response. Any receive or send failure aborts the session deterministically.
-messageLoop :: RPCPayloadLimits -> PluginDef -> Transport -> Map Text Value -> Maybe FilePath -> IO ()
-messageLoop limits pd transport params worldPath = do
+messageLoop :: RPCPayloadLimits -> PluginDef -> Transport -> Map Text Value -> Maybe FilePath -> IORef Int -> IO ()
+messageLoop limits pd transport params worldPath negotiatedVersionRef = do
   result <- recvMessageWithLimit (fromIntegral (rplMaxFrameSizeBytes limits)) transport
   nextState <- case result of
     Left err -> throwIO (SDKReceiveFailure err)
@@ -476,7 +580,7 @@ messageLoop limits pd transport params worldPath = do
   case nextState of
     Nothing -> pure ()
     Just (nextParams, nextWorldPath) ->
-      messageLoop limits pd transport nextParams nextWorldPath
+      messageLoop limits pd transport nextParams nextWorldPath negotiatedVersionRef
   where
     next nextParams nextWorldPath = pure (Just (nextParams, nextWorldPath))
 
@@ -501,19 +605,30 @@ messageLoop limits pd transport params worldPath = do
         Aeson.Success (hs :: Handshake) -> do
           mAuthProof <- consumeLaunchAuthProofFromEnvironment (hsAuthChallenge hs)
           let newWorldPath = fmap Text.unpack (hsWorldPath hs)
+              requestedVersion = hsProtocolVersion hs
+              runtime = rmRuntime (generateManifest pd)
+              supported = requestedVersion >= rmrProtocolMin runtime
+                && requestedVersion <= rmrProtocolMax runtime
               ack = HandshakeAck
-                { haProtocolVersion = currentProtocolVersion
+                { haProtocolVersion = requestedVersion
                 , haDataDirectory = fmap Text.pack (pdDataDirectory pd)
                 , haResources = map drdSchema (pdDataResources pd)
                 , haSessionId = fst <$> mAuthProof
                 , haAuthProof = snd <$> mAuthProof
                 }
-          sendSDKEnvelope limits transport RPCEnvelope
-            { envType = MsgHandshakeAck
-            , envPayload = Aeson.toJSON ack
-            , envRequestId = envRequestId envelope
-            }
-          next params newWorldPath
+          if not supported
+            then do
+              sendErrorResponse limits transport (envRequestId envelope) 8
+                "Handshake protocol is outside this plugin definition's advertised range"
+              next params worldPath
+            else do
+              writeIORef negotiatedVersionRef requestedVersion
+              sendSDKEnvelope limits transport RPCEnvelope
+                { envType = MsgHandshakeAck
+                , envPayload = Aeson.toJSON ack
+                , envRequestId = envRequestId envelope
+                }
+              next params newWorldPath
 
       MsgWorldChanged -> case Aeson.fromJSON (envPayload envelope) of
         Aeson.Error _ -> next params worldPath
@@ -535,14 +650,22 @@ messageLoop limits pd transport params worldPath = do
               Just failure -> do
                 sendDataResourceFailureResponse limits transport (envRequestId envelope) failure
                 next params worldPath
-              Nothing -> case dhQuery (drdHandler drd) of
-                Nothing -> do
+              Nothing -> case (Map.lookup (qrResource qr) (pdScopedDataHandlers pd) >>= sdhQuery,
+                  dhQuery (drdHandler drd)) of
+                (Nothing, Nothing) -> do
                   sendDataResourceErrorResponse limits transport (envRequestId envelope)
                     OperationNotSupported ("Resource '" <> qrResource qr <> "' does not support queries")
                   next params worldPath
-                Just handler -> do
-                  let ctx = makeDataContext limits params worldPath transport (envRequestId envelope)
-                  runResult <- catchPluginResult (handler ctx (qrQuery qr))
+                (scopedHandler, legacyHandler) -> do
+                  runResult <- case scopedHandler of
+                    Just handler -> catchPluginResult (handler
+                      (makeScopedDataQueryContext limits params worldPath transport
+                        (envRequestId envelope) qr) (qrQuery qr))
+                    Nothing -> catchPluginResult (maybe
+                      (pure (Left "query callback is unavailable"))
+                      (\handler -> handler
+                        (makeDataContext limits params worldPath transport (envRequestId envelope))
+                        (qrQuery qr)) legacyHandler)
                   case runResult of
                     Left errMsg -> sendDataResourceFailureResponse limits transport
                       (envRequestId envelope) (dataResourceFailureFromText errMsg)
@@ -572,14 +695,22 @@ messageLoop limits pd transport params worldPath = do
                 sendDataResourceErrorResponse limits transport (envRequestId envelope)
                   OperationNotSupported errMsg
                 next params worldPath
-              Nothing -> case dhMutate (drdHandler drd) of
-                Nothing -> do
+              Nothing -> case (Map.lookup (mrResource mr) (pdScopedDataHandlers pd) >>= sdhMutate,
+                  dhMutate (drdHandler drd)) of
+                (Nothing, Nothing) -> do
                   sendDataResourceErrorResponse limits transport (envRequestId envelope)
                     OperationNotSupported ("Resource '" <> mrResource mr <> "' does not support mutations")
                   next params worldPath
-                Just handler -> do
-                  let ctx = makeDataContext limits params worldPath transport (envRequestId envelope)
-                  runResult <- catchPluginResult (handler ctx (mrMutation mr))
+                (scopedHandler, legacyHandler) -> do
+                  runResult <- case scopedHandler of
+                    Just handler -> catchPluginResult (handler
+                      (makeScopedDataMutationContext limits params worldPath transport
+                        (envRequestId envelope) mr) (mrMutation mr))
+                    Nothing -> catchPluginResult (maybe
+                      (pure (Left "mutation callback is unavailable"))
+                      (\handler -> handler
+                        (makeDataContext limits params worldPath transport (envRequestId envelope))
+                        (mrMutation mr)) legacyHandler)
                   case runResult of
                     Left errMsg -> sendDataResourceFailureResponse limits transport
                       (envRequestId envelope) (dataResourceFailureFromText errMsg)
@@ -590,61 +721,93 @@ messageLoop limits pd transport params worldPath = do
                       }
                   next params worldPath
 
-      MsgInvokeGenerator -> case pdGenerator pd of
-        Nothing -> do
-          sendErrorResponse limits transport (envRequestId envelope) 2 "Plugin has no generator"
+      MsgInvokeGenerator -> case Aeson.fromJSON (envPayload envelope) of
+        Aeson.Error err -> do
+          sendErrorResponse limits transport (envRequestId envelope) 6
+            ("Invalid invoke_generator payload: " <> Text.pack err)
           next params worldPath
-        Just gd -> case Aeson.fromJSON (envPayload envelope) of
-          Aeson.Error err -> do
-            sendErrorResponse limits transport (envRequestId envelope) 6
-              ("Invalid invoke_generator payload: " <> Text.pack err)
-            next params worldPath
-          Aeson.Success (ig :: InvokeGenerator) -> do
-            let mergedParams = Map.union (igConfig ig) params
-            preserveStateOnRejected mergedParams worldPath $
-              case makeTerrainContext limits mergedParams (igTerrain ig) Nothing Map.empty
-                (igSeed ig) worldPath
-                (sendLogMessage limits transport (envRequestId envelope))
-                (sendProgress limits transport (envRequestId envelope)) of
-                Left err -> do
-                  sendErrorResponse limits transport (envRequestId envelope) 6
-                    ("Invalid terrain payload: " <> err)
-                  next mergedParams worldPath
-                Right ctx -> do
-                  runResult <- catchPluginResult (gdRun gd ctx)
-                  case runResult of
-                    Left errMsg -> sendErrorResponse limits transport (envRequestId envelope) 3 errMsg
-                    Right generatorResult -> sendGeneratorResult limits transport
-                      (envRequestId envelope) generatorResult
-                  next mergedParams worldPath
+        Aeson.Success (ig :: InvokeGenerator) -> do
+          negotiatedVersion <- readIORef negotiatedVersionRef
+          let mergedParams = Map.union (igConfig ig) params
+              logFn = sendLogMessage limits transport (envRequestId envelope)
+              progressFn = sendProgress limits transport (envRequestId envelope)
+          preserveStateOnRejected mergedParams worldPath $
+            if negotiatedVersion <= currentProtocolVersion
+              then case pdGenerator pd of
+                Nothing -> rejectInvocation 2
+                  (if isJust (pdGeneratorScope pd)
+                    then "protocol 4 generator invocation requires the legacy adapter"
+                    else "Plugin has no generator") mergedParams
+                Just legacy -> case makeTerrainContext limits mergedParams (igTerrain ig) Nothing Map.empty
+                    (igSeed ig) worldPath logFn progressFn of
+                  Left err -> rejectInvocation 6 ("Invalid terrain payload: " <> err) mergedParams
+                  Right ctx -> do
+                    runResult <- catchPluginResult (gdRun legacy ctx)
+                    either (sendErrorResponse limits transport (envRequestId envelope) 3)
+                      (sendGeneratorResult limits transport (envRequestId envelope)) runResult
+                    next mergedParams worldPath
+              else case igInvocationScope ig of
+                Just binding -> case pdGeneratorScope pd of
+                  Nothing -> rejectInvocation 6 "generator scope is unknown to this plugin" mergedParams
+                  Just scoped -> case prepareGeneratorContext limits pd scoped binding mergedParams ig worldPath logFn progressFn of
+                    Left err -> rejectInvocation 6 err mergedParams
+                    Right (ctx, validationWorld) -> do
+                      runResult <- catchPluginResult (gsdRun scoped ctx)
+                      case runResult >>= validateGeneratorResult limits (gcScope ctx) validationWorld of
+                        Left errMsg -> sendErrorResponse limits transport (envRequestId envelope) 3 errMsg
+                        Right generatorResult -> sendGeneratorResult limits transport
+                          (envRequestId envelope) generatorResult
+                      next mergedParams worldPath
+                Nothing -> rejectInvocation 6
+                  "protocol 5 generator invocation is missing its scope binding" mergedParams
+          where
+            rejectInvocation code err nextParams = do
+              sendErrorResponse limits transport (envRequestId envelope) code err
+              next nextParams worldPath
 
-      MsgInvokeSimulation -> case pdSimulation pd of
-        Nothing -> do
-          sendErrorResponse limits transport (envRequestId envelope) 4 "Plugin has no simulation"
+      MsgInvokeSimulation -> case Aeson.fromJSON (envPayload envelope) of
+        Aeson.Error err -> do
+          sendErrorResponse limits transport (envRequestId envelope) 7
+            ("Invalid invoke_simulation payload: " <> Text.pack err)
           next params worldPath
-        Just sd -> case Aeson.fromJSON (envPayload envelope) of
-          Aeson.Error err -> do
-            sendErrorResponse limits transport (envRequestId envelope) 7
-              ("Invalid invoke_simulation payload: " <> Text.pack err)
-            next params worldPath
-          Aeson.Success (is' :: InvokeSimulation) -> do
-            let mergedParams = Map.union (isConfig is') params
-            preserveStateOnRejected mergedParams worldPath $
-              case makeTerrainContext limits mergedParams (isTerrain is') (Just (isOwnOverlay is'))
-                (valueObjectToMap (isOverlays is')) 0 worldPath
-                (sendLogMessage limits transport (envRequestId envelope))
-                (sendProgress limits transport (envRequestId envelope)) of
-                Left err -> do
-                  sendErrorResponse limits transport (envRequestId envelope) 7
-                    ("Invalid terrain payload: " <> err)
-                  next mergedParams worldPath
-                Right ctx -> do
-                  runResult <- catchPluginResult (sdTick sd ctx)
-                  case runResult of
-                    Left errMsg -> sendErrorResponse limits transport (envRequestId envelope) 5 errMsg
-                    Right simulationResult -> sendSimulationResult limits transport
-                      (envRequestId envelope) simulationResult
-                  next mergedParams worldPath
+        Aeson.Success (is' :: InvokeSimulation) -> do
+          negotiatedVersion <- readIORef negotiatedVersionRef
+          let mergedParams = Map.union (isConfig is') params
+              logFn = sendLogMessage limits transport (envRequestId envelope)
+              progressFn = sendProgress limits transport (envRequestId envelope)
+          preserveStateOnRejected mergedParams worldPath $
+            if negotiatedVersion <= currentProtocolVersion
+              then case pdSimulation pd of
+                Nothing -> rejectInvocation 4
+                  (if isJust (pdSimulationScope pd)
+                    then "protocol 4 simulation invocation requires the legacy adapter"
+                    else "Plugin has no simulation") mergedParams
+                Just legacy -> case makeTerrainContext limits mergedParams (isTerrain is') (Just (isOwnOverlay is'))
+                    (valueObjectToMap (isOverlays is')) 0 worldPath logFn progressFn of
+                  Left err -> rejectInvocation 7 ("Invalid terrain payload: " <> err) mergedParams
+                  Right ctx -> do
+                    runResult <- catchPluginResult (sdTick legacy ctx)
+                    either (sendErrorResponse limits transport (envRequestId envelope) 5)
+                      (sendSimulationResult limits transport (envRequestId envelope)) runResult
+                    next mergedParams worldPath
+              else case isInvocationScope is' of
+                Just binding -> case pdSimulationScope pd of
+                  Nothing -> rejectInvocation 7 "simulation scope is unknown to this plugin" mergedParams
+                  Just scoped -> case prepareSimulationContext limits pd scoped binding mergedParams is' worldPath logFn progressFn of
+                    Left err -> rejectInvocation 7 err mergedParams
+                    Right (ctx, validationWorld) -> do
+                      runResult <- catchPluginResult (ssdTick scoped ctx)
+                      case runResult >>= validateSimulationResult limits pd (scScope ctx) validationWorld of
+                        Left errMsg -> sendErrorResponse limits transport (envRequestId envelope) 5 errMsg
+                        Right simulationResult -> sendSimulationResult limits transport
+                          (envRequestId envelope) simulationResult
+                      next mergedParams worldPath
+                Nothing -> rejectInvocation 7
+                  "protocol 5 simulation invocation is missing its scope binding" mergedParams
+          where
+            rejectInvocation code err nextParams = do
+              sendErrorResponse limits transport (envRequestId envelope) code err
+              next nextParams worldPath
 
       MsgHeartbeat -> do
         sendSDKEnvelope limits transport RPCEnvelope
@@ -993,6 +1156,348 @@ valueObjectToMap (Object keyMap) =
     ]
 valueObjectToMap _ = Map.empty
 
+prepareGeneratorContext
+  :: RPCPayloadLimits -> PluginDef -> GeneratorScopeDef
+  -> RPCInvocationScopeBinding -> Map Text Value -> InvokeGenerator
+  -> Maybe FilePath -> (Text -> IO ()) -> (Text -> Double -> IO ())
+  -> Either Text (GeneratorContext, TerrainWorld)
+prepareGeneratorContext limits pd definition binding params invocation worldPath logFn progressFn = do
+  scope <- validateHostScope pd InvocationGenerator (gsdScope definition) binding
+  validateTerrainInput scope (igTerrain invocation)
+  validationWorld <- decodeTerrainPayloadWithLimits (scopeTerrainLimits limits scope)
+    (igTerrain invocation)
+  let terrainAvailable = not (Set.null (risTerrainInputSections scope))
+      context = GeneratorContext
+        { gcParams = params
+        , gcTerrain = if terrainAvailable then Just validationWorld else Nothing
+        , gcTerrainPayload = if terrainAvailable then Just (igTerrain invocation) else Nothing
+        , gcSeed = igSeed invocation
+        , gcScope = scope
+        , gcLog = logFn
+        , gcProgress = progressFn
+        , gcWorldPath = worldPath
+        }
+  Right (context, validationWorld)
+
+prepareSimulationContext
+  :: RPCPayloadLimits -> PluginDef -> SimulationScopeDef
+  -> RPCInvocationScopeBinding -> Map Text Value -> InvokeSimulation
+  -> Maybe FilePath -> (Text -> IO ()) -> (Text -> Double -> IO ())
+  -> Either Text (SimulationContext, TerrainWorld)
+prepareSimulationContext limits pd definition binding params invocation worldPath logFn progressFn = do
+  scope <- validateHostScope pd InvocationSimulation (ssdScope definition) binding
+  validateOverlayInputBudget scope (isOverlays invocation) (isOwnOverlay invocation)
+  validateTerrainInput scope (isTerrain invocation)
+  validationWorld <- decodeTerrainPayloadWithLimits (scopeTerrainLimits limits scope)
+    (isTerrain invocation)
+  suppliedOverlays <- case isOverlays invocation of
+    Object _ -> Right (valueObjectToMap (isOverlays invocation))
+    _ -> Left "dependency overlay collection must be an object"
+  let grants = Map.keysSet (risDependencyOverlayChunkIds scope)
+      suppliedNames = Map.keysSet suppliedOverlays
+  if suppliedNames == grants
+    then Right ()
+    else Left ("host dependency overlay names do not exactly match the resolved scope: supplied="
+      <> Text.intercalate "," (Set.toAscList suppliedNames)
+      <> ", granted=" <> Text.intercalate "," (Set.toAscList grants))
+  mapM_ (\(name, value) -> case Map.lookup name (risDependencyOverlayChunkIds scope) of
+      Nothing -> Left ("dependency overlay is outside resolved scope: " <> name)
+      Just chunks -> validateOverlayPayloadChunks ("dependency overlay " <> name) chunks value)
+    (Map.toList suppliedOverlays)
+  let ownAvailable = risOwnedOverlayIdentity scope /= Nothing
+  if ownAvailable
+    then validateOverlayPayloadChunks "own overlay input"
+      (risOwnOverlayReadChunkIds scope) (isOwnOverlay invocation)
+    else case isOwnOverlay invocation of
+      Null -> Right ()
+      _ -> Left "host supplied own overlay without a resolved read grant"
+  let terrainAvailable = not (Set.null (risTerrainInputSections scope))
+      context = SimulationContext
+        { scParams = params
+        , scTerrain = if terrainAvailable then Just validationWorld else Nothing
+        , scTerrainPayload = if terrainAvailable then Just (isTerrain invocation) else Nothing
+        , scOwnOverlay = if ownAvailable then Just (isOwnOverlay invocation) else Nothing
+        , scOverlays = Map.restrictKeys suppliedOverlays grants
+        , scWorldTime = isWorldTime invocation
+        , scDeltaTicks = isDeltaTicks invocation
+        , scCalendar = isCalendar invocation
+        , scScope = scope
+        , scLog = logFn
+        , scProgress = progressFn
+        , scWorldPath = worldPath
+        }
+  Right (context, validationWorld)
+
+validateHostScope
+  :: PluginDef -> RPCInvocationKind -> RPCInvocationScopeDecl
+  -> RPCInvocationScopeBinding -> Either Text ResolvedInvocationScope
+validateHostScope pd expectedKind declaration binding = do
+  descriptor <- maybe (Left "protocol 5 invocation scope must include its descriptor") Right
+    (risbDescriptor binding)
+  mapScopeError (validateInvocationScopeBinding maximumSupportedProtocolVersion
+    (Just descriptor) (Just binding))
+  if risKind descriptor == expectedKind
+    then Right ()
+    else Left "resolved invocation scope kind does not match the callback"
+  validateResolvedNarrowing pd (sdkCapabilities pd) declaration descriptor
+  Right descriptor
+
+mapScopeError :: Either ScopeError a -> Either Text a
+mapScopeError = either (Left . (\err -> sePath err <> ": " <> seMessage err)) Right
+
+validateResolvedNarrowing
+  :: PluginDef -> [RPCCapability] -> RPCInvocationScopeDecl -> ResolvedInvocationScope
+  -> Either Text ()
+validateResolvedNarrowing pd capabilities declaration scope = do
+  subset "terrain input sections" (risTerrainInputSections scope)
+    (Set.fromList (rsiTerrainSections input))
+  subset "terrain output sections" (risTerrainOutputSections scope)
+    (Set.fromList (rsoTerrainSections output))
+  subset "dependency overlays" (Map.keysSet (risDependencyOverlayChunkIds scope))
+    (Set.fromList (rsiDependencyOverlays input))
+  require (rsiOwnOverlay input || IntSet.null (risOwnOverlayReadChunkIds scope))
+    "resolved scope widened own-overlay input"
+  require (rsoOwnedOverlay output || risOwnedOverlayIdentity scope == Nothing)
+    "resolved scope widened owned-overlay output"
+  require (risOwnedOverlayIdentity scope == Nothing
+      || risOwnedOverlayIdentity scope == Just (pdName pd))
+    "resolved scope names an owned overlay belonging to another plugin"
+  require (risOwnedOverlayIdentity scope /= Nothing
+      || IntSet.null (risOwnOverlayWriteChunkIds scope))
+    "resolved scope grants own-overlay write chunks without an owned overlay"
+  require (risDataResource scope == Nothing)
+    "generator/simulation scope contains data-resource authority"
+  require (rsoGeneratorMetadata output || not (risGeneratorMetadataOutput scope))
+    "resolved scope widened generator metadata output"
+  require (budgetLE (risBudgets scope) (risdBudgets declaration))
+    "resolved scope widened declared budgets"
+  require (hasAny [CapReadTerrain, CapReadWorld] || Set.null (risTerrainInputSections scope))
+    "resolved scope grants terrain input without a capability"
+  require (hasAny [CapReadOverlay, CapReadWorld]
+      || Map.null (risDependencyOverlayChunkIds scope))
+    "resolved scope grants dependency overlays without a capability"
+  require (hasAny [CapWriteOverlay, CapWriteWorld]
+      || risOwnedOverlayIdentity scope == Nothing)
+    "resolved scope grants overlay output without a capability"
+  require (risKind scope == InvocationGenerator
+      || hasAny [CapWriteTerrain, CapWriteWorld]
+      || Set.null (risTerrainOutputSections scope))
+    "resolved scope grants simulation terrain output without a capability"
+  validateResolvedSelector "terrain input" (rsiChunkSelector input)
+    (risTerrainInputSections scope) (risTerrainInputChunkIds scope) scope
+  validateResolvedSelector "terrain output" (rsoChunkSelector output)
+    (risTerrainOutputSections scope) (risTerrainOutputChunkIds scope) scope
+  where
+    input = risdInput declaration
+    output = risdOutput declaration
+    hasAny requested = any (`elem` capabilities) requested
+    subset label actual allowed = require (actual `Set.isSubsetOf` allowed)
+      ("resolved scope widened " <> label)
+    require True _ = Right ()
+    require False message = Left message
+    budgetLE actual allowed =
+      rsbTerrainBytes actual <= rsbTerrainBytes allowed
+      && rsbOverlayBytes actual <= rsbOverlayBytes allowed
+      && rsbOutputBytes actual <= rsbOutputBytes allowed
+
+validateResolvedSelector
+  :: Text -> RPCChunkSelector -> Set TerrainSection -> IntSet
+  -> ResolvedInvocationScope -> Either Text ()
+validateResolvedSelector _ _ sections _ _ | Set.null sections = Right ()
+validateResolvedSelector _ SelectAllInvocationChunks _ _ _ = Right ()
+validateResolvedSelector label SelectCallerChunks _ _ _ =
+  Left (label <> " uses an unavailable caller chunk selector")
+validateResolvedSelector label selector _ actual scope = do
+  named <- case selector of
+    SelectOverlayUnion names -> traverse chunksFor names
+    SelectOverlayIntersection names -> traverse chunksFor names
+  let expected = case selector of
+        SelectOverlayUnion _ -> IntSet.unions named
+        SelectOverlayIntersection _ -> case named of
+          first:rest -> foldl IntSet.intersection first rest
+          [] -> IntSet.empty
+  if actual == expected
+    then Right ()
+    else Left (label <> " chunks do not match the declared overlay selector")
+  where
+    chunksFor "$own" = Right (risOwnOverlayReadChunkIds scope)
+    chunksFor name = maybe
+      (Left (label <> " selector references an overlay absent from the resolved scope: " <> name))
+      Right (Map.lookup name (risDependencyOverlayChunkIds scope))
+
+scopeTerrainLimits :: RPCPayloadLimits -> ResolvedInvocationScope -> RPCPayloadLimits
+scopeTerrainLimits fallback scope =
+  let budget = rsbTerrainBytes (risBudgets scope)
+      bounded = fromInteger (min (toInteger budget) (toInteger (maxBound :: Int)))
+  in case mkRPCPayloadLimits (max 1 bounded) of
+      Left _ -> fallback
+      Right scoped -> scoped
+
+validateOverlayInputBudget :: ResolvedInvocationScope -> Value -> Value -> Either Text ()
+validateOverlayInputBudget scope dependencies ownOverlay =
+  let payload = object ["dependencies" .= dependencies, "own" .= ownOverlay]
+      actual = toInteger (BL.length (Aeson.encode payload))
+      budget = rsbOverlayBytes (risBudgets scope)
+  in if actual <= toInteger budget
+      then Right ()
+      else Left ("overlay input exceeds resolved budget: actual="
+        <> Text.pack (show actual) <> ", limit=" <> Text.pack (show budget))
+
+validateTerrainInput :: ResolvedInvocationScope -> Value -> Either Text ()
+validateTerrainInput scope Null
+  | Set.null (risTerrainInputSections scope) = Right ()
+  | otherwise = Left "host omitted granted terrain input"
+validateTerrainInput scope (Object payload)
+  | Set.null allowedSections =
+      if KM.null payload then Right ()
+      else Left "host supplied terrain fields when the resolved scope grants no terrain"
+  | otherwise = do
+      let allowedKeys = Set.fromList
+            (["chunk_size", "hex_grid", "planet", "slice", "encoding"]
+              <> concatMap sectionKeys (Set.toAscList allowedSections))
+          extras = Set.fromList (map Key.toText (KM.keys payload)) `Set.difference` allowedKeys
+      if Set.null extras then Right () else Left
+        ("host supplied terrain keys outside resolved scope: "
+          <> Text.intercalate ", " (Set.toAscList extras))
+      mapM_ validateGrantedSection (Set.toAscList allowedSections)
+  where
+    allowedSections = risTerrainInputSections scope
+    allowedChunks = risTerrainInputChunkIds scope
+    sectionKeys TerrainElevation = ["chunk_count", "terrain"]
+    sectionKeys TerrainClimate = ["climate_count", "climate"]
+    sectionKeys TerrainVegetation = ["vegetation_count", "vegetation"]
+    sectionField TerrainElevation = "terrain"
+    sectionField TerrainClimate = "climate"
+    sectionField TerrainVegetation = "vegetation"
+    validateGrantedSection section =
+      let field = sectionField section
+      in case KM.lookup (Key.fromText field) payload of
+          Nothing -> Left ("host omitted granted terrain section: " <> field)
+          Just (Object chunks) -> validateChunkKeys field allowedChunks (KM.keys chunks)
+          Just _ -> Left (field <> " terrain input must be an object")
+validateTerrainInput _ _ = Left "terrain input must be an object"
+
+validateChunkKeys :: Text -> IntSet -> [Key.Key] -> Either Text ()
+validateChunkKeys field allowed = go IntSet.empty
+  where
+    go _ [] = Right ()
+    go seen (key:rest) = case reads (Text.unpack (Key.toText key)) of
+      [(chunkId, "")]
+        | chunkId < (0 :: Int) -> Left ("negative chunk ID in " <> field)
+        | IntSet.member chunkId seen -> Left ("duplicate numeric chunk ID in " <> field)
+        | IntSet.notMember chunkId allowed -> Left
+            (field <> " input contains chunk outside resolved scope: " <> Text.pack (show chunkId))
+        | otherwise -> go (IntSet.insert chunkId seen) rest
+      _ -> Left ("invalid chunk ID in " <> field <> ": " <> Key.toText key)
+
+validateOverlayPayloadChunks :: Text -> IntSet -> Value -> Either Text ()
+validateOverlayPayloadChunks label allowed (Object payload) = do
+  requireExactKeys label ["storage", "chunks"] payload
+  storage <- case KM.lookup "storage" payload of
+    Just (String "sparse") -> Right ("sparse" :: Text)
+    Just (String "dense") -> Right "dense"
+    _ -> Left (label <> " has an invalid storage tag")
+  case KM.lookup "chunks" payload of
+    Just (Array chunks) -> validateOverlayChunkList label storage allowed (foldr (:) [] chunks)
+    _ -> Left (label <> ".chunks must be an array")
+validateOverlayPayloadChunks label _ _ = Left (label <> " must be an object")
+
+validateOverlayChunkList :: Text -> Text -> IntSet -> [Value] -> Either Text ()
+validateOverlayChunkList label storage allowed = go IntSet.empty
+  where
+    go _ [] = Right ()
+    go seen (Object chunk:rest) = do
+      requireExactKeys (label <> " chunk")
+        (if storage == "sparse" then ["chunk_id", "tiles"] else ["chunk_id", "fields"])
+        chunk
+      chunkId <- requiredNonNegativeInt (label <> " chunk_id") "chunk_id" chunk
+      if IntSet.member chunkId seen
+        then Left (label <> " contains duplicate chunk IDs")
+        else if IntSet.notMember chunkId allowed
+          then Left (label <> " contains a chunk outside resolved scope: " <> Text.pack (show chunkId))
+          else do
+            if storage == "sparse" then validateSparseTiles label chunk else Right ()
+            go (IntSet.insert chunkId seen) rest
+    go _ (_:_) = Left (label <> " chunks must be objects")
+
+validateSparseTiles :: Text -> KM.KeyMap Value -> Either Text ()
+validateSparseTiles label chunk = case KM.lookup "tiles" chunk of
+  Just (Array tiles) -> go IntSet.empty (foldr (:) [] tiles)
+  _ -> Left (label <> " sparse chunk tiles must be an array")
+  where
+    go _ [] = Right ()
+    go seen (Object tile:rest) = do
+      requireExactKeys (label <> " sparse tile") ["tile", "fields"] tile
+      tileId <- requiredNonNegativeInt (label <> " tile") "tile" tile
+      if IntSet.member tileId seen
+        then Left (label <> " contains duplicate tile IDs")
+        else go (IntSet.insert tileId seen) rest
+    go _ (_:_) = Left (label <> " sparse tiles must be objects")
+
+requiredNonNegativeInt :: Text -> Key.Key -> KM.KeyMap Value -> Either Text Int
+requiredNonNegativeInt label key values = case KM.lookup key values of
+  Nothing -> Left (label <> " is missing")
+  Just raw -> case Aeson.fromJSON raw of
+    Aeson.Error _ -> Left (label <> " must be an integer")
+    Aeson.Success value
+      | value < 0 -> Left (label <> " must be non-negative")
+      | otherwise -> Right value
+
+requireExactKeys :: Text -> [Text] -> KM.KeyMap Value -> Either Text ()
+requireExactKeys label expected values =
+  let actual = Set.fromList (map Key.toText (KM.keys values))
+  in if actual == Set.fromList expected
+      then Right ()
+      else Left (label <> " contains missing or unsupported fields")
+
+validateGeneratorResult
+  :: RPCPayloadLimits -> ResolvedInvocationScope -> TerrainWorld
+  -> GeneratorTickResult -> Either Text GeneratorTickResult
+validateGeneratorResult limits scope world result = do
+  validateResolvedOutputBudget scope (Aeson.toJSON GeneratorResult
+    { grTerrain = gtrTerrain result
+    , grOverlay = gtrOverlay result
+    , grMetadata = gtrMetadata result
+    })
+  _ <- applyGeneratorTerrainValueScopedWithLimits limits scope world (gtrTerrain result)
+  case gtrOverlay result of
+    Nothing -> Right ()
+    Just _ -> Left "scoped generator result emitted an unavailable owned overlay"
+  case gtrMetadata result of
+    Nothing -> Right ()
+    Just _ | risGeneratorMetadataOutput scope -> Right ()
+    Just _ -> Left "generator metadata output is not granted"
+  Right result
+
+validateSimulationResult
+  :: RPCPayloadLimits -> PluginDef -> ResolvedInvocationScope -> TerrainWorld
+  -> SimulationTickResult -> Either Text SimulationTickResult
+validateSimulationResult limits pd scope world result = do
+  validateResolvedOutputBudget scope (Aeson.toJSON SimulationResult
+    { srOverlay = strOverlay result
+    , srTerrainWrites = strTerrainWrites result
+    })
+  case risOwnedOverlayIdentity scope of
+    Just identity
+      | identity /= pdName pd -> Left "resolved owned-overlay identity does not match this plugin"
+      | otherwise -> validateOverlayPayloadChunks "simulation owned-overlay output"
+          (risOwnOverlayWriteChunkIds scope) (strOverlay result)
+    Nothing -> case strOverlay result of
+      Object values | KM.null values -> Right ()
+      Null -> Right ()
+      _ -> Left "simulation result emitted an unavailable owned overlay"
+  _ <- decodeTerrainWritesValueScopedWithLimits limits scope world (strTerrainWrites result)
+  Right result
+
+validateResolvedOutputBudget :: ResolvedInvocationScope -> Value -> Either Text ()
+validateResolvedOutputBudget scope payload =
+  let actual = toInteger (BL.length (Aeson.encode payload))
+      allowed = toInteger (rsbOutputBytes (risBudgets scope))
+  in if actual <= allowed
+      then Right ()
+      else Left ("callback result exceeds resolved output budget: actual="
+        <> Text.pack (show actual) <> ", limit=" <> Text.pack (show allowed))
+
 makeTerrainContext
   :: RPCPayloadLimits
   -> Map Text Value
@@ -1082,10 +1587,52 @@ mutationSupportError schema mutation = case mutation of
     name = drsName schema
     unsupported op = Just ("Resource '" <> name <> "' does not support " <> op <> " mutations")
 
--- | Build a 'PluginContext' for data service callbacks.
---
--- Data service handlers don't receive a terrain payload, so the
--- context uses a stub world and empty terrain.
+makeScopedDataQueryContext
+  :: RPCPayloadLimits -> Map Text Value -> Maybe FilePath -> Transport
+  -> Maybe Word64 -> QueryResource -> DataContext
+makeScopedDataQueryContext limits params worldPath transport requestId request = DataContext
+  { dcResource = qrResource request
+  , dcOperation = queryOperation (qrQuery request)
+  , dcPageOffset = qrPageOffset request
+  , dcPageSize = qrPageSize request
+  , dcQuery = Just (qrQuery request)
+  , dcMutation = Nothing
+  , dcParams = params
+  , dcLog = sendLogMessage limits transport requestId
+  , dcProgress = sendProgress limits transport requestId
+  , dcWorldPath = worldPath
+  }
+
+makeScopedDataMutationContext
+  :: RPCPayloadLimits -> Map Text Value -> Maybe FilePath -> Transport
+  -> Maybe Word64 -> MutateResource -> DataContext
+makeScopedDataMutationContext limits params worldPath transport requestId request = DataContext
+  { dcResource = mrResource request
+  , dcOperation = mutationOperation (mrMutation request)
+  , dcPageOffset = Nothing
+  , dcPageSize = Nothing
+  , dcQuery = Nothing
+  , dcMutation = Just (mrMutation request)
+  , dcParams = params
+  , dcLog = sendLogMessage limits transport requestId
+  , dcProgress = sendProgress limits transport requestId
+  , dcWorldPath = worldPath
+  }
+
+queryOperation :: DataQuery -> RPCDataOperation
+queryOperation QueryAll = DataList
+queryOperation (QueryByKey _) = DataGet
+queryOperation (QueryByHex _ _) = DataQueryByHex
+queryOperation (QueryByField _ _) = DataQueryByField
+
+mutationOperation :: DataMutation -> RPCDataOperation
+mutationOperation (MutCreate _) = DataCreate
+mutationOperation (MutUpdate _ _) = DataUpdate
+mutationOperation (MutDelete _) = DataDelete
+mutationOperation (MutSetHex _ _ _) = DataUpdate
+
+-- | Build the explicit legacy data callback adapter context. New plugins
+-- should use 'pdScopedDataHandlers', which never fabricates world authority.
 makeDataContext :: RPCPayloadLimits -> Map Text Value -> Maybe FilePath -> Transport -> Maybe Word64 -> PluginContext
 makeDataContext limits params worldPath transport requestId = PluginContext
   { pcWorld      = stubWorld

@@ -55,10 +55,12 @@ module Topo.Plugin.SDK
   , ParamType(..)
     -- * Generator
   , GeneratorDef(..)
+  , GeneratorScopeDef(..)
   , GeneratorTickResult(..)
   , defaultGeneratorTickResult
     -- * Simulation
   , SimulationDef(..)
+  , SimulationScopeDef(..)
   , SimulationTickResult(..)
   , defaultSimulationTickResult
   , SimulationCatchUpPolicy(..)
@@ -67,7 +69,25 @@ module Topo.Plugin.SDK
   , hourlyScheduleDecl
     -- * Context
   , PluginContext(..)
+  , GeneratorContext(..)
+  , SimulationContext(..)
+  , DataContext(..)
   , reportPluginProgress
+  , reportGeneratorProgress
+  , reportSimulationProgress
+  , reportDataProgress
+    -- * Invocation scopes
+  , RPCInvocationScopeDecl(..)
+  , RPCScopeInput(..)
+  , RPCScopeOutput(..)
+  , RPCScopeBudgets(..)
+  , RPCChunkSelector(..)
+  , TerrainSection(..)
+  , ResolvedInvocationScope(..)
+  , ResolvedDataResourceScope(..)
+  , RPCDataOperation(..)
+  , legacyGeneratorScope
+  , legacySimulationScope
     -- * Data resource schemas
   , DataResourceSchema(..)
   , DataPagination(..)
@@ -84,6 +104,8 @@ module Topo.Plugin.SDK
   , DataResourceDef(..)
   , DataHandler(..)
   , noDataHandler
+  , ScopedDataHandler(..)
+  , noScopedDataHandler
   , DataQuery(..)
   , DataRecord(..)
   , DataMutation(..)
@@ -96,6 +118,8 @@ module Topo.Plugin.SDK
     -- * Typed payload helpers
   , decodeOwnOverlay
   , decodeDependencyOverlay
+  , decodeScopedOwnOverlay
+  , decodeScopedDependencyOverlay
   , decodeTerrainPayload
   , decodeTerrainPayloadWithLimits
   , decodeTerrainWritesPayload
@@ -109,6 +133,7 @@ module Topo.Plugin.SDK
   , simulationResultWithTerrainWrites
   , simulationResultWithTerrainWritesWithLimits
   , generatorResultFromTerrain
+  , generatorResultFromScopedTerrain
   , generatorResultFromTerrainWithLimits
   , generatorResultFromTerrainAndOverlay
   , generatorResultFromTerrainAndOverlayWithLimits
@@ -230,6 +255,19 @@ import Topo.Plugin.RPC.Manifest
   , defaultRPCStartPolicy
   , defaultRPCUIHints
   , defaultRPCExternalDataSourceStatus
+  )
+import Topo.Plugin.RPC.Scope
+  ( RPCInvocationScopeDecl(..)
+  , RPCScopeInput(..)
+  , RPCScopeOutput(..)
+  , RPCScopeBudgets(..)
+  , RPCChunkSelector(..)
+  , TerrainSection(..)
+  , ResolvedInvocationScope(..)
+  , ResolvedDataResourceScope(..)
+  , RPCDataOperation(..)
+  , legacyGeneratorScope
+  , legacySimulationScope
   )
 import Topo.Plugin.RPC.ExternalDataSource
   ( RPCExternalDataSourceGrantMessage(..)

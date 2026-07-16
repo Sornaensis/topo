@@ -64,8 +64,10 @@ module Topo.Plugin.RPC
   , terrainWorldToCompletePayloadWithLimits
   , decodeTerrainWritesValue
   , decodeTerrainWritesValueWithLimits
+  , decodeTerrainWritesValueScopedWithLimits
   , applyGeneratorTerrainValue
   , applyGeneratorTerrainValueWithLimits
+  , applyGeneratorTerrainValueScopedWithLimits
   , encodeBase64Text
   , decodeBase64Text
     -- * Errors
@@ -1731,6 +1733,14 @@ decodeTerrainWritesValue = Payload.decodeTerrainWritesValue
 decodeTerrainWritesValueWithLimits :: RPCPayloadLimits -> Maybe Value -> Either Text TerrainWrites
 decodeTerrainWritesValueWithLimits = Payload.decodeTerrainWritesValueWithLimits
 
+decodeTerrainWritesValueScopedWithLimits
+  :: RPCPayloadLimits
+  -> ResolvedInvocationScope
+  -> Topo.World.TerrainWorld
+  -> Maybe Value
+  -> Either Text TerrainWrites
+decodeTerrainWritesValueScopedWithLimits = Payload.decodeTerrainWritesValueScopedWithLimits
+
 applyGeneratorTerrainValue :: Topo.World.TerrainWorld -> Value -> Either Text Topo.World.TerrainWorld
 applyGeneratorTerrainValue = Payload.applyGeneratorTerrainValue
 
@@ -1740,6 +1750,14 @@ applyGeneratorTerrainValueWithLimits
   -> Value
   -> Either Text Topo.World.TerrainWorld
 applyGeneratorTerrainValueWithLimits = Payload.applyGeneratorTerrainValueWithLimits
+
+applyGeneratorTerrainValueScopedWithLimits
+  :: RPCPayloadLimits
+  -> ResolvedInvocationScope
+  -> Topo.World.TerrainWorld
+  -> Value
+  -> Either Text Topo.World.TerrainWorld
+applyGeneratorTerrainValueScopedWithLimits = Payload.applyGeneratorTerrainValueScopedWithLimits
 
 encodeBase64Text :: BS.ByteString -> Text
 encodeBase64Text = Payload.encodeBase64Text

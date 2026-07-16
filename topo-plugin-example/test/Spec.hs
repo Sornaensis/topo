@@ -24,7 +24,7 @@ import Topo.Plugin.RPC.Manifest
   , RPCManifest(..), RPCManifestRuntime(..), RPCUIHints(..)
   , manifestV3, parseManifestFile, validateManifest
   )
-import Topo.Plugin.RPC.Protocol (currentProtocolVersion)
+import Topo.Plugin.RPC.Protocol (currentProtocolVersion, maximumSupportedProtocolVersion)
 import Topo.Plugin.SDK (generateManifest, pluginManifestFileName)
 
 main :: IO ()
@@ -34,7 +34,7 @@ main = hspec $ do
       let manifest = generateManifest Example.terrainRoughenPlugin
       rmManifestVersion manifest `shouldBe` manifestV3
       rmrProtocolMin (rmRuntime manifest) `shouldBe` currentProtocolVersion
-      rmrProtocolMax (rmRuntime manifest) `shouldBe` currentProtocolVersion
+      rmrProtocolMax (rmRuntime manifest) `shouldBe` maximumSupportedProtocolVersion
       rmrTopoMin (rmRuntime manifest) `shouldBe` Just "1.0"
       ruiDisplayName (rmUiHints manifest) `shouldBe` Just "Terrain Roughen"
       rmCapabilities manifest `shouldSatisfy` elem CapLog

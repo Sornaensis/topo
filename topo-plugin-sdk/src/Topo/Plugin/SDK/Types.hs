@@ -25,6 +25,8 @@ module Topo.Plugin.SDK.Types
     -- * Capabilities
   , GeneratorDef(..)
   , SimulationDef(..)
+  , GeneratorScopeDef(..)
+  , SimulationScopeDef(..)
   , GeneratorTickResult(..)
   , SimulationTickResult(..)
   , defaultGeneratorTickResult
@@ -33,9 +35,17 @@ module Topo.Plugin.SDK.Types
   , DataResourceDef(..)
   , DataHandler(..)
   , noDataHandler
-    -- * Plugin context
+  , ScopedDataHandler(..)
+  , noScopedDataHandler
+    -- * Callback contexts
   , PluginContext(..)
+  , GeneratorContext(..)
+  , SimulationContext(..)
+  , DataContext(..)
   , reportPluginProgress
+  , reportGeneratorProgress
+  , reportSimulationProgress
+  , reportDataProgress
     -- * Defaults
   , defaultPluginDef
   ) where
@@ -48,9 +58,12 @@ import Topo.Plugin.DataResource (DataResourceSchema)
 import Topo.Plugin.RPC.Manifest
   ( RPCCapability
   , RPCExternalDataSourceDecl, RPCExternalDataSourceRef
+  , RPCInvocationScopeDecl
   , RPCStartPolicy, RPCUIHints
   , defaultRPCStartPolicy, defaultRPCUIHints
   )
+import Topo.Plugin.RPC.Scope
+  ( RPCDataOperation, ResolvedInvocationScope )
 import Topo.Plugin.RPC.ExternalDataSource
   ( RPCExternalDataSourceGrantMessage
   , RPCExternalDataSourceGrantRevocation
@@ -129,7 +142,28 @@ data SimulationDef = SimulationDef
   , sdSchedule :: !(Maybe SimulationScheduleDecl)
     -- ^ Optional static cadence declaration. 'Nothing' emits the hourly default.
   , sdTick         :: PluginContext -> IO (Either Text SimulationTickResult)
-    -- ^ Simulation tick implementation.
+    -- ^ Legacy protocol-v4 simulation callback.
+  }
+
+-- | Protocol-v5 generator declaration and narrowed callback.
+--
+-- Supplying this on 'PluginDef' opts the generator into an exact manifest
+-- scope and the fail-closed 'GeneratorContext'. If a matching legacy
+-- 'GeneratorDef' is also supplied, the manifest advertises the explicit v4
+-- fallback and scoped v5 adapter as a @4..5@ pair.
+data GeneratorScopeDef = GeneratorScopeDef
+  { gsdInsertAfter :: !Text
+  , gsdRequires :: ![Text]
+  , gsdScope :: !RPCInvocationScopeDecl
+  , gsdRun :: GeneratorContext -> IO (Either Text GeneratorTickResult)
+  }
+
+-- | Protocol-v5 simulation declaration and narrowed callback.
+data SimulationScopeDef = SimulationScopeDef
+  { ssdDependencies :: ![Text]
+  , ssdSchedule :: !(Maybe SimulationScheduleDecl)
+  , ssdScope :: !RPCInvocationScopeDecl
+  , ssdTick :: SimulationContext -> IO (Either Text SimulationTickResult)
   }
 
 -- | Result payload returned by a generator callback.
@@ -209,6 +243,60 @@ reportPluginProgress :: PluginContext -> Text -> Double -> IO ()
 reportPluginProgress context message fraction =
   pcProgress context message fraction
 
+-- | Narrowed protocol-v5 generator callback context. Terrain is 'Nothing'
+-- when the resolved grant contains no terrain sections; absence is never
+-- represented by a fabricated empty world.
+data GeneratorContext = GeneratorContext
+  { gcParams :: !(Map Text Value)
+  , gcTerrain :: !(Maybe TerrainWorld)
+  , gcTerrainPayload :: !(Maybe Value)
+  , gcSeed :: !Word64
+  , gcScope :: !ResolvedInvocationScope
+  , gcLog :: Text -> IO ()
+  , gcProgress :: Text -> Double -> IO ()
+  , gcWorldPath :: !(Maybe FilePath)
+  }
+
+-- | Narrowed protocol-v5 simulation callback context.
+data SimulationContext = SimulationContext
+  { scParams :: !(Map Text Value)
+  , scTerrain :: !(Maybe TerrainWorld)
+  , scTerrainPayload :: !(Maybe Value)
+  , scOwnOverlay :: !(Maybe Value)
+  , scOverlays :: !(Map Text Value)
+  , scWorldTime :: !Word64
+  , scDeltaTicks :: !Word64
+  , scCalendar :: !Value
+  , scScope :: !ResolvedInvocationScope
+  , scLog :: Text -> IO ()
+  , scProgress :: Text -> Double -> IO ()
+  , scWorldPath :: !(Maybe FilePath)
+  }
+
+-- | Data-resource callback identity. This context deliberately has no world,
+-- terrain, overlay, or seed fields.
+data DataContext = DataContext
+  { dcResource :: !Text
+  , dcOperation :: !RPCDataOperation
+  , dcPageOffset :: !(Maybe Int)
+  , dcPageSize :: !(Maybe Int)
+  , dcQuery :: !(Maybe DataQuery)
+  , dcMutation :: !(Maybe DataMutation)
+  , dcParams :: !(Map Text Value)
+  , dcLog :: Text -> IO ()
+  , dcProgress :: Text -> Double -> IO ()
+  , dcWorldPath :: !(Maybe FilePath)
+  }
+
+reportGeneratorProgress :: GeneratorContext -> Text -> Double -> IO ()
+reportGeneratorProgress context = gcProgress context
+
+reportSimulationProgress :: SimulationContext -> Text -> Double -> IO ()
+reportSimulationProgress context = scProgress context
+
+reportDataProgress :: DataContext -> Text -> Double -> IO ()
+reportDataProgress context = dcProgress context
+
 ------------------------------------------------------------------------
 -- Data service
 ------------------------------------------------------------------------
@@ -251,6 +339,16 @@ noDataHandler = DataHandler
   { dhQuery  = Nothing
   , dhMutate = Nothing
   }
+
+-- | Scoped data callbacks. Add these to 'pdScopedDataHandlers' by resource
+-- name. The legacy 'drdHandler' remains an explicit compatibility adapter.
+data ScopedDataHandler = ScopedDataHandler
+  { sdhQuery :: !(Maybe (DataContext -> DataQuery -> IO (Either Text QueryResult)))
+  , sdhMutate :: !(Maybe (DataContext -> DataMutation -> IO (Either Text MutateResult)))
+  }
+
+noScopedDataHandler :: ScopedDataHandler
+noScopedDataHandler = ScopedDataHandler Nothing Nothing
 
 ------------------------------------------------------------------------
 -- Plugin definition
@@ -302,9 +400,13 @@ data PluginDef = PluginDef
   , pdSchemaFile :: !(Maybe FilePath)
     -- ^ Path to an overlay @.toposchema@ file (relative to plugin dir).
   , pdGenerator  :: !(Maybe GeneratorDef)
-    -- ^ Generator pipeline participation.
+    -- ^ Explicit broad protocol-v4 generator compatibility adapter.
   , pdSimulation :: !(Maybe SimulationDef)
-    -- ^ Simulation DAG participation.
+    -- ^ Explicit broad protocol-v4 simulation compatibility adapter.
+  , pdGeneratorScope :: !(Maybe GeneratorScopeDef)
+    -- ^ Native protocol-v5 scoped generator declaration and callback.
+  , pdSimulationScope :: !(Maybe SimulationScopeDef)
+    -- ^ Native protocol-v5 scoped simulation declaration and callback.
   , pdCapabilities :: ![RPCCapability]
     -- ^ Explicit additional manifest capabilities. The SDK adds these to its
     -- safe inferred capabilities. Use this for capabilities that cannot be
@@ -315,7 +417,9 @@ data PluginDef = PluginDef
   , pdDataDirectory :: !(Maybe FilePath)
     -- ^ Data subdirectory relative to the world save path.
   , pdDataResources :: ![DataResourceDef]
-    -- ^ Data resource definitions with schemas and handlers.
+    -- ^ Data resource definitions with schemas and legacy handlers.
+  , pdScopedDataHandlers :: !(Map Text ScopedDataHandler)
+    -- ^ Native data-specific callbacks keyed by declared resource name.
   , pdUiHints :: !RPCUIHints
     -- ^ Optional UI presentation hints emitted into manifest v3.
   , pdExternalDataSources :: ![RPCExternalDataSourceDecl]
@@ -358,9 +462,12 @@ defaultPluginDef = PluginDef
   , pdSchemaFile    = Nothing
   , pdGenerator     = Nothing
   , pdSimulation    = Nothing
+  , pdGeneratorScope = Nothing
+  , pdSimulationScope = Nothing
   , pdCapabilities  = []
   , pdDataDirectory = Nothing
   , pdDataResources = []
+  , pdScopedDataHandlers = mempty
   , pdUiHints = defaultRPCUIHints
   , pdExternalDataSources = []
   , pdExternalDataSourceRefs = []

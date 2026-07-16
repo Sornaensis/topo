@@ -123,7 +123,39 @@ civPlugin = defaultPluginDef
       , sdSchedule     = Just hourlyScheduleDecl
       , sdTick         = runCivSimTick
       }
+  , pdGeneratorScope = Just GeneratorScopeDef
+      { gsdInsertAfter = "biomes"
+      , gsdRequires = ["biomes", "rivers"]
+      , gsdScope = civGeneratorScope
+      , gsdRun = runScopedCivGenerator
+      }
+  , pdSimulationScope = Just SimulationScopeDef
+      { ssdDependencies = ["weather"]
+      , ssdSchedule = Just hourlyScheduleDecl
+      , ssdScope = civSimulationScope
+      , ssdTick = runScopedCivSimTick
+      }
   }
+
+civGeneratorScope :: RPCInvocationScopeDecl
+civGeneratorScope = RPCInvocationScopeDecl
+  { risdInput = RPCScopeInput allSections SelectAllInvocationChunks [] False
+  , risdOutput = RPCScopeOutput allSections SelectAllInvocationChunks False False
+  , risdBudgets = broadScopeBudgets
+  }
+  where allSections = [TerrainElevation, TerrainClimate, TerrainVegetation]
+
+-- | No terrain is requested during simulation. Only the named weather
+-- dependency and this plugin's own overlay are visible to the callback.
+civSimulationScope :: RPCInvocationScopeDecl
+civSimulationScope = RPCInvocationScopeDecl
+  { risdInput = RPCScopeInput [] SelectAllInvocationChunks ["weather"] True
+  , risdOutput = RPCScopeOutput [] SelectAllInvocationChunks True False
+  , risdBudgets = broadScopeBudgets
+  }
+
+broadScopeBudgets :: RPCScopeBudgets
+broadScopeBudgets = RPCScopeBudgets maxBound maxBound maxBound
 
 ------------------------------------------------------------------------
 -- Data resources and external data source declarations
@@ -337,6 +369,27 @@ runCivGenerator ctx = do
 ------------------------------------------------------------------------
 -- Simulation: tick population growth
 ------------------------------------------------------------------------
+
+runScopedCivGenerator :: GeneratorContext -> IO (Either Text GeneratorTickResult)
+runScopedCivGenerator ctx = case gcTerrain ctx of
+  Nothing -> pure (Left "civilization: scoped generator terrain was unavailable")
+  Just world -> pure (generatorResultFromScopedTerrain ctx world)
+
+runScopedCivSimTick :: SimulationContext -> IO (Either Text SimulationTickResult)
+runScopedCivSimTick ctx = do
+  schemaResult <- loadCivilizationSchema
+  case schemaResult of
+    Left schemaErr -> pure (Left schemaErr)
+    Right schema -> case decodeScopedOwnOverlay schema ctx of
+      Left decodeErr -> pure (Left decodeErr)
+      Right overlay -> do
+        let params = scParams ctx
+            overlay' = tickOverlay
+              (paramFloat params "growth_rate" defaultGrowthRate)
+              (paramFloat params "infra_cost" defaultInfraCost)
+              (paramFloat params "city_threshold" defaultCityThreshold)
+              schema overlay
+        pure (Right (simulationResultFromOverlay overlay'))
 
 -- | Tick civilization simulation.
 --

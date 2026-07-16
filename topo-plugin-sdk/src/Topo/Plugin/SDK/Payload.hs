@@ -8,6 +8,8 @@ module Topo.Plugin.SDK.Payload
   ( -- * Overlay payloads
     decodeOwnOverlay
   , decodeDependencyOverlay
+  , decodeScopedOwnOverlay
+  , decodeScopedDependencyOverlay
   , encodeOverlayPayload
     -- * Terrain payloads
   , decodeTerrainPayload
@@ -23,6 +25,7 @@ module Topo.Plugin.SDK.Payload
   , simulationResultWithTerrainWrites
   , simulationResultWithTerrainWritesWithLimits
   , generatorResultFromTerrain
+  , generatorResultFromScopedTerrain
   , generatorResultFromTerrainWithLimits
   , generatorResultFromTerrainAndOverlay
   , generatorResultFromTerrainAndOverlayWithLimits
@@ -45,14 +48,18 @@ import Topo.Plugin.RPC
   , decodeTerrainWritesValueWithLimits
   , terrainWorldToPayload
   , terrainWorldToPayloadWithLimits
+  , terrainWorldToScopedPayload
   )
+import Topo.Plugin.RPC.Scope (ResolvedInvocationScope(..))
 import Topo.Simulation (TerrainWrites, applyTerrainWrites)
 import Topo.Types (WorldConfig(..))
 import Topo.World (TerrainWorld, emptyWorld)
 
 import Topo.Plugin.SDK.Types
-  ( GeneratorTickResult(..)
+  ( GeneratorContext(..)
+  , GeneratorTickResult(..)
   , PluginContext(..)
+  , SimulationContext(..)
   , SimulationTickResult(..)
   , defaultGeneratorTickResult
   , defaultSimulationTickResult
@@ -75,6 +82,20 @@ decodeDependencyOverlay :: OverlaySchema -> Text -> PluginContext -> Either Text
 decodeDependencyOverlay schema overlayName context =
   case Map.lookup overlayName (pcOverlays context) of
     Nothing -> Left ("simulation context missing dependency overlay: " <> overlayName)
+    Just rawOverlay -> overlayFromJSON schema rawOverlay
+
+-- | Decode the owned overlay only when the resolved simulation scope supplied it.
+decodeScopedOwnOverlay :: OverlaySchema -> SimulationContext -> Either Text Overlay
+decodeScopedOwnOverlay schema context =
+  case scOwnOverlay context of
+    Nothing -> Left "resolved simulation scope did not grant own-overlay input"
+    Just rawOverlay -> overlayFromJSON schema rawOverlay
+
+-- | Decode one dependency overlay from the exact resolved subset.
+decodeScopedDependencyOverlay :: OverlaySchema -> Text -> SimulationContext -> Either Text Overlay
+decodeScopedDependencyOverlay schema overlayName context =
+  case Map.lookup overlayName (scOverlays context) of
+    Nothing -> Left ("resolved simulation scope did not grant dependency overlay: " <> overlayName)
     Just rawOverlay -> overlayFromJSON schema rawOverlay
 
 -- | Encode an overlay into protocol JSON payload shape.
@@ -185,6 +206,19 @@ generatorResultFromTerrain world = do
   Right defaultGeneratorTickResult
     { gtrTerrain = terrainPayload
     }
+
+-- | Build a generator result containing exactly the resolved output sections
+-- and chunks. Use this in 'GeneratorScopeDef' callbacks instead of the broad
+-- legacy encoder.
+generatorResultFromScopedTerrain
+  :: GeneratorContext
+  -> TerrainWorld
+  -> Either Text GeneratorTickResult
+generatorResultFromScopedTerrain context world = do
+  let scope = gcScope context
+  terrainPayload <- terrainWorldToScopedPayload
+    (risTerrainOutputSections scope) (risTerrainOutputChunkIds scope) world
+  Right defaultGeneratorTickResult { gtrTerrain = terrainPayload }
 
 -- | Build a generator result using the configured terrain binary budget.
 generatorResultFromTerrainWithLimits

@@ -453,8 +453,11 @@ validateInvocationScopeDeclarations protocolMin hasGenerator simulationDependenc
       | riscVersion declarations /= 1
       ]
       <> participationErrors declarations
-      <> maybe [] (validateDeclaration InvocationGenerator [] hasOverlay "invocationScopes.generator") (riscGenerator declarations)
-      <> maybe [] (validateDeclaration InvocationSimulation dependencies hasOverlay "invocationScopes.simulation") (riscSimulation declarations)
+      <> maybe [] (\declaration -> validateDeclaration
+            (protocolMin < 5 && isLegacyGeneratorDeclaration hasOverlay declaration)
+            InvocationGenerator [] hasOverlay "invocationScopes.generator" declaration)
+          (riscGenerator declarations)
+      <> maybe [] (validateDeclaration False InvocationSimulation dependencies hasOverlay "invocationScopes.simulation") (riscSimulation declarations)
   where
     dependencies = fromMaybe [] simulationDependencies
     requiredErrors
@@ -475,8 +478,16 @@ validateInvocationScopeDeclarations protocolMin hasGenerator simulationDependenc
          | simulationDependencies == Nothing, riscSimulation declarations /= Nothing
          ]
 
-validateDeclaration :: RPCInvocationKind -> [Text] -> Bool -> Text -> RPCInvocationScopeDecl -> [ScopeError]
-validateDeclaration kind dependencies hasOverlay base declaration = concat
+isLegacyGeneratorDeclaration :: Bool -> RPCInvocationScopeDecl -> Bool
+isLegacyGeneratorDeclaration hasOverlay declaration = declaration == expected
+  where
+    broad = legacyGeneratorScope (risdBudgets declaration)
+    expected = broad
+      { risdOutput = (risdOutput broad) { rsoOwnedOverlay = hasOverlay }
+      }
+
+validateDeclaration :: Bool -> RPCInvocationKind -> [Text] -> Bool -> Text -> RPCInvocationScopeDecl -> [ScopeError]
+validateDeclaration allowLegacyGeneratorOutputs kind dependencies hasOverlay base declaration = concat
   [ duplicatesAt (base <> ".input.terrainSections") (map terrainSectionText (rsiTerrainSections input))
   , duplicatesAt (base <> ".input.dependencyOverlays") (rsiDependencyOverlays input)
   , duplicatesAt (base <> ".output.terrainSections") (map terrainSectionText (rsoTerrainSections output))
@@ -500,7 +511,7 @@ validateDeclaration kind dependencies hasOverlay base declaration = concat
     ]
   , [ ScopeError (base <> ".output.ownedOverlay")
         "scoped generator whole-overlay output is unavailable because generator invocations carry no own-overlay input"
-    | kind == InvocationGenerator, rsoOwnedOverlay output
+    | kind == InvocationGenerator, rsoOwnedOverlay output, not allowLegacyGeneratorOutputs
     ]
   , [ ScopeError (base <> ".input.ownOverlay")
         "simulation scopes must receive the complete plugin-owned overlay"
@@ -515,7 +526,7 @@ validateDeclaration kind dependencies hasOverlay base declaration = concat
     ]
   , [ ScopeError (base <> ".output.generatorMetadata")
         "generator metadata output is unavailable until the host defines a bounded consumer"
-    | kind == InvocationGenerator, rsoGeneratorMetadata output
+    | kind == InvocationGenerator, rsoGeneratorMetadata output, not allowLegacyGeneratorOutputs
     ]
   ]
   where
