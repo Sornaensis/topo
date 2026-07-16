@@ -159,6 +159,8 @@ library
     , filepath
     , mtl
     , network
+    , stm
+    , temporary
     , text
     , time
     , transformers
@@ -264,6 +266,7 @@ test-suite topo-test
     , hspec
     , mtl
     , scientific
+    , stm
     , temporary
     , text
     , time

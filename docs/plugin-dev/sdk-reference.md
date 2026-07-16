@@ -85,6 +85,18 @@ unknown or widened grants before callback entry, filters dependency overlays,
 and validates terrain sections/chunks, duplicate writes, owned-overlay output,
 and generator metadata before sending a result.
 
+For native streaming, use `StreamingGeneratorDef` or
+`StreamingSimulationDef`. Their contexts expose a replayable
+`TerrainChunkSource`, immutable `TerrainSnapshotHeader`, cooperative
+`InvocationCancellation`, and a scope-checking `TerrainDeltaSink`. Fold input
+with `foldTerrainChunks`; emit complete replacements with `tdsWriteChunk` or
+explicit removals with `tdsRemoveChunk`. The runner receives snapshots into a
+bounded file spool before callback entry and sends canonical deltas only under
+host credit. Do not also configure the staging scoped callback for the same
+kind: each invocation has exactly one native or staging v5 adapter. A dual-range
+plugin may additionally keep its explicit legacy callback solely for protocol-4
+fallback.
+
 Common declarations include:
 
 - terrain-only generator: input/output `[TerrainElevation]`, no overlays;

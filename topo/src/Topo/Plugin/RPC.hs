@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 
 -- | High-level plugin RPC client API.
@@ -96,12 +97,17 @@ import Control.Concurrent
   , takeMVar
   , tryPutMVar
   , tryTakeMVar
+  , withMVar
   )
-import Control.Exception (SomeException, mask, onException, try)
-import Control.Monad (forM_, unless, when)
+import Control.Concurrent.STM
+  ( STM, TBQueue, atomically, isFullTBQueue, newTBQueueIO, readTBQueue
+  , tryReadTBQueue, writeTBQueue
+  )
+import Control.Exception (SomeException, finally, mask, onException, try)
+import Control.Monad (foldM, forM_, unless, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Reader (asks)
-import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as BS
@@ -114,7 +120,12 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word64)
+import qualified Data.Text.Encoding as TextEncoding
+import Data.Word (Word32, Word64)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Directory (doesFileExist, removeFile)
+import System.IO (hClose, openBinaryTempFile)
+import System.IO.Temp (withSystemTempDirectory)
 
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), (.:), (.:?), (.=), object)
@@ -134,6 +145,11 @@ import Topo.Pipeline (PipelineStage(..))
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin (Capability(..), PluginEnv(..), PluginError(..), getWorld, liftTopo, logInfo, putWorld)
 import Topo.Calendar (CalendarDate(..), WorldTime(..))
+import Topo.Export
+  ( encodeClimateChunk
+  , encodeTerrainChunk
+  , encodeVegetationChunk
+  )
 import Topo.Simulation
   ( SimNode(..)
   , SimNodeId(..)
@@ -142,6 +158,7 @@ import Topo.Simulation
   , applyTerrainWrites
   , defaultScheduleDecl
   , emptyTerrainWrites
+  , terrainWritesEmpty
   )
 import qualified Topo.Types
 import qualified Topo.World
@@ -259,10 +276,24 @@ data RPCSession = RPCSession
   }
 
 -- | A request awaiting a correlated response.
+data RPCStreamEvent
+  = RPCStreamWire !BS.ByteString !RPCEnvelope
+  | RPCStreamFinal !RPCEnvelope
+  | RPCStreamFailed !RPCError
+
+-- The receiver retains both the exact wire bytes and the decoded Aeson tree.
+-- Queue admission therefore reserves their deterministic payload extents in
+-- addition to the TBQueue event-count bound.
+data RPCStreamQueue = RPCStreamQueue
+  { rsqEvents :: !(TBQueue (Word64, RPCStreamEvent))
+  , rsqBytes :: !StreamByteQuota
+  }
+
 data RPCPending = RPCPending
   { rpResult :: !(MVar (Either RPCError RPCEnvelope))
   , rpOnProgress :: !(PluginProgress -> IO ())
   , rpOnLog :: !(PluginLog -> IO ())
+  , rpStreamEvents :: !(Maybe RPCStreamQueue)
   }
 
 newRPCSession :: IO RPCSession
@@ -311,6 +342,14 @@ data RPCConnection = RPCConnection
     -- ^ Shared request correlation and receive loop state.
   , rpcRuntimeFailure :: !RPCFailureSlot
     -- ^ First unclaimed fatal failure and its level-triggered notification.
+  , rpcNextHostStreamId :: !(IORef Word64)
+    -- ^ Monotonic odd protocol-v5 stream IDs owned by this host connection.
+  , rpcHighestPluginStreamId :: !(IORef Word64)
+    -- ^ Highest even plugin stream ID accepted on this connection.
+  , rpcStreamInvocationLock :: !(MVar ())
+    -- ^ One streamed invocation at a time; ordinary correlated RPC remains concurrent.
+  , rpcReceiveFrameLimit :: !(IORef Word64)
+    -- ^ Shared post-handshake receive bound observed by the long-lived receiver.
   }
 
 -- | Create an 'RPCConnection' from a manifest and transport.
@@ -331,6 +370,10 @@ newRPCConnectionWithLimits
 newRPCConnectionWithLimits payloadLimits manifest transport params = unsafePerformIO $ do
   failureSlot <- newRPCFailureSlot
   session <- newRPCSession
+  nextHostStreamId <- newIORef 1
+  highestPluginStreamId <- newIORef 0
+  streamInvocationLock <- newMVar ()
+  receiveFrameLimit <- newIORef (fromIntegral (rplMaxFrameSizeBytes payloadLimits))
   let sanitizedParams = sanitizeRPCManifestParams manifest params
   pure RPCConnection
     { rpcManifest        = manifest
@@ -346,6 +389,10 @@ newRPCConnectionWithLimits payloadLimits manifest transport params = unsafePerfo
     , rpcRequestTimeoutMicros = timeoutMicrosFromMs (rspRequestTimeoutMs (rmStartPolicy manifest))
     , rpcSession = session
     , rpcRuntimeFailure = failureSlot
+    , rpcNextHostStreamId = nextHostStreamId
+    , rpcHighestPluginStreamId = highestPluginStreamId
+    , rpcStreamInvocationLock = streamInvocationLock
+    , rpcReceiveFrameLimit = receiveFrameLimit
     }
 {-# NOINLINE newRPCConnectionWithLimits #-}
 
@@ -380,6 +427,7 @@ rpcCallWithProgress fatalTimeout mTimeout timeoutMessage conn envelope onProgres
         { rpResult = done
         , rpOnProgress = onProgress
         , rpOnLog = onLog
+        , rpStreamEvents = Nothing
         }
       requestEnvelope = envelope { envRequestId = Just requestId }
       cleanupPending = do
@@ -403,8 +451,8 @@ rpcReceiverLoop conn = loop
     transport = rpcTransport conn
 
     loop = do
-      recvResult <- recvMessageWithLimit
-        (fromIntegral (rplMaxFrameSizeBytes (rpcPayloadLimits conn))) transport
+      receiveLimit <- readIORef (rpcReceiveFrameLimit conn)
+      recvResult <- recvMessageWithLimit (fromIntegral receiveLimit) transport
       case recvResult of
         Left err -> do
           let rpcErr = RPCTransportError err
@@ -420,7 +468,8 @@ rpcReceiverLoop conn = loop
             closeTransport transport
             pure ()
           Right envelope -> do
-            mProtocolFailure <- dispatchIncomingEnvelope session envelope
+            preApplyNegotiatedReceiveLimit conn envelope
+            mProtocolFailure <- dispatchIncomingEnvelope session bs envelope
             case mProtocolFailure of
               Nothing -> loop
               Just rpcErr -> do
@@ -428,17 +477,32 @@ rpcReceiverLoop conn = loop
                 completeAllPending session rpcErr
                 closeTransport transport
 
+-- Apply the negotiated receive bound on the receiver thread before it loops for
+-- a pipelined post-handshake frame. The full handshake validator still owns
+-- acceptance of the ACK and stores the negotiated feature set.
+preApplyNegotiatedReceiveLimit :: RPCConnection -> RPCEnvelope -> IO ()
+preApplyNegotiatedReceiveLimit conn envelope
+  | envType envelope /= MsgHandshakeAck || rpcProtocolVersion conn < 5 = pure ()
+  | otherwise =
+      let local = defaultStreamProposal
+            (fromIntegral (rplMaxFrameSizeBytes (rpcPayloadLimits conn)))
+      in case negotiateHandshakeStream (rpcProtocolVersion conn) local
+            (envPayload envelope) of
+          Right (Just limits) -> atomicModifyIORef' (rpcReceiveFrameLimit conn)
+            (const (nsvMaxFrameBytes limits, ()))
+          _ -> pure ()
+
 sendCorrelatedMessage
-  :: RPCPayloadLimits
+  :: Word64
   -> RPCSession
   -> Transport
   -> RPCEnvelope
   -> IO (Either TransportError ())
-sendCorrelatedMessage limits session transport envelope =
+sendCorrelatedMessage frameLimit session transport envelope =
   modifyMVar (rpcsWriteLock session) $ \() -> do
     let encoded = encodeMessageLazy envelope
         actual = toInteger (BL.length encoded)
-        limit = toInteger (rplMaxFrameSizeBytes limits)
+        limit = toInteger frameLimit
     result <- sendLazyMessageWithLimit (fromInteger limit) transport encoded
     pure ((), either
       (Left . contextualizeEnvelopeTransportError envelope actual limit)
@@ -464,10 +528,20 @@ isLocalOutgoingFramingFailure :: TransportError -> Bool
 isLocalOutgoingFramingFailure TransportFramingError{} = True
 isLocalOutgoingFramingFailure _ = False
 
+-- Handshake traffic uses the configured transport limit. Once v5 negotiation
+-- succeeds every RPC, control, and data frame is narrowed to the peer's bound.
+rpcOutgoingFrameLimit :: RPCConnection -> Word64
+rpcOutgoingFrameLimit conn = min local negotiated
+  where
+    local = fromIntegral (rplMaxFrameSizeBytes (rpcPayloadLimits conn))
+    negotiated = case (rpcProtocolVersion conn, rpcStreamV1 conn) of
+      (version, Just limits) | version >= 5 -> nsvMaxFrameBytes limits
+      _ -> local
+
 sendOneWay :: RPCConnection -> RPCEnvelope -> IO (Either RPCError ())
 sendOneWay conn envelope = do
   result <- sendCorrelatedMessage
-    (rpcPayloadLimits conn) (rpcSession conn) (rpcTransport conn) envelope
+    (rpcOutgoingFrameLimit conn) (rpcSession conn) (rpcTransport conn) envelope
   case result of
     Left err -> do
       let rpcErr = RPCTransportError err
@@ -508,7 +582,7 @@ sendAndAwaitPendingResult fatalTimeout mTimeout timeoutMessage conn transport se
       pure value
   where
     sendThenWait = do
-      sendResult <- sendCorrelatedMessage (rpcPayloadLimits conn) session transport envelope
+      sendResult <- sendCorrelatedMessage (rpcOutgoingFrameLimit conn) session transport envelope
       case sendResult of
         Left err -> do
           _ <- removePending session requestId
@@ -540,10 +614,75 @@ completeAllPending session err = do
   pendingMap <- modifyMVar (rpcsPending session) $ \pending -> pure (Map.empty, pending)
   forM_ (Map.elems pendingMap) $ \pending -> do
     _ <- tryPutMVar (rpResult pending) (Left err)
-    pure ()
+    forM_ (rpStreamEvents pending) $ \events -> atomically $
+      forceWriteStreamQueue events (RPCStreamFailed err)
 
-dispatchIncomingEnvelope :: RPCSession -> RPCEnvelope -> IO (Maybe RPCError)
-dispatchIncomingEnvelope session envelope =
+newRPCStreamQueueIO :: Int -> Word64 -> IO RPCStreamQueue
+newRPCStreamQueueIO countCapacity byteCapacity = RPCStreamQueue
+  <$> newTBQueueIO (fromIntegral countCapacity)
+  <*> newStreamByteQuotaIO byteCapacity
+
+streamEventRetainedBytes :: RPCStreamEvent -> Word64
+streamEventRetainedBytes event = max 1 $ case event of
+  RPCStreamWire original envelope ->
+    case Aeson.fromJSON (Aeson.toJSON envelope) of
+      Aeson.Success frame -> streamQueuedFrameRetainedBytes
+        (fromIntegral (BS.length original)) frame
+      Aeson.Error _ -> saturatingAdd
+        (fromIntegral (BS.length original)) (encodedBytes envelope)
+  RPCStreamFinal envelope -> encodedBytes envelope
+  RPCStreamFailed err -> fromIntegral (BS.length (TextEncoding.encodeUtf8 (rpcErrorText err)))
+  where
+    encodedBytes = fromIntegral . BL.length . encodeMessageLazy
+
+tryWriteStreamQueue :: RPCStreamQueue -> RPCStreamEvent -> STM Bool
+tryWriteStreamQueue queue value = do
+  let retained = streamEventRetainedBytes value
+  reserved <- tryReserveStreamBytes (rsqBytes queue) retained
+  if not reserved
+    then pure False
+    else do
+      full <- isFullTBQueue (rsqEvents queue)
+      if full
+        then releaseStreamBytes (rsqBytes queue) retained >> pure False
+        else writeTBQueue (rsqEvents queue) (retained, value) >> pure True
+
+readStreamQueue :: RPCStreamQueue -> STM RPCStreamEvent
+readStreamQueue queue = do
+  (retained, value) <- readTBQueue (rsqEvents queue)
+  releaseStreamBytes (rsqBytes queue) retained
+  pure value
+
+tryDropStreamQueueHead :: RPCStreamQueue -> STM Bool
+tryDropStreamQueueHead queue = do
+  dropped <- tryReadTBQueue (rsqEvents queue)
+  case dropped of
+    Nothing -> pure False
+    Just (retained, _) -> releaseStreamBytes (rsqBytes queue) retained >> pure True
+
+forceWriteStreamQueue :: RPCStreamQueue -> RPCStreamEvent -> STM ()
+forceWriteStreamQueue queue value = do
+  queued <- tryWriteStreamQueue queue value
+  unless queued $ do
+    dropped <- tryDropStreamQueueHead queue
+    if dropped
+      then forceWriteStreamQueue queue value
+      else do
+        -- A pathological terminal error larger than the negotiated queue is
+        -- replaced by a bounded deterministic failure marker.
+        _ <- tryWriteStreamQueue queue (RPCStreamFailed
+          (RPCProtocolError "stream receive queue failed"))
+        pure ()
+
+clearStreamQueue :: RPCStreamQueue -> STM ()
+clearStreamQueue queue = do
+  dropped <- tryReadTBQueue (rsqEvents queue)
+  case dropped of
+    Nothing -> clearStreamBytes (rsqBytes queue)
+    Just _ -> clearStreamQueue queue
+
+dispatchIncomingEnvelope :: RPCSession -> BS.ByteString -> RPCEnvelope -> IO (Maybe RPCError)
+dispatchIncomingEnvelope session original envelope =
   case envType envelope of
     MsgProgress -> lookupPending session envelope >>= \pending ->
       handleInterimEnvelope pending envelope
@@ -553,23 +692,40 @@ dispatchIncomingEnvelope session envelope =
       case envRequestId envelope of
         Nothing -> pure Nothing
         Just _ -> dispatchFinalEnvelope session envelope >> pure Nothing
-    MsgStreamOpen -> unsupportedStreamFrame
-    MsgStreamData -> unsupportedStreamFrame
-    MsgStreamWindow -> unsupportedStreamFrame
-    MsgStreamEnd -> unsupportedStreamFrame
-    MsgStreamCancel -> unsupportedStreamFrame
-    MsgStreamError -> unsupportedStreamFrame
+    MsgStreamOpen -> dispatchStream
+    MsgStreamData -> dispatchStream
+    MsgStreamWindow -> dispatchStream
+    MsgStreamEnd -> dispatchStream
+    MsgStreamCancel -> dispatchStream
+    MsgStreamError -> dispatchStream
     _ -> dispatchFinalEnvelope session envelope >> pure Nothing
   where
-    unsupportedStreamFrame = pure (Just (RPCProtocolError
-      "stream frame reached an RPC session without a registered stream adapter"))
+    dispatchStream = case envRequestId envelope of
+      Nothing -> pure (Just (RPCProtocolError "stream frame omits its parent request ID"))
+      Just requestId -> do
+        pending <- modifyMVar (rpcsPending session) $ \pendingMap ->
+          pure (pendingMap, Map.lookup requestId pendingMap)
+        case pending >>= rpStreamEvents of
+          Nothing -> pure (Just (RPCProtocolError
+            "stream frame reached an RPC session without a registered stream adapter"))
+          Just events -> do
+            queued <- atomically
+              (tryWriteStreamQueue events (RPCStreamWire original envelope))
+            pure $ if queued then Nothing else Just (RPCProtocolError
+              "stream receive queue exceeded its bounded byte or event capacity")
 
 dispatchFinalEnvelope :: RPCSession -> RPCEnvelope -> IO ()
 dispatchFinalEnvelope session envelope = do
-  mPending <- removePendingForEnvelope session envelope
-  case mPending of
-    Nothing -> pure ()
-    Just pending -> handleFinalEnvelope pending envelope
+  mPending <- lookupPending session envelope
+  case mPending >>= rpStreamEvents of
+    Just events -> do
+      queued <- atomically (tryWriteStreamQueue events (RPCStreamFinal envelope))
+      unless queued $ atomically $ forceWriteStreamQueue events
+        (RPCStreamFailed (RPCProtocolError
+          "stream receive queue exceeded its bounded byte or event capacity"))
+    Nothing -> do
+      removed <- removePendingForEnvelope session envelope
+      maybe (pure ()) (`handleFinalEnvelope` envelope) removed
 
 lookupPending :: RPCSession -> RPCEnvelope -> IO (Maybe RPCPending)
 lookupPending session envelope =
@@ -851,6 +1007,654 @@ invokeSimulationWithResolvedScope conn scope ctx overlay onProgress onLog = do
             Aeson.Success sr -> Right sr
             Aeson.Error err  -> Left (RPCProtocolError (Text.pack err))
 
+------------------------------------------------------------------------
+-- Protocol-v5 host streaming adapter
+------------------------------------------------------------------------
+
+data StreamedTerrainResult = StreamedTerrainResult
+  { strEnvelope :: !RPCEnvelope
+  , strPatch :: !Payload.TerrainDeltaPatch
+  }
+
+data DeltaChunkStage
+  = DeltaRemoval
+  | DeltaFile !StreamId !FilePath !Word32 !Word64
+
+data DeltaSpool = DeltaSpool
+  { dsRecords :: !(Set.Set StreamRecordKey)
+  , dsChunks :: !(Map (TerrainSection, Int) DeltaChunkStage)
+  , dsBytes :: !Word64
+  , dsItems :: !Word64
+  }
+
+emptyDeltaSpool :: DeltaSpool
+emptyDeltaSpool = DeltaSpool Set.empty Map.empty 0 0
+
+invokeGeneratorV5
+  :: RPCConnection -> ResolvedInvocationScope -> Word64 -> Topo.World.TerrainWorld
+  -> (PluginProgress -> IO ()) -> (PluginLog -> IO ())
+  -> IO (Either RPCError (GeneratorResult, Payload.TerrainDeltaPatch))
+invokeGeneratorV5 conn scope seed world onProgress onLog = do
+  streamed <- invokeTerrainV5 conn scope world onProgress onLog $ \snapshot ->
+    RPCEnvelope
+      { envType = MsgInvokeGenerator
+      , envPayload = addSnapshotReference world scope snapshot $ Aeson.toJSON InvokeGenerator
+          { igPayloadVersion = 1
+          , igStageId = "plugin:" <> rmName (rpcManifest conn)
+          , igSeed = seed
+          , igConfig = rpcParams conn
+          , igTerrain = Null
+          , igInvocationScope = invocationScopeBinding
+              (rpcManifest conn) InvocationGenerator (Just scope)
+          }
+      , envRequestId = Nothing
+      }
+  pure $ streamed >>= \completed -> do
+    validateScopedResultPayload (rpcManifest conn) InvocationGenerator
+      (Just scope) (envPayload (strEnvelope completed))
+    result <- case Aeson.fromJSON (envPayload (strEnvelope completed)) of
+      Aeson.Error err -> Left (RPCProtocolError (Text.pack err))
+      Aeson.Success value -> Right value
+    unless (emptyTerrainValue (grTerrain result)) $ Left (RPCProtocolError
+      "protocol 5 generator result must carry terrain only through terrain_delta streams")
+    Right (result, strPatch completed)
+
+invokeSimulationV5
+  :: RPCConnection -> ResolvedInvocationScope -> SimContext -> Overlay
+  -> (PluginProgress -> IO ()) -> (PluginLog -> IO ())
+  -> IO (Either RPCError (SimulationResult, Payload.TerrainDeltaPatch))
+invokeSimulationV5 conn scope ctx overlay onProgress onLog = do
+  let manifest = rpcManifest conn
+      overlaysPayload = scopedOverlaysToJSON
+        (risDependencyOverlayChunkIds scope) (scOverlays ctx)
+      ownOverlayPayload
+        | risOwnedOverlayIdentity scope == Just (rmName manifest) =
+            overlayToScopedJSON (risOwnOverlayReadChunkIds scope) overlay
+        | otherwise = Null
+  case validateOverlayInputBudget True scope overlaysPayload ownOverlayPayload of
+    Left err -> pure (Left (RPCProtocolError err))
+    Right () -> do
+      streamed <- invokeTerrainV5 conn scope (scTerrain ctx) onProgress onLog $ \snapshot ->
+        RPCEnvelope
+          { envType = MsgInvokeSimulation
+          , envPayload = addSnapshotReference (scTerrain ctx) scope snapshot $ Aeson.toJSON InvokeSimulation
+              { isPayloadVersion = 1
+              , isNodeId = rmName manifest
+              , isWorldTime = wtTick (scWorldTime ctx)
+              , isDeltaTicks = scDeltaTicks ctx
+              , isCalendar = calendarToJSON (scCalendar ctx)
+              , isConfig = rpcParams conn
+              , isTerrain = Null
+              , isOverlays = overlaysPayload
+              , isOwnOverlay = ownOverlayPayload
+              , isInvocationScope = invocationScopeBinding
+                  manifest InvocationSimulation (Just scope)
+              }
+          , envRequestId = Nothing
+          }
+      pure $ streamed >>= \completed -> do
+        validateScopedResultPayload manifest InvocationSimulation
+          (Just scope) (envPayload (strEnvelope completed))
+        result <- case Aeson.fromJSON (envPayload (strEnvelope completed)) of
+          Aeson.Error err -> Left (RPCProtocolError (Text.pack err))
+          Aeson.Success value -> Right value
+        unless (maybe True emptyTerrainValue (srTerrainWrites result)) $ Left (RPCProtocolError
+          "protocol 5 simulation result must carry terrain writes only through terrain_delta streams")
+        Right (result, strPatch completed)
+
+emptyTerrainValue :: Value -> Bool
+emptyTerrainValue Null = True
+emptyTerrainValue (Object fields) = KM.null fields
+emptyTerrainValue _ = False
+
+invokeTerrainV5
+  :: RPCConnection -> ResolvedInvocationScope -> Topo.World.TerrainWorld
+  -> (PluginProgress -> IO ()) -> (PluginLog -> IO ())
+  -> (Maybe StreamId -> RPCEnvelope)
+  -> IO (Either RPCError StreamedTerrainResult)
+invokeTerrainV5 conn scope world onProgress onLog buildEnvelope =
+  case rpcStreamV1 conn of
+    Nothing -> pure (Left (RPCProtocolError
+      "protocol 5 invocation has no negotiated stream_v1 limits"))
+    Just streamLimits -> withMVar (rpcStreamInvocationLock conn) $ \() -> do
+      snapshotResult <- if Set.null (risTerrainInputSections scope)
+        then pure (Right Nothing)
+        else fmap Just <$> nextHostStreamId conn
+      case snapshotResult of
+        Left err -> pure (Left (RPCProtocolError err))
+        Right snapshotId -> withStreamRequest conn streamLimits onProgress onLog
+          (buildEnvelope snapshotId) $ \requestId events -> do
+          deadline <- streamDeadline conn streamLimits
+          sentSnapshot <- case snapshotId of
+            Nothing -> pure (Right ())
+            Just sid -> sendTerrainSnapshot conn streamLimits deadline events requestId
+              scope world sid
+          case sentSnapshot of
+            Left err -> pure (Left err)
+            Right () -> do
+              finalResult <- awaitStreamFinal conn streamLimits deadline events requestId
+                (Set.fromList [sid | Just sid <- [snapshotId]])
+              case finalResult of
+                Left err -> pure (Left err)
+                Right finalEnvelope -> case envType finalEnvelope of
+                  MsgError -> pure (Left (decodePluginErrorPayload (envPayload finalEnvelope)))
+                  _ -> case parseDeltaStreamIds scope (envPayload finalEnvelope) of
+                    Left err -> pure (Left (RPCProtocolError err))
+                    Right streamIds -> case reservePluginStreamIds conn streamLimits streamIds of
+                      reserveAction -> do
+                        reserved <- reserveAction
+                        case reserved of
+                          Left err -> pure (Left (RPCProtocolError err))
+                          Right () -> do
+                            let inlineBytes = fromIntegral (BL.length
+                                  (Aeson.encode (envPayload finalEnvelope)))
+                                outputLimit = rsbOutputBytes (risBudgets scope)
+                            if inlineBytes > outputLimit
+                              then pure (Left (RPCProtocolError
+                                "protocol 5 inline result exceeds the resolved output budget"))
+                              else do
+                                let budgets = (risBudgets scope)
+                                      { rsbOutputBytes = outputLimit - inlineBytes }
+                                    deltaScope = scope { risBudgets = budgets }
+                                patchResult <- receiveTerrainDelta conn streamLimits deadline events
+                                  requestId deltaScope world streamIds
+                                pure (StreamedTerrainResult finalEnvelope <$> patchResult)
+
+withStreamRequest
+  :: RPCConnection -> NegotiatedStreamV1
+  -> (PluginProgress -> IO ()) -> (PluginLog -> IO ())
+  -> RPCEnvelope
+  -> (Word64 -> RPCStreamQueue -> IO (Either RPCError a))
+  -> IO (Either RPCError a)
+withStreamRequest conn streamLimits onProgress onLog envelope action = mask $ \restore -> do
+  let session = rpcSession conn
+  requestId <- nextRPCRequestId session
+  let queueCapacity = max 8 (min 4096 (fromIntegral (nsvMaxItems streamLimits)))
+      queueBytes = streamQueueByteCapacity streamLimits
+  events <- newRPCStreamQueueIO queueCapacity queueBytes
+  done <- newEmptyMVar
+  registerPending session requestId RPCPending
+    { rpResult = done
+    , rpOnProgress = onProgress
+    , rpOnLog = onLog
+    , rpStreamEvents = Just events
+    }
+  let request = envelope { envRequestId = Just requestId }
+      cleanup = do
+        _ <- removePending session requestId
+        atomically (clearStreamQueue events)
+      run = do
+        sent <- sendCorrelatedMessage (rpcOutgoingFrameLimit conn) session
+          (rpcTransport conn) request
+        case sent of
+          Left transportErr -> pure (Left (RPCTransportError transportErr))
+          Right () -> startRPCReceiver conn >> action requestId events
+  timed <- restore (case rpcRequestTimeoutMicros conn of
+      Nothing -> Just <$> run
+      Just micros -> timeout micros run) `finally` cleanup
+  case timed of
+    Nothing -> do
+      let err = RPCTimeout "plugin streamed invocation timed out"
+      recordRuntimeFailure conn (RPCFailureRequest requestId) err
+      -- An asynchronous timeout may interrupt a framed stream exchange. Close
+      -- rather than permit a peer to continue writing beyond cancellation.
+      closeTransport (rpcTransport conn)
+      pure (Left err)
+    Just result -> do
+      recordResultFailure conn (RPCFailureRequest requestId) result
+      case result of
+        Left RPCProtocolError{} -> closeTransport (rpcTransport conn)
+        _ -> pure ()
+      pure result
+
+nextHostStreamId :: RPCConnection -> IO (Either Text StreamId)
+nextHostStreamId conn = atomicModifyIORef' (rpcNextHostStreamId conn) $ \current ->
+  if current == 0
+    then (0, Left "host stream ID space is exhausted; reconnect the plugin")
+    else let next = if current >= maxBound - 2 then 0 else current + 2
+         in (next, Right (StreamId current))
+
+reservePluginStreamIds
+  :: RPCConnection -> NegotiatedStreamV1 -> Set.Set StreamId -> IO (Either Text ())
+reservePluginStreamIds conn limits streamIds
+  | Set.size streamIds > nsvMaxConcurrentStreams limits = pure
+      (Left "parent references too many terrain delta streams")
+  | otherwise = atomicModifyIORef' (rpcHighestPluginStreamId conn) $ \highest ->
+      let ordered = map unStreamId (Set.toAscList streamIds)
+          valid = all (\value -> value /= 0 && even value && value > highest) ordered
+      in if valid
+          then (if null ordered then highest else last ordered, Right ())
+          else (highest, Left "plugin stream IDs must be even, monotonic, and never reused")
+
+streamDeadline :: RPCConnection -> NegotiatedStreamV1 -> IO Word64
+streamDeadline conn limits = do
+  now <- monotonicMicros
+  let requestBudget = maybe maxBound fromIntegral (rpcRequestTimeoutMicros conn)
+  pure (saturatingAdd now requestBudget)
+
+monotonicMicros :: IO Word64
+monotonicMicros = (`div` 1000) <$> getMonotonicTimeNSec
+
+saturatingAdd :: Word64 -> Word64 -> Word64
+saturatingAdd left right
+  | maxBound - left < right = maxBound
+  | otherwise = left + right
+
+addSnapshotReference
+  :: Topo.World.TerrainWorld -> ResolvedInvocationScope -> Maybe StreamId
+  -> Value -> Value
+addSnapshotReference _ _ Nothing value = value
+addSnapshotReference world scope (Just sid) (Object fields) = Object
+  (KM.insert "terrain_snapshot" reference fields)
+  where
+    reference = object
+      [ "payload_version" .= (1 :: Int)
+      , "scope_id" .= risScopeId scope
+      , "stream_ids" .= [sid]
+      , "header" .= object
+          [ "chunk_size" .= Topo.Types.wcChunkSize (Topo.World.twConfig world)
+          , "hex_grid" .= Topo.World.twHexGrid world
+          , "planet" .= Topo.World.twPlanet world
+          , "slice" .= Topo.World.twSlice world
+          ]
+      ]
+addSnapshotReference _ _ _ value = value
+
+sendTerrainSnapshot
+  :: RPCConnection -> NegotiatedStreamV1 -> Word64 -> RPCStreamQueue
+  -> Word64 -> ResolvedInvocationScope -> Topo.World.TerrainWorld -> StreamId
+  -> IO (Either RPCError ())
+sendTerrainSnapshot conn limits deadline events requestId scope world sid = do
+  let open = StreamOpen
+        { soStreamId = sid
+        , soParentRequestId = requestId
+        , soScopeId = risScopeId scope
+        , soPayloadKind = TerrainSnapshot
+        , soPayloadVersion = 1
+        , soSections = risTerrainInputSections scope
+        , soChunkIds = risTerrainInputChunkIds scope
+        , soMetadata = object []
+        , soCodec = StreamIdentity
+        , soTotalItems = Nothing
+        , soTotalBytes = Nothing
+        , soFinalSha256 = Nothing
+        }
+      start = newStreamMachine StreamHost limits
+  now <- monotonicMicros
+  case registerStreamRequest requestId scope deadline start
+      >>= markParentResultReceived requestId (Set.singleton sid)
+      >>= openOutboundStream now open of
+    Left failure -> pure (Left (RPCProtocolError (sfMessage failure)))
+    Right machine -> do
+      opened <- sendRPCStreamFrame conn (StreamOpenEnvelope open)
+      case opened of
+        Left err -> pure (Left err)
+        Right () -> do
+          sent <- foldSnapshotChunks limits world scope
+            (machine, 0, 0) (sendSnapshotChunk conn limits deadline events requestId sid)
+          case sent of
+            Left err -> pure (Left err)
+            Right (finishedMachine, _, _) -> case outboundStreamEnd sid finishedMachine of
+              Left failure -> pure (Left (RPCProtocolError (sfMessage failure)))
+              Right end -> do
+                endedAt <- monotonicMicros
+                case endOutboundStream endedAt end finishedMachine of
+                  Left failure -> pure (Left (RPCProtocolError (sfMessage failure)))
+                  Right _ -> sendRPCStreamFrame conn (StreamEndEnvelope end)
+
+foldSnapshotChunks
+  :: NegotiatedStreamV1 -> Topo.World.TerrainWorld -> ResolvedInvocationScope
+  -> state
+  -> (state -> StreamRecordKey -> BS.ByteString -> IO (Either RPCError state))
+  -> IO (Either RPCError state)
+foldSnapshotChunks limits world scope initial step = foldM foldSection
+  (Right initial) (Set.toAscList (risTerrainInputSections scope))
+  where
+    chunkIds = IntSet.toAscList (risTerrainInputChunkIds scope)
+    config = Topo.World.twConfig world
+    foldSection (Left err) _ = pure (Left err)
+    foldSection (Right state) section = foldM (foldChunk section) (Right state) chunkIds
+    foldChunk _ (Left err) _ = pure (Left err)
+    foldChunk section (Right state) chunkId = case encodeSection section chunkId of
+      Nothing -> pure (Right state)
+      Just (Left err) -> pure (Left (RPCProtocolError (Text.pack (show err))))
+      Just (Right raw) -> foldM (foldPart section chunkId) (Right state)
+        (fragmentTerrainRecord limits section chunkId raw)
+    foldPart _ _ (Left err) _ = pure (Left err)
+    foldPart _ _ (Right state) (key, raw) = step state key raw
+    encodeSection TerrainElevation chunkId = encodeTerrainChunk config <$>
+      IntMap.lookup chunkId (Topo.World.twTerrain world)
+    encodeSection TerrainClimate chunkId = encodeClimateChunk config <$>
+      IntMap.lookup chunkId (Topo.World.twClimate world)
+    encodeSection TerrainVegetation chunkId = encodeVegetationChunk config <$>
+      IntMap.lookup chunkId (Topo.World.twVegetation world)
+
+fragmentTerrainRecord
+  :: NegotiatedStreamV1 -> TerrainSection -> Int -> BS.ByteString
+  -> [(StreamRecordKey, BS.ByteString)]
+fragmentTerrainRecord limits section chunkId = go 0 0
+  where
+    frameAllowance = if nsvMaxFrameBytes limits > 768
+      then nsvMaxFrameBytes limits - 768 else 1
+    pieceSize = fromIntegral (max 1 (min (nsvReceiveWindowBytes limits)
+      (frameAllowance * 3 `div` 4)))
+    go _ _ bytes | BS.null bytes = []
+    go part offset bytes =
+      let (piece, rest) = BS.splitAt pieceSize bytes
+      in (StreamRecordKey section chunkId part offset, piece)
+        : go (part + 1) (offset + fromIntegral (BS.length piece)) rest
+
+sendSnapshotChunk
+  :: RPCConnection -> NegotiatedStreamV1 -> Word64 -> RPCStreamQueue
+  -> Word64 -> StreamId
+  -> (StreamMachine, Word64, Word64) -> StreamRecordKey -> BS.ByteString
+  -> IO (Either RPCError (StreamMachine, Word64, Word64))
+sendSnapshotChunk conn limits deadline events requestId sid
+    (machine, credit, sequenceNo) key raw = do
+  creditResult <- awaitSnapshotCredit conn limits deadline events requestId sid
+    (fromIntegral (BS.length raw)) machine credit
+  case creditResult of
+    Left err -> pure (Left err)
+    Right (creditedMachine, available) -> do
+      let record = encodeStreamRecord StreamIdentity sid requestId sequenceNo key raw
+      now <- monotonicMicros
+      case sendOutboundRecord now record raw creditedMachine of
+        Left failure -> pure (Left (RPCProtocolError (sfMessage failure)))
+        Right machine' -> do
+          sent <- sendRPCStreamFrame conn (StreamDataEnvelope record)
+          pure ((\() -> (machine', available - srUncompressedLength record,
+            sequenceNo + 1)) <$> sent)
+
+awaitSnapshotCredit
+  :: RPCConnection -> NegotiatedStreamV1 -> Word64 -> RPCStreamQueue
+  -> Word64 -> StreamId -> Word64 -> StreamMachine -> Word64
+  -> IO (Either RPCError (StreamMachine, Word64))
+awaitSnapshotCredit conn limits deadline events requestId sid needed machine credit
+  | needed <= credit = pure (Right (machine, credit))
+  | otherwise = do
+      event <- readStreamEventUntil (nsvIdleTimeoutMicros limits) deadline events
+      case event of
+        Left err -> do
+          cancelStreamRequestBounded conn requestId (rpcErrorText err) machine
+          pure (Left err)
+        Right (RPCStreamFailed err) -> pure (Left err)
+        Right (RPCStreamFinal _) -> do
+          cancelStreamRequestBounded conn requestId
+            "plugin returned a parent result before consuming its terrain snapshot" machine
+          pure (Left (RPCProtocolError
+            "plugin returned a parent result before consuming its terrain snapshot"))
+        Right (RPCStreamWire original envelope) -> case decodeStreamEnvelope envelope of
+          Left err -> pure (Left (RPCProtocolError err))
+          Right frame -> do
+            now <- monotonicMicros
+            let (machine', outcome) = receiveStreamEnvelopeWithFrameBytes now
+                  (fromIntegral (BS.length original)) frame machine
+            case outcome of
+              Left failure -> do
+                handleStreamFailure conn failure
+                pure (Left (RPCProtocolError (sfMessage failure)))
+              Right effects -> do
+                effectResult <- sendStreamEffects conn effects
+                case effectResult of
+                  Left err -> pure (Left err)
+                  Right () -> case frame of
+                    StreamWindowEnvelope windowSid parent amount
+                      | windowSid == sid && parent == requestId ->
+                          awaitSnapshotCredit conn limits deadline events requestId sid
+                            needed machine' (credit + amount)
+                    StreamCancelEnvelope cancel -> pure (Left (RPCProtocolError
+                      ("plugin cancelled terrain snapshot: " <> scReason cancel)))
+                    StreamErrorEnvelope streamErr -> pure (Left (RPCProtocolError
+                      ("plugin rejected terrain snapshot: " <> speMessage streamErr)))
+                    _ -> awaitSnapshotCredit conn limits deadline events requestId sid
+                      needed machine' credit
+
+awaitStreamFinal
+  :: RPCConnection -> NegotiatedStreamV1 -> Word64 -> RPCStreamQueue
+  -> Word64 -> Set.Set StreamId -> IO (Either RPCError RPCEnvelope)
+awaitStreamFinal conn limits deadline events requestId completedOutbound = go
+  where
+    go = do
+      event <- readStreamEventUntil (nsvIdleTimeoutMicros limits) deadline events
+      case event of
+        Left err -> do
+          closeStreamConnection conn (rpcErrorText err)
+          pure (Left err)
+        Right (RPCStreamFailed err) -> pure (Left err)
+        Right (RPCStreamFinal envelope) -> pure (Right envelope)
+        Right (RPCStreamWire original envelope) -> case decodeStreamEnvelope envelope of
+          Right (StreamWindowEnvelope sid parent credit)
+            | Set.member sid completedOutbound
+            , parent == requestId
+            , credit > 0
+            , fromIntegral (BS.length original) <= nsvMaxFrameBytes limits -> go
+          _ -> do
+            closeStreamConnection conn
+              "stream frame arrived before its referencing parent result"
+            pure (Left (RPCProtocolError
+              "stream frame arrived before its referencing parent result"))
+
+readStreamEventUntil
+  :: Word64 -> Word64 -> RPCStreamQueue
+  -> IO (Either RPCError RPCStreamEvent)
+readStreamEventUntil idleMicros deadline events = do
+  now <- monotonicMicros
+  if now >= deadline
+    then pure (Left (RPCTimeout "plugin stream deadline expired"))
+    else do
+      let remaining = fromInteger (min (toInteger (min idleMicros (deadline - now)))
+            (toInteger (maxBound :: Int)))
+      received <- timeout remaining (atomically (readStreamQueue events))
+      pure (maybe (Left (RPCTimeout "plugin stream deadline expired")) Right received)
+
+parseDeltaStreamIds :: ResolvedInvocationScope -> Value -> Either Text (Set.Set StreamId)
+parseDeltaStreamIds scope (Object fields) = case KM.lookup "terrain_delta" fields of
+  Nothing -> Right Set.empty
+  Just value -> case AesonTypes.parseMaybe parser value of
+    Nothing -> Left "invalid terrain_delta stream reference"
+    Just streamIds -> Right streamIds
+  where
+    parser = Aeson.withObject "terrain_delta" $ \delta -> do
+      version <- delta .: "payload_version"
+      unless (version == (1 :: Int)) (fail "unsupported terrain_delta payload version")
+      scopeId <- delta .: "scope_id"
+      unless (scopeId == risScopeId scope) (fail "terrain_delta scope ID mismatch")
+      ids <- Set.fromList <$> delta .: "stream_ids"
+      when (Set.null ids) (fail "terrain_delta stream_ids must not be empty")
+      pure ids
+parseDeltaStreamIds _ _ = Left "protocol 5 result payload must be an object"
+
+receiveTerrainDelta
+  :: RPCConnection -> NegotiatedStreamV1 -> Word64 -> RPCStreamQueue
+  -> Word64 -> ResolvedInvocationScope -> Topo.World.TerrainWorld
+  -> Set.Set StreamId -> IO (Either RPCError Payload.TerrainDeltaPatch)
+receiveTerrainDelta conn limits deadline events requestId scope world streamIds
+  | Set.null streamIds = do
+      decoded <- Payload.decodeTerrainDeltaPatchFiles (Topo.World.twConfig world) []
+      pure (either (Left . RPCProtocolError) Right decoded)
+  | otherwise = do
+      now <- monotonicMicros
+      case registerStreamRequest requestId scope deadline (newStreamMachine StreamHost limits)
+          >>= markParentResultReceived requestId streamIds of
+        Left failure -> pure (Left (RPCProtocolError (sfMessage failure)))
+        Right machine -> withSystemTempDirectory "topo-host-delta" $ \spoolDir ->
+          loop spoolDir machine emptyDeltaSpool
+  where
+    loop spoolDir machine spool =
+      loopBody spoolDir machine spool `onException` cleanupDeltaSpool spool
+    loopBody spoolDir machine spool
+      | parentResultReady requestId machine = do
+          decodedAttempt <- try (Payload.decodeTerrainDeltaPatchFiles
+            (Topo.World.twConfig world)
+            [ (section, chunkId, stagePath stage)
+            | ((section, chunkId), stage) <- Map.toAscList (dsChunks spool)
+            ]) `finally` cleanupDeltaSpool spool
+          pure $ case decodedAttempt of
+            Left (err :: SomeException) -> Left (RPCProtocolError
+              ("failed to decode staged terrain delta: " <> Text.pack (show err)))
+            Right decoded -> either (Left . RPCProtocolError) Right decoded
+      | otherwise = do
+          event <- readStreamEventUntil (nsvIdleTimeoutMicros limits) deadline events
+          case event of
+            Left err -> do
+              cancelStreamRequestBounded conn requestId (rpcErrorText err) machine
+              cleanupDeltaSpool spool
+              pure (Left err)
+            Right (RPCStreamFailed err) -> cleanupDeltaSpool spool >> pure (Left err)
+            Right (RPCStreamFinal _) -> cleanupDeltaSpool spool >> pure
+              (Left (RPCProtocolError "duplicate parent result during terrain delta stream"))
+            Right (RPCStreamWire original envelope) -> case decodeStreamEnvelope envelope of
+              Left err -> cleanupDeltaSpool spool >> pure (Left (RPCProtocolError err))
+              Right frame -> do
+                now <- monotonicMicros
+                let (machine1, outcome) = receiveStreamEnvelopeWithFrameBytes now
+                      (fromIntegral (BS.length original)) frame machine
+                case outcome of
+                  Left failure -> do
+                    handleStreamFailure conn failure
+                    cleanupDeltaSpool spool
+                    pure (Left (RPCProtocolError (sfMessage failure)))
+                  Right effects -> do
+                    sent <- sendStreamEffects conn effects
+                    case sent of
+                      Left err -> cleanupDeltaSpool spool >> pure (Left err)
+                      Right () -> consumeEffects spoolDir machine1 spool effects
+    consumeEffects spoolDir machine spool [] = loop spoolDir machine spool
+    consumeEffects spoolDir machine spool (effect:rest) = case effect of
+      DeliverStreamRecord sid _ key raw -> do
+        staged <- spoolDeltaRecord limits spoolDir spool sid key raw
+        case staged of
+          Left err -> cleanupDeltaSpool spool >> pure (Left (RPCProtocolError err))
+          Right spool' -> do
+            now <- monotonicMicros
+            case consumeStreamRecord now sid machine of
+              Left failure -> cleanupDeltaSpool spool' >> pure
+                (Left (RPCProtocolError (sfMessage failure)))
+              Right (machine', more) -> do
+                sent <- sendStreamEffects conn more
+                case sent of
+                  Left err -> cleanupDeltaSpool spool' >> pure (Left err)
+                  Right () -> consumeEffects spoolDir machine' spool' rest
+      ParentRequestCancelled _ reason -> cleanupDeltaSpool spool >> pure
+        (Left (RPCProtocolError reason))
+      ConnectionMustClose reason -> cleanupDeltaSpool spool >> pure
+        (Left (RPCProtocolError reason))
+      _ -> consumeEffects spoolDir machine spool rest
+    stagePath DeltaRemoval = Nothing
+    stagePath (DeltaFile _ path _ _) = Just path
+
+spoolDeltaRecord
+  :: NegotiatedStreamV1 -> FilePath -> DeltaSpool -> StreamId
+  -> StreamRecordKey -> BS.ByteString -> IO (Either Text DeltaSpool)
+spoolDeltaRecord limits spoolDir spool sid key raw
+  | dsItems spool >= nsvMaxItems limits = pure (Left
+      "terrain delta exceeds the request aggregate item limit")
+  | amount > nsvAggregateStagedBytes limits
+      || dsBytes spool > nsvAggregateStagedBytes limits - amount = pure (Left
+          "terrain delta exceeds the negotiated persistent spool quota")
+  | Set.member key (dsRecords spool) = pure (Left
+      "terrain delta contains duplicate records across streams")
+  | srkPart key == maxBound =
+      if srkOffset key /= 0 || not (BS.null raw) || Map.member logical (dsChunks spool)
+        then pure (Left "invalid or duplicate terrain delta removal")
+        else pure (Right (insertStage DeltaRemoval))
+  | otherwise = case Map.lookup logical (dsChunks spool) of
+      Nothing
+        | srkPart key /= 0 || srkOffset key /= 0 -> pure (Left
+            "terrain delta chunk does not begin at part and offset zero")
+        | otherwise -> do
+            (path, handle) <- openBinaryTempFile spoolDir "chunk"
+            hClose handle
+            writeResult <- try (BS.writeFile path raw) :: IO (Either SomeException ())
+            case writeResult of
+              Left err -> removeIfExists path >> pure (Left
+                ("failed to stage terrain delta: " <> Text.pack (show err)))
+              Right () -> pure (Right (insertStage
+                (DeltaFile sid path 1 (fromIntegral (BS.length raw)))))
+      Just DeltaRemoval -> pure (Left "terrain delta writes after a removal")
+      Just (DeltaFile owner path nextPart nextOffset)
+        | owner /= sid -> pure (Left "terrain delta chunk fragments cross stream boundaries")
+        | srkPart key /= nextPart || srkOffset key /= nextOffset -> pure (Left
+            "terrain delta chunk fragments are not contiguous")
+        | otherwise -> do
+            appendResult <- try (BS.appendFile path raw) :: IO (Either SomeException ())
+            case appendResult of
+              Left err -> pure (Left ("failed to append terrain delta: " <> Text.pack (show err)))
+              Right () -> pure (Right (insertStage (DeltaFile owner path
+                (nextPart + 1) (nextOffset + fromIntegral (BS.length raw)))))
+  where
+    logical = (srkSection key, srkChunkId key)
+    amount = fromIntegral (BS.length raw)
+    insertStage stage = DeltaSpool
+      { dsRecords = Set.insert key (dsRecords spool)
+      , dsChunks = Map.insert logical stage (dsChunks spool)
+      , dsBytes = dsBytes spool + amount
+      , dsItems = dsItems spool + 1
+      }
+
+cleanupDeltaSpool :: DeltaSpool -> IO ()
+cleanupDeltaSpool spool = mapM_ removeIfExists
+  [ path | DeltaFile _ path _ _ <- Map.elems (dsChunks spool) ]
+
+removeIfExists :: FilePath -> IO ()
+removeIfExists path = do
+  result <- try $ do
+    exists <- doesFileExist path
+    when exists (removeFile path)
+  case result :: Either SomeException () of
+    Left _ -> pure ()
+    Right () -> pure ()
+
+sendRPCStreamFrame :: RPCConnection -> StreamEnvelope -> IO (Either RPCError ())
+sendRPCStreamFrame conn frame = case streamEnvelopeToRPC frame of
+  Left err -> pure (Left (RPCProtocolError err))
+  Right envelope -> sendOneWay conn envelope
+
+streamEnvelopeToRPC :: StreamEnvelope -> Either Text RPCEnvelope
+streamEnvelopeToRPC frame = case Aeson.fromJSON (Aeson.toJSON frame) of
+  Aeson.Error err -> Left (Text.pack err)
+  Aeson.Success envelope -> Right envelope
+
+decodeStreamEnvelope :: RPCEnvelope -> Either Text StreamEnvelope
+decodeStreamEnvelope envelope = case Aeson.fromJSON (Aeson.toJSON envelope) of
+  Aeson.Error err -> Left ("invalid stream envelope: " <> Text.pack err)
+  Aeson.Success frame -> Right frame
+
+sendStreamEffects :: RPCConnection -> [StreamEffect] -> IO (Either RPCError ())
+sendStreamEffects conn = foldM send (Right ())
+  where
+    send (Left err) _ = pure (Left err)
+    send (Right ()) effect = case effect of
+      GrantStreamWindow sid requestId credit ->
+        sendRPCStreamFrame conn (StreamWindowEnvelope sid requestId credit)
+      SendStreamCancel cancel -> sendRPCStreamFrame conn (StreamCancelEnvelope cancel)
+      SendStreamError streamErr -> sendRPCStreamFrame conn (StreamErrorEnvelope streamErr)
+      ConnectionMustClose reason -> do
+        closeStreamConnection conn reason
+        pure (Left (RPCProtocolError reason))
+      _ -> pure (Right ())
+
+handleStreamFailure :: RPCConnection -> StreamFailure -> IO ()
+handleStreamFailure conn failure = do
+  _ <- sendStreamEffects conn (streamFailureEffects failure)
+  when (sfClass failure == StreamConnectionCorruption) $
+    closeStreamConnection conn (sfMessage failure)
+
+cancelStreamRequestBounded
+  :: RPCConnection -> Word64 -> Text -> StreamMachine -> IO ()
+cancelStreamRequestBounded conn requestId reason machine = do
+  let (_, effects) = cancelStreamRequest requestId reason machine
+  sent <- timeout 1000000 (sendStreamEffects conn effects)
+  case sent of
+    Just (Right ()) -> pure ()
+    _ -> closeStreamConnection conn "stream cancellation could not complete"
+
+closeStreamConnection :: RPCConnection -> Text -> IO ()
+closeStreamConnection conn reason = do
+  let err = RPCProtocolError reason
+  recordRuntimeFailure conn RPCFailureTransport err
+  closeTransport (rpcTransport conn)
+
 -- | Send a shutdown message to the plugin.
 rpcShutdown :: RPCConnection -> IO ()
 rpcShutdown conn = do
@@ -948,13 +1752,17 @@ performHandshakeWithAuth conn worldPath mAuth = do
                 Right normalizedDataDirectory ->
                   case negotiateHandshakeStream selectedProtocol streamProposal (envPayload env) of
                     Left streamErr -> pure (Left (RPCProtocolError streamErr))
-                    Right negotiated -> pure (Right conn
-                      { rpcProtocolVersion = haProtocolVersion ack
-                      , rpcStreamV1 = negotiated
-                      , rpcDataDirectory   = fmap Text.unpack normalizedDataDirectory
-                      , rpcResources       = haResources ack
-                      , rpcResourcesNegotiated = True
-                      })
+                    Right negotiated -> do
+                      forM_ negotiated $ \streamLimits ->
+                        atomicModifyIORef' (rpcReceiveFrameLimit conn) (const
+                          (nsvMaxFrameBytes streamLimits, ()))
+                      pure (Right (conn
+                        { rpcProtocolVersion = haProtocolVersion ack
+                        , rpcStreamV1 = negotiated
+                        , rpcDataDirectory   = fmap Text.unpack normalizedDataDirectory
+                        , rpcResources       = haResources ack
+                        , rpcResourcesNegotiated = True
+                        }))
           Aeson.Error err -> pure (Left (RPCProtocolError (Text.pack err)))
       MsgError ->
         pure (Left (decodePluginErrorPayload (envPayload env)))
@@ -1346,24 +2154,36 @@ rpcGeneratorStage conn =
         case resolveGeneratorInvocationScope conn world of
           Left err ->
             throwError (PluginInvariantError ("rpc generator scope resolution failed: " <> err))
-          Right scope -> case generatorStageTerrainPayload (rpcPayloadLimits conn) manifest scope world of
-            Left err ->
-              throwError (PluginInvariantError ("rpc generator encode failed: " <> err))
-            Right terrainPayload -> do
-              seed <- asks peSeed
-              reportProgress <- asks peProgress
-              result <- liftIO (invokeGeneratorWithResolvedScope conn (Just scope) seed terrainPayload
-                (reportProgress . formatPluginProgressDetail (rmName manifest))
-                (\_ -> pure ()))
-              case result of
-                Left err -> throwError (PluginInvariantError ("rpc generator failed: " <> rpcErrorText err))
-                Right generatorResult ->
-                  case applyGeneratorResult (rpcPayloadLimits conn) manifest (Just scope) world generatorResult of
-                    Left mergeErr ->
-                      throwError (PluginInvariantError ("rpc generator merge failed: " <> mergeErr))
-                    Right mergedWorld -> do
-                      liftTopo (putWorld mergedWorld)
-                      logInfo ("plugin:" <> rmName manifest <> ": generator complete")
+          Right scope -> do
+            seed <- asks peSeed
+            reportProgress <- asks peProgress
+            let progress = reportProgress . formatPluginProgressDetail (rmName manifest)
+            if rpcProtocolVersion conn >= 5
+              then do
+                result <- liftIO (invokeGeneratorV5 conn scope seed world progress (\_ -> pure ()))
+                case result of
+                  Left err -> throwError (PluginInvariantError ("rpc generator failed: " <> rpcErrorText err))
+                  Right (generatorResult, patch) ->
+                    case applyGeneratorStreamedResult manifest scope world generatorResult patch of
+                      Left mergeErr -> throwError (PluginInvariantError
+                        ("rpc generator merge failed: " <> mergeErr))
+                      Right mergedWorld -> do
+                        liftTopo (putWorld mergedWorld)
+                        logInfo ("plugin:" <> rmName manifest <> ": generator complete")
+              else case generatorStageTerrainPayload (rpcPayloadLimits conn) manifest scope world of
+                Left err -> throwError (PluginInvariantError ("rpc generator encode failed: " <> err))
+                Right terrainPayload -> do
+                  result <- liftIO (invokeGeneratorWithResolvedScope conn (Just scope) seed terrainPayload
+                    progress (\_ -> pure ()))
+                  case result of
+                    Left err -> throwError (PluginInvariantError ("rpc generator failed: " <> rpcErrorText err))
+                    Right generatorResult ->
+                      case applyGeneratorResult (rpcPayloadLimits conn) manifest (Just scope) world generatorResult of
+                        Left mergeErr -> throwError (PluginInvariantError
+                          ("rpc generator merge failed: " <> mergeErr))
+                        Right mergedWorld -> do
+                          liftTopo (putWorld mergedWorld)
+                          logInfo ("plugin:" <> rmName manifest <> ": generator complete")
     }
 
 -- | Create a 'SimNode' from an RPC connection.
@@ -1392,16 +2212,22 @@ rpcSimNode conn =
             else case resolveSimulationInvocationScope conn ctx overlay of
               Left err -> pure (Left err)
               Right scope -> do
-                result <- invokeSimulationWithResolvedScope conn scope ctx overlay (reportSimulationProgress ctx name) ignoreLog
+                result <- if rpcProtocolVersion conn >= 5
+                  then fmap (fmap (\(sr, patch) -> (sr, Just patch))) $
+                    invokeSimulationV5 conn scope ctx overlay (reportSimulationProgress ctx name) ignoreLog
+                  else fmap (fmap (\sr -> (sr, Nothing))) $
+                    invokeSimulationWithResolvedScope conn scope ctx overlay (reportSimulationProgress ctx name) ignoreLog
                 case result of
                   Left err -> pure (Left (rpcErrorText err))
-                  Right sr -> pure $ do
+                  Right (sr, maybePatch) -> pure $ do
                     nextOverlay <- validateSimulationOverlayOutput manifest scope overlay (srOverlay sr)
-                    writes <- if simulationScopeDeclaration manifest == Nothing
-                      then Payload.decodeTerrainWritesValueWithLimits
-                        (rpcPayloadLimits conn) (srTerrainWrites sr)
-                      else Payload.decodeTerrainWritesValueScopedWithLimits
-                        (rpcPayloadLimits conn) scope (scTerrain ctx) (srTerrainWrites sr)
+                    writes <- case maybePatch of
+                      Just patch -> Payload.terrainDeltaPatchWrites patch
+                      Nothing -> if simulationScopeDeclaration manifest == Nothing
+                        then Payload.decodeTerrainWritesValueWithLimits
+                          (rpcPayloadLimits conn) (srTerrainWrites sr)
+                        else Payload.decodeTerrainWritesValueScopedWithLimits
+                          (rpcPayloadLimits conn) scope (scTerrain ctx) (srTerrainWrites sr)
                     Right (nextOverlay, writes)
       }
     else SimNodeReader
@@ -1415,11 +2241,20 @@ rpcSimNode conn =
             else case resolveSimulationInvocationScope conn ctx overlay of
               Left err -> pure (Left err)
               Right scope -> do
-                result <- invokeSimulationWithResolvedScope conn scope ctx overlay (reportSimulationProgress ctx name) ignoreLog
+                result <- if rpcProtocolVersion conn >= 5
+                  then fmap (fmap (\(sr, patch) -> (sr, Just patch))) $
+                    invokeSimulationV5 conn scope ctx overlay (reportSimulationProgress ctx name) ignoreLog
+                  else fmap (fmap (\sr -> (sr, Nothing))) $
+                    invokeSimulationWithResolvedScope conn scope ctx overlay (reportSimulationProgress ctx name) ignoreLog
                 pure $ case result of
                   Left err -> Left (rpcErrorText err)
-                  Right sr -> do
-                    rejectUnauthorizedTerrainWrites manifest (srTerrainWrites sr)
+                  Right (sr, maybePatch) -> do
+                    case maybePatch of
+                      Nothing -> rejectUnauthorizedTerrainWrites manifest (srTerrainWrites sr)
+                      Just patch -> do
+                        writes <- Payload.terrainDeltaPatchWrites patch
+                        unless (terrainWritesEmpty writes) (Left
+                          (unauthorizedTerrainWritesText manifest))
                     validateSimulationOverlayOutput manifest scope overlay (srOverlay sr)
       }
   where
@@ -1608,8 +2443,8 @@ validateScopedResultPayload manifest kind maybeScope payload
       Just scope -> case payload of
         Object fields -> do
           let allowed = Set.fromList (case kind of
-                InvocationGenerator -> ["terrain", "overlay", "metadata"]
-                InvocationSimulation -> ["overlay", "terrain_writes"]
+                InvocationGenerator -> ["terrain", "overlay", "metadata", "terrain_delta"]
+                InvocationSimulation -> ["overlay", "terrain_writes", "terrain_delta"]
                 InvocationDataResource -> [])
               unknown = filter (`Set.notMember` allowed) (map Key.toText (KM.keys fields))
               actual = fromIntegral (BL.length (Aeson.encode payload)) :: Word64
@@ -1671,6 +2506,18 @@ rpcErrorText rpcError =
     RPCPluginError code message -> "plugin error " <> Text.pack (show code) <> ": " <> message
     RPCDataResourceError code message -> dataResourceFailureText (DataResourceFailure code message)
     RPCTimeout message -> "timeout: " <> message
+
+applyGeneratorStreamedResult
+  :: RPCManifest
+  -> ResolvedInvocationScope
+  -> Topo.World.TerrainWorld
+  -> GeneratorResult
+  -> Payload.TerrainDeltaPatch
+  -> Either Text Topo.World.TerrainWorld
+applyGeneratorStreamedResult manifest scope world result patch = do
+  validateGeneratorMetadataOutput manifest (Just scope) (grMetadata result)
+  let worldWithTerrain = Payload.applyTerrainDeltaPatch patch world
+  applyGeneratorOverlayPayload manifest (Just scope) worldWithTerrain (grOverlay result)
 
 applyGeneratorResult
   :: RPCPayloadLimits

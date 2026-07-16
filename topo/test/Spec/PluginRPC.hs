@@ -21,6 +21,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Either (isLeft, isRight)
+import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
 import Data.List (isInfixOf, isPrefixOf)
 import Data.Map.Strict (Map)
@@ -83,6 +84,7 @@ import Topo.Plugin.RPC
   , sendExternalDataSourceGrant
   , sendExternalDataSourceGrantRevocation
   , sendHeartbeat
+  , sendWorldChanged
   , terrainWorldToPayload
   , terrainWorldToPayloadWithLimits
   , terrainWorldToScopedPayload
@@ -126,6 +128,7 @@ import Topo.Plugin.RPC.Transport
 import Topo.Plugin.DataResource
 import Topo.Calendar (CalendarDate(..), WorldTime(..), simulationTickSeconds)
 import Topo.Hex (defaultHexGridMeta)
+import Topo.Export (encodeClimateChunk)
 import Topo.Overlay (Overlay, emptyOverlay, insertOverlay, lookupOverlay)
 import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON)
 import Topo.Overlay.Schema
@@ -135,7 +138,7 @@ import Topo.Overlay.Schema
   , OverlayStorage(..)
   , emptyOverlayDeps
   )
-import Topo.Simulation (SimContext(..), SimNode(..), terrainWritesEmpty)
+import Topo.Simulation (SimContext(..), SimNode(..), TerrainWrites(..), terrainWritesEmpty)
 import Topo.Simulation.Schedule (SimulationCatchUpPolicy(..), SimulationScheduleDecl(..), defaultScheduleDecl)
 import Topo.Types (ChunkId(..), WorldConfig(..))
 import Topo.World
@@ -2160,6 +2163,17 @@ spec = describe "Plugin.RPC" $ do
               nsvMaxFrameBytes negotiated `shouldBe` 4096
               nsvMaxConcurrentStreams negotiated `shouldBe` 2
               nsvReceiveWindowBytes negotiated `shouldBe` 1024
+              oversized <- sendWorldChanged conn' (Just (Text.replicate 5000 "x"))
+              case oversized of
+                Left (RPCTransportError (TransportFramingError msg)) ->
+                  msg `shouldSatisfy` Text.isInfixOf "limit=4096"
+                other -> expectationFailure
+                  ("expected negotiated outgoing frame rejection, got " <> show other)
+              sendWorldChanged conn' Nothing `shouldReturn` Right ()
+              small <- recvEnvelopeFrom plugin
+              envType small `shouldBe` MsgWorldChanged
+              fromIntegral (BL.length (Aeson.encode small))
+                `shouldSatisfy` (<= nsvMaxFrameBytes negotiated)
             Nothing -> expectationFailure "protocol 5 did not retain stream negotiation"
           _ -> expectationFailure "expected stream handshake success"
 
@@ -2496,6 +2510,90 @@ spec = describe "Plugin.RPC" $ do
         (outcome, _) <- takeGeneratorStageResult done
         outcome `shouldBe` Right ()
 
+    it "streams a scoped v5 snapshot over multiple credit windows and atomically applies a delta" $
+      withConnectedTransports "rpc-generator-v5-stream" $ \host plugin -> do
+        negotiated <- case negotiateStreamV1
+            ((defaultStreamProposal 8192) { spReceiveWindowBytes = 128 })
+            ((defaultStreamProposal 4096) { spReceiveWindowBytes = 128 }) of
+          Left err -> expectationFailure (Text.unpack err) >> fail "stream negotiation"
+          Right value -> pure value
+        let manifest = scopedGeneratorManifest
+              { rmRuntime = RPCManifestRuntime 4 5 Nothing Nothing }
+            conn = (newRPCConnection manifest host Map.empty)
+              { rpcProtocolVersion = 5, rpcStreamV1 = Just negotiated }
+        done <- newEmptyMVar
+        _ <- forkIO (runGeneratorStageWithCaps PluginCore.allowAllCapabilities conn scopedTerrainWorld >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        fromIntegral (BL.length (Aeson.encode request))
+          `shouldSatisfy` (<= nsvMaxFrameBytes negotiated)
+        requestId <- requireRequestId request
+        invocation <- case Aeson.fromJSON (envPayload request) of
+          Aeson.Error err -> expectationFailure err >> fail "v5 invocation"
+          Aeson.Success value -> pure (value :: InvokeGenerator)
+        igTerrain invocation `shouldBe` Null
+        snapshotId <- case envPayload request of
+          Object fields -> case KM.lookup "terrain_snapshot" fields of
+            Just (Object snapshot) -> do
+              KM.keys snapshot `shouldSatisfy` elem "scope_id"
+              case KM.lookup "stream_ids" snapshot >>= decodeStreamIds of
+                Just [sid] -> pure sid
+                other -> expectationFailure ("invalid snapshot reference: " <> show other) >> fail "snapshot ref"
+            other -> expectationFailure ("missing snapshot reference: " <> show other) >> fail "snapshot ref"
+          _ -> expectationFailure "v5 invocation payload is not an object" >> fail "snapshot ref"
+        opened <- recvStreamEnvelopeFrom plugin
+        streamEnvelopeFrameBytes opened `shouldSatisfy` (<= nsvMaxFrameBytes negotiated)
+        opened `shouldSatisfy` \case
+          StreamOpenEnvelope value -> soStreamId value == snapshotId
+            && soScopeId value == maybe "" risScopeId
+              (igInvocationScope invocation >>= risbDescriptor)
+            && soSections value == Set.singleton TerrainClimate
+          _ -> False
+        -- A deliberately tiny window forces the host to stop after each
+        -- fragment while the ordinary RPC receiver remains live.
+        sendStreamEnvelopeTo plugin (StreamWindowEnvelope snapshotId requestId 128)
+        snapshotRecords <- drainSnapshotWithCredit
+          (nsvMaxFrameBytes negotiated) plugin snapshotId requestId 0
+        snapshotRecords `shouldSatisfy` (> 2)
+        let deltaId = StreamId 2
+            removalKey = StreamRecordKey TerrainClimate 1 maxBound 0
+            digest = streamRecordsDigest [(removalKey, BS.empty)]
+        sendEnvelopeTo plugin RPCEnvelope
+          { envType = MsgGeneratorResult
+          , envPayload = object
+              [ "terrain" .= object []
+              , "terrain_delta" .= object
+                  [ "payload_version" .= (1 :: Int)
+                  , "scope_id" .= maybe "" risScopeId
+                      (igInvocationScope invocation >>= risbDescriptor)
+                  , "stream_ids" .= [deltaId]
+                  ]
+              ]
+          , envRequestId = Just requestId
+          }
+        sendStreamEnvelopeTo plugin (StreamOpenEnvelope StreamOpen
+          { soStreamId = deltaId
+          , soParentRequestId = requestId
+          , soScopeId = maybe "" risScopeId
+              (igInvocationScope invocation >>= risbDescriptor)
+          , soPayloadKind = TerrainDelta
+          , soPayloadVersion = 1
+          , soSections = Set.singleton TerrainClimate
+          , soChunkIds = IntSet.singleton 1
+          , soMetadata = object []
+          , soCodec = StreamIdentity
+          , soTotalItems = Just 1
+          , soTotalBytes = Just 0
+          , soFinalSha256 = Just digest
+          })
+        sendStreamEnvelopeTo plugin (StreamDataEnvelope
+          (encodeStreamRecord StreamIdentity deltaId requestId 0 removalKey BS.empty))
+        sendStreamEnvelopeTo plugin (StreamEndEnvelope
+          (StreamEnd deltaId requestId 1 0 digest))
+        (outcome, worldAfter) <- takeGeneratorStageResult done
+        outcome `shouldBe` Right ()
+        IntMap.member 0 (twClimate worldAfter) `shouldBe` True
+        IntMap.member 1 (twClimate worldAfter) `shouldBe` False
+
     it "fails scoped direct generator calls before sending caller-built terrain" $
       withConnectedTransports "rpc-generator-scoped-direct-reject" $ \host _plugin -> do
         let conn = newRPCConnection scopedGeneratorManifest host Map.empty
@@ -2679,6 +2777,91 @@ spec = describe "Plugin.RPC" $ do
             sendSimulationResult plugin request (SimulationResult (overlayToJSON own) Nothing)
             result <- timeout transportTestTimeoutMicros (takeMVar done)
             result `shouldSatisfy` maybe False isRight
+          _ -> expectationFailure "expected scoped SimNodeWriter"
+
+    it "streams scoped v5 simulation input and publishes overlay plus staged terrain writes together" $
+      withConnectedTransports "rpc-simulation-v5-stream" $ \host plugin -> do
+        weather <- overlayFromPayload (overlaySchemaNamed "weather") (overlayPayloadAtChunk 1 5)
+        own <- overlayFromPayload (overlaySchemaNamed "test-plugin") (overlayPayloadAtChunk 0 7)
+        negotiated <- case negotiateStreamV1
+            ((defaultStreamProposal 8192) { spReceiveWindowBytes = 1024 })
+            ((defaultStreamProposal 4096) { spReceiveWindowBytes = 1024 }) of
+          Left err -> expectationFailure (Text.unpack err) >> fail "stream negotiation"
+          Right value -> pure value
+        let context = testSimContext
+              { scTerrain = scopedTerrainWorld
+              , scOverlays = Map.singleton "weather" weather
+              }
+            manifest = scopedSimulationManifest
+              { rmRuntime = RPCManifestRuntime 4 5 Nothing Nothing }
+            conn = (newRPCConnection manifest host Map.empty)
+              { rpcProtocolVersion = 5, rpcStreamV1 = Just negotiated }
+        done <- newEmptyMVar
+        case rpcSimNode conn of
+          SimNodeWriter{snwWriteTick = runTick} -> do
+            _ <- forkIO (runTick context own >>= putMVar done)
+            request <- recvEnvelopeFrom plugin
+            requestId <- requireRequestId request
+            invocation <- case Aeson.fromJSON (envPayload request) of
+              Aeson.Error err -> expectationFailure err >> fail "v5 simulation invocation"
+              Aeson.Success value -> pure (value :: InvokeSimulation)
+            isTerrain invocation `shouldBe` Null
+            snapshotId <- snapshotStreamIdFromPayload (envPayload request)
+            _ <- recvStreamEnvelopeFrom plugin
+            sendStreamEnvelopeTo plugin (StreamWindowEnvelope snapshotId requestId 1024)
+            _ <- drainSnapshotWithCredit
+              (nsvMaxFrameBytes negotiated) plugin snapshotId requestId 0
+            let scopeId = maybe "" risScopeId
+                  (isInvocationScope invocation >>= risbDescriptor)
+                deltaId = StreamId 2
+                config = twConfig scopedTerrainWorld
+            raw <- case encodeClimateChunk config (emptyClimateChunk config) of
+              Left err -> expectationFailure (show err) >> fail "climate encode"
+              Right bytes -> pure bytes
+            let key = StreamRecordKey TerrainClimate 0 0 0
+                digest = streamRecordsDigest [(key, raw)]
+            sendEnvelopeTo plugin RPCEnvelope
+              { envType = MsgSimulationResult
+              , envPayload = object
+                  [ "overlay" .= overlayToJSON own
+                  , "terrain_delta" .= object
+                      [ "payload_version" .= (1 :: Int)
+                      , "scope_id" .= scopeId
+                      , "stream_ids" .= [deltaId]
+                      ]
+                  ]
+              , envRequestId = Just requestId
+              }
+            sendStreamEnvelopeTo plugin (StreamOpenEnvelope StreamOpen
+              { soStreamId = deltaId
+              , soParentRequestId = requestId
+              , soScopeId = scopeId
+              , soPayloadKind = TerrainDelta
+              , soPayloadVersion = 1
+              , soSections = Set.singleton TerrainClimate
+              , soChunkIds = IntSet.singleton 0
+              , soMetadata = object []
+              , soCodec = StreamIdentity
+              , soTotalItems = Just 1
+              , soTotalBytes = Just (fromIntegral (BS.length raw))
+              , soFinalSha256 = Just digest
+              })
+            window <- recvStreamEnvelopeFrom plugin
+            streamEnvelopeFrameBytes window `shouldSatisfy` (<= nsvMaxFrameBytes negotiated)
+            window `shouldSatisfy` \case
+              StreamWindowEnvelope sid parent credit -> sid == deltaId
+                && parent == requestId && credit >= fromIntegral (BS.length raw)
+              _ -> False
+            sendStreamEnvelopeTo plugin (StreamDataEnvelope
+              (encodeStreamRecord StreamIdentity deltaId requestId 0 key raw))
+            sendStreamEnvelopeTo plugin (StreamEndEnvelope
+              (StreamEnd deltaId requestId 1 (fromIntegral (BS.length raw)) digest))
+            result <- timeout transportTestTimeoutMicros (takeMVar done)
+            case result of
+              Just (Right (nextOverlay, writes)) -> do
+                overlayToJSON nextOverlay `shouldBe` overlayToJSON own
+                IntMap.keys (twrClimate writes) `shouldBe` [0]
+              other -> expectationFailure ("expected streamed simulation success, got " <> show other)
           _ -> expectationFailure "expected scoped SimNodeWriter"
 
     it "rejects unauthorized scoped simulation terrain writes before returning an overlay update" $
@@ -3385,6 +3568,49 @@ sendEnvelopeTo transport envelope = do
   case result of
     Left err -> expectationFailure ("send failed: " <> show err)
     Right () -> pure ()
+
+recvStreamEnvelopeFrom :: Transport -> IO StreamEnvelope
+recvStreamEnvelopeFrom transport = do
+  envelope <- recvEnvelopeFrom transport
+  case Aeson.fromJSON (Aeson.toJSON envelope) of
+    Aeson.Error err -> expectationFailure ("stream decode failed: " <> err) >> fail "stream decode"
+    Aeson.Success frame -> pure frame
+
+sendStreamEnvelopeTo :: Transport -> StreamEnvelope -> IO ()
+sendStreamEnvelopeTo transport frame = do
+  result <- sendMessage transport (BL.toStrict (Aeson.encode frame))
+  case result of
+    Left err -> expectationFailure ("stream send failed: " <> show err)
+    Right () -> pure ()
+
+decodeStreamIds :: Value -> Maybe [StreamId]
+decodeStreamIds value = case Aeson.fromJSON value of
+  Aeson.Error _ -> Nothing
+  Aeson.Success ids -> Just ids
+
+snapshotStreamIdFromPayload :: Value -> IO StreamId
+snapshotStreamIdFromPayload (Object fields) = case KM.lookup "terrain_snapshot" fields of
+  Just (Object snapshot) -> case KM.lookup "stream_ids" snapshot >>= decodeStreamIds of
+    Just [sid] -> pure sid
+    other -> expectationFailure ("invalid snapshot stream IDs: " <> show other) >> fail "snapshot IDs"
+  other -> expectationFailure ("missing snapshot reference: " <> show other) >> fail "snapshot reference"
+snapshotStreamIdFromPayload _ = expectationFailure "snapshot payload is not an object" >> fail "snapshot payload"
+
+drainSnapshotWithCredit :: Word64 -> Transport -> StreamId -> Word64 -> Int -> IO Int
+drainSnapshotWithCredit frameLimit transport sid requestId count = do
+  frame <- recvStreamEnvelopeFrom transport
+  streamEnvelopeFrameBytes frame `shouldSatisfy` (<= frameLimit)
+  case frame of
+    StreamDataEnvelope record -> do
+      srStreamId record `shouldBe` sid
+      sendStreamEnvelopeTo transport
+        (StreamWindowEnvelope sid requestId (srUncompressedLength record))
+      drainSnapshotWithCredit frameLimit transport sid requestId (count + 1)
+    StreamEndEnvelope end -> do
+      seStreamId end `shouldBe` sid
+      pure count
+    other -> expectationFailure ("expected snapshot data/end, got " <> show other)
+      >> fail "snapshot stream"
 
 performTestHandshakeAck :: Text -> RPCManifest -> [DataResourceSchema] -> IO (Either RPCError RPCConnection)
 performTestHandshakeAck name manifest =

@@ -16,6 +16,11 @@ module Topo.Plugin.RPC.Payload
   , decodeTerrainWritesValueWithLimits
   , decodeTerrainWritesValueScopedWithLimits
   , terrainWritesValueEmpty
+  , TerrainDeltaPatch
+  , decodeTerrainDeltaPatch
+  , decodeTerrainDeltaPatchFiles
+  , applyTerrainDeltaPatch
+  , terrainDeltaPatchWrites
   , applyGeneratorTerrainValue
   , applyGeneratorTerrainValueWithLimits
   , applyGeneratorTerrainValueScopedWithLimits
@@ -642,6 +647,91 @@ lookupPayloadField fieldName fallback payload =
       case Aeson.fromJSON value of
         Aeson.Error err -> Left ("invalid terrain payload field " <> fieldName <> ": " <> Text.pack err)
         Aeson.Success decoded -> Right decoded
+
+-- | Fully decoded, validated streamed terrain replacements and removals.  The
+-- value is immutable staging: callers publish it only after the parent result
+-- and all referenced streams have completed.
+data TerrainDeltaPatch = TerrainDeltaPatch
+  { tdpWrites :: !TerrainWrites
+  , tdpTerrainRemovals :: !IntSet.IntSet
+  , tdpClimateRemovals :: !IntSet.IntSet
+  , tdpVegetationRemovals :: !IntSet.IntSet
+  }
+
+-- | Decode complete streamed chunk records against immutable world geometry.
+-- A 'Nothing' record is an explicit whole-chunk removal.
+decodeTerrainDeltaPatch
+  :: Topo.Types.WorldConfig
+  -> [(TerrainSection, Int, Maybe BS.ByteString)]
+  -> Either Text TerrainDeltaPatch
+decodeTerrainDeltaPatch config = foldM (decodeTerrainDeltaEntry config) emptyTerrainDeltaPatch
+
+-- | File-backed variant used by the host staging adapter. Each complete chunk
+-- is read, decoded, and released before the next file is opened.
+decodeTerrainDeltaPatchFiles
+  :: Topo.Types.WorldConfig
+  -> [(TerrainSection, Int, Maybe FilePath)]
+  -> IO (Either Text TerrainDeltaPatch)
+decodeTerrainDeltaPatchFiles config = foldM step (Right emptyTerrainDeltaPatch)
+  where
+    step (Left err) _ = pure (Left err)
+    step (Right patch) (section, chunkId, maybePath) = do
+      maybeBytes <- traverse BS.readFile maybePath
+      pure (decodeTerrainDeltaEntry config patch (section, chunkId, maybeBytes))
+
+emptyTerrainDeltaPatch :: TerrainDeltaPatch
+emptyTerrainDeltaPatch = TerrainDeltaPatch emptyTerrainWrites IntSet.empty IntSet.empty IntSet.empty
+
+decodeTerrainDeltaEntry
+  :: Topo.Types.WorldConfig
+  -> TerrainDeltaPatch
+  -> (TerrainSection, Int, Maybe BS.ByteString)
+  -> Either Text TerrainDeltaPatch
+decodeTerrainDeltaEntry config patch (section, chunkId, maybeBytes)
+  | chunkId < 0 = Left "streamed terrain delta contains a negative chunk ID"
+  | otherwise = case (section, maybeBytes) of
+      (TerrainElevation, Nothing) -> Right patch
+        { tdpTerrainRemovals = IntSet.insert chunkId (tdpTerrainRemovals patch) }
+      (TerrainClimate, Nothing) -> Right patch
+        { tdpClimateRemovals = IntSet.insert chunkId (tdpClimateRemovals patch) }
+      (TerrainVegetation, Nothing) -> Right patch
+        { tdpVegetationRemovals = IntSet.insert chunkId (tdpVegetationRemovals patch) }
+      (TerrainElevation, Just bytes) -> do
+        chunk <- firstExportError (decodeTerrainChunk config bytes)
+        let writes = tdpWrites patch
+        Right patch { tdpWrites = writes
+          { twrTerrain = IntMap.insert chunkId chunk (twrTerrain writes) } }
+      (TerrainClimate, Just bytes) -> do
+        chunk <- firstExportError (decodeClimateChunk config bytes)
+        let writes = tdpWrites patch
+        Right patch { tdpWrites = writes
+          { twrClimate = IntMap.insert chunkId chunk (twrClimate writes) } }
+      (TerrainVegetation, Just bytes) -> do
+        chunk <- firstExportError (decodeVegetationChunk config bytes)
+        let writes = tdpWrites patch
+        Right patch { tdpWrites = writes
+          { twrVegetation = IntMap.insert chunkId chunk (twrVegetation writes) } }
+
+-- | Apply a completed patch to a copied world. Removals happen before
+-- replacements, so a malformed or incomplete stream can never mutate the
+-- caller's baseline.
+applyTerrainDeltaPatch :: TerrainDeltaPatch -> TerrainWorld -> TerrainWorld
+applyTerrainDeltaPatch patch world = applyTerrainWrites (tdpWrites patch) world
+  { twTerrain = IntMap.withoutKeys (twTerrain world) (tdpTerrainRemovals patch)
+  , twClimate = IntMap.withoutKeys (twClimate world) (tdpClimateRemovals patch)
+  , twVegetation = IntMap.withoutKeys (twVegetation world) (tdpVegetationRemovals patch)
+  }
+
+-- | Simulation's established write set cannot represent removals. Reject them
+-- rather than silently widening its semantics.
+terrainDeltaPatchWrites :: TerrainDeltaPatch -> Either Text TerrainWrites
+terrainDeltaPatchWrites patch
+  | any (not . IntSet.null)
+      [ tdpTerrainRemovals patch
+      , tdpClimateRemovals patch
+      , tdpVegetationRemovals patch
+      ] = Left "streamed simulation terrain delta contains unsupported chunk removals"
+  | otherwise = Right (tdpWrites patch)
 
 data ChunkBinaryLayout
   = FixedBytesPerTile !Integer

@@ -2,6 +2,7 @@
 
 module Spec.PluginStream (spec) where
 
+import Control.Concurrent.STM (atomically)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.IntSet as IntSet
@@ -46,6 +47,32 @@ spec = describe "RPC protocol v5 stream_v1 core" $ do
             { spCodecs = Set.fromList [StreamIdentity, StreamZstd] }
           negotiated = either (error . show) id (negotiateStreamV1 offer offer)
       nsvCodecs negotiated `shouldBe` Set.singleton StreamIdentity
+
+    it "enforces and releases the stream-event byte quota independently of event count" $ do
+      quota <- newStreamByteQuotaIO 100
+      atomically (tryReserveStreamBytes quota 60) `shouldReturn` True
+      atomically (tryReserveStreamBytes quota 41) `shouldReturn` False
+      atomically (streamBytesInUse quota) `shouldReturn` 60
+      atomically (releaseStreamBytes quota 60)
+      atomically (tryReserveStreamBytes quota 100) `shouldReturn` True
+      atomically (clearStreamBytes quota)
+      atomically (streamBytesInUse quota) `shouldReturn` 0
+      let limits = negotiatedLimits
+            { nsvMaxFrameBytes = 80
+            , nsvReceiveWindowBytes = 40
+            , nsvAggregateStagedBytes = 30
+            }
+      streamQueueByteCapacity limits `shouldBe` 220
+      let frame = StreamDataEnvelope (encodeStreamRecord StreamIdentity (StreamId 2) 7 0
+            (StreamRecordKey TerrainElevation 1 0 0) "abc")
+          wireBytes = streamEnvelopeFrameBytes frame
+          retained = streamQueuedFrameRetainedBytes wireBytes frame
+      retained `shouldBe` wireBytes * 2 + 6
+      frameQuota <- newStreamByteQuotaIO (retained * 2 - 1)
+      atomically (tryReserveStreamBytes frameQuota retained) `shouldReturn` True
+      atomically (tryReserveStreamBytes frameQuota retained) `shouldReturn` False
+      atomically (releaseStreamBytes frameQuota retained)
+      atomically (streamBytesInUse frameQuota) `shouldReturn` 0
 
     it "round-trips the outer request id and rejects payload mismatches" $ do
       let frame = StreamDataEnvelope (encodeStreamRecord StreamIdentity (StreamId 2) 7 0

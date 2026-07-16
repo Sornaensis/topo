@@ -15,6 +15,13 @@ module Topo.Plugin.RPC.Stream
   , NegotiatedStreamV1(..)
   , defaultStreamProposal
   , negotiateStreamV1
+  , StreamByteQuota
+  , newStreamByteQuotaIO
+  , tryReserveStreamBytes
+  , releaseStreamBytes
+  , clearStreamBytes
+  , streamBytesInUse
+  , streamQueueByteCapacity
   , StreamId(..)
   , StreamRecordKey(..)
   , StreamOpen(..)
@@ -35,6 +42,7 @@ module Topo.Plugin.RPC.Stream
   , openOutboundStream
   , sendOutboundRecord
   , endOutboundStream
+  , outboundStreamEnd
   , receiveStreamEnvelope
   , receiveStreamEnvelopeWithFrameBytes
   , consumeStreamRecord
@@ -46,11 +54,14 @@ module Topo.Plugin.RPC.Stream
   , activeRequestCount
   , encodeStreamRecord
   , streamEnvelopeFrameBytes
+  , streamQueuedFrameRetainedBytes
   , streamRecordDigest
   , streamRecordsDigest
   , streamFailureEffects
   ) where
 
+import Control.Concurrent.STM
+  ( STM, TVar, newTVarIO, readTVar, writeTVar )
 import Control.Monad (forM_, unless, when)
 import Crypto.Hash (Context, Digest, SHA256, hash, hashFinalize, hashInit, hashUpdate)
 import qualified Codec.Compression.Zstd as Zstd
@@ -243,6 +254,47 @@ negotiateStreamV1 local peer = do
               && spMaxConcurrentStreams p > 0 && spMaxRequests p > 0)
         (Left (who <> " stream offer contains a non-positive bound"))
 
+-- | Atomic byte reservation used by the live stream-event queue. The queue
+-- keeps its event-count bound as a second, independent limit.
+data StreamByteQuota = StreamByteQuota !Word64 !(TVar Word64)
+
+newStreamByteQuotaIO :: Word64 -> IO StreamByteQuota
+newStreamByteQuotaIO capacity = StreamByteQuota capacity <$> newTVarIO 0
+
+tryReserveStreamBytes :: StreamByteQuota -> Word64 -> STM Bool
+tryReserveStreamBytes (StreamByteQuota capacity usedVar) amount = do
+  used <- readTVar usedVar
+  if amount > capacity || used > capacity - amount
+    then pure False
+    else writeTVar usedVar (used + amount) >> pure True
+
+releaseStreamBytes :: StreamByteQuota -> Word64 -> STM ()
+releaseStreamBytes (StreamByteQuota _ usedVar) amount = do
+  used <- readTVar usedVar
+  writeTVar usedVar (used - min used amount)
+
+clearStreamBytes :: StreamByteQuota -> STM ()
+clearStreamBytes (StreamByteQuota _ usedVar) = writeTVar usedVar 0
+
+streamBytesInUse :: StreamByteQuota -> STM Word64
+streamBytesInUse (StreamByteQuota _ usedVar) = readTVar usedVar
+
+-- | Payload capacity for queued frames. It admits one maximum wire frame plus
+-- its decoded JSON representation, and one negotiated window of compressed and
+-- raw record payload, while remaining bounded by the aggregate staging limit.
+streamQueueByteCapacity :: NegotiatedStreamV1 -> Word64
+streamQueueByteCapacity limits = saturatingAddWord64
+  (saturatingTwice (nsvMaxFrameBytes limits))
+  (saturatingTwice (min (nsvReceiveWindowBytes limits)
+    (nsvAggregateStagedBytes limits)))
+  where
+    saturatingTwice value
+      | value > maxBound `div` 2 = maxBound
+      | otherwise = value * 2
+    saturatingAddWord64 left right
+      | maxBound - left < right = maxBound
+      | otherwise = left + right
+
 newtype StreamId = StreamId { unStreamId :: Word64 }
   deriving (Eq, Ord, Show, Read, Generic)
 instance ToJSON StreamId where toJSON = toJSON . unStreamId
@@ -411,6 +463,26 @@ streamEnvelopeStreamId frame = case frame of
 streamEnvelopeFrameBytes :: StreamEnvelope -> Word64
 streamEnvelopeFrameBytes = fromIntegral . BL.length . Aeson.encode
 
+-- | Byte reservation for a queued decoded stream frame: exact retained wire
+-- bytes, the decoded JSON payload extent, and data buffers declared for the
+-- compressed and raw record. The latter prevents decompression/decoding from
+-- amplifying a backlog before the consumer can validate the record.
+streamQueuedFrameRetainedBytes :: Word64 -> StreamEnvelope -> Word64
+streamQueuedFrameRetainedBytes wireBytes frame = foldl' saturating 0
+  [ wireBytes
+  , streamEnvelopeFrameBytes frame
+  , case frame of
+      StreamDataEnvelope record -> srCompressedLength record
+      _ -> 0
+  , case frame of
+      StreamDataEnvelope record -> srUncompressedLength record
+      _ -> 0
+  ]
+  where
+    saturating left right
+      | maxBound - left < right = maxBound
+      | otherwise = left + right
+
 data StreamFailureClass = StreamRequestFailure | StreamConnectionCorruption
   deriving (Eq, Ord, Show, Read, Generic)
 data StreamFailure = StreamFailure
@@ -556,6 +628,24 @@ sendOutboundRecord now record raw machine = do
   pure machine
     { smStreams = Map.insert (srStreamId record) state' (smStreams machine)
     , smParents = Map.insert (srParentRequestId record) parent' (smParents machine)
+    }
+
+-- | Build the only valid terminal frame for an active outbound stream from
+-- the machine's running totals and digest. This lets integrations stream
+-- records without retaining them merely to recompute final integrity data.
+outboundStreamEnd :: StreamId -> StreamMachine -> Either StreamFailure StreamEnd
+outboundStreamEnd sid machine = do
+  state <- lookupStream sid machine
+  let open = ssOpen state
+      requestId = soParentRequestId open
+  unless (ssDirection state == Outbound && ssStatus state == StreamActive)
+    (Left (connectionFailureFor requestId sid "cannot summarize a non-active outbound stream"))
+  pure StreamEnd
+    { seStreamId = sid
+    , seParentRequestId = requestId
+    , seTotalItems = ssItems state
+    , seTotalBytes = ssBytes state
+    , seSha256 = finalStreamDigest (ssHash state) (ssItems state) (ssBytes state)
     }
 
 endOutboundStream :: Word64 -> StreamEnd -> StreamMachine -> Either StreamFailure StreamMachine

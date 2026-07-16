@@ -67,6 +67,10 @@ Protocol 4 leaves `rpcStreamV1` absent; protocol 5 requires a bounded
 | `rpcRequestTimeoutMicros` | Request timeout derived from `startPolicy.request_timeout_ms`. |
 | `rpcSession` | Shared write lock, pending request map, next request ID, and receive-loop flag. |
 | `rpcRuntimeFailure` | First unobserved runtime transport/protocol failure for supervisor handling. |
+| `rpcNextHostStreamId` | Monotonic, non-wrapping odd stream ID allocator for protocol-v5 host snapshot streams. |
+| `rpcHighestPluginStreamId` | Connection-wide high-water mark preventing reuse of even plugin stream IDs. |
+| `rpcStreamInvocationLock` | Serializes streamed invocations so connection-wide quotas cannot be multiplied; ordinary RPC remains concurrent. |
+| `rpcReceiveFrameLimit` | Shared receive bound narrowed after the v5 handshake and observed by the long-lived receiver. |
 
 ## Request correlation
 
@@ -103,6 +107,19 @@ without treating a transport write as consumer-applied state.
 
 ## Pipeline integration
 
+For negotiated protocol 5, generator and simulation integrations register a
+stream-aware pending request. The ordinary receive loop continues to route
+progress, logs, health/control replies, and unrelated correlated requests while
+stream frames are delivered to that request's adapter. Terrain snapshots are
+encoded directly from canonical section/chunk order under receiver byte credit;
+the parent envelope contains only the exact scope ID, immutable geometry header,
+and odd host stream IDs, not an inline base64 terrain object. Plugin-owned even
+`terrain_delta` streams are validated and written to bounded host temp spools.
+Credit is replenished only after a record is durably staged. Complete files are
+decoded against the baseline geometry after all stream totals/digests and the
+parent result succeed. Temp files are removed on success, timeout, cancellation,
+disconnect, malformed data, or supervisor transport closure.
+
 `rpcGeneratorStage` wraps a manifest generator as a `PipelineStage`:
 
 - `stageId = StagePlugin rmName`;
@@ -112,9 +129,12 @@ without treating a transport write as consumer-applied state.
 - `stageRun` sends `invoke_generator` with current terrain input only when the
   manifest has `readTerrain` or `readWorld`; otherwise the terrain input is
   `null`.
-- Returned `generator_result.terrain` is merged with
-  `applyGeneratorTerrainValue` because generator terrain output is implicit in
-  `generator` participation and does not require `writeTerrain` or `writeWorld`.
+- Protocol-4 `generator_result.terrain` is merged with
+  `applyGeneratorTerrainValue`. Protocol 5 requires terrain output through the
+  referenced `terrain_delta`; the fully decoded patch is applied to a copied
+  baseline and the world is published once. Generator terrain output remains
+  implicit in `generator` participation and does not require `writeTerrain` or
+  `writeWorld`.
 - Optional generator overlay payloads are applied only when the manifest owns an
   overlay and has `writeOverlay` or `writeWorld`.
 
@@ -144,8 +164,11 @@ derived from manifest capabilities:
 | `writeTerrain` or `writeWorld` | Creates a terrain-writer simulation node and decodes `terrain_writes`. |
 
 Both reader and writer paths decode returned overlay JSON against the
-plugin-owned overlay schema. Writer paths also decode `terrain_writes` through
-the connection-limited decoder before applying writes. Terrain decoding checks
+plugin-owned overlay schema. Protocol-4 writer paths decode `terrain_writes`
+through the connection-limited decoder. Protocol-5 writers instead validate the
+complete `terrain_delta` spool and return its replacements together with the
+validated overlay; streamed simulation removals are rejected because the
+established `TerrainWrites` merge type cannot represent deletion. Terrain decoding checks
 chunk dimensions and arithmetic, map cardinality, aggregate decoded bytes,
 base64 lengths/padding, exact section lengths (including river segment data),
 and trailing bytes before allocating chunk vectors.

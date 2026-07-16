@@ -470,11 +470,15 @@ before the codec can be advertised.
 A parent result is not final until all referenced streams end and are consumed.
 Timeout, callback failure, cancel/error, disconnect, or malformed stream removes
 registries and staged data, so partial content is never exposed as success. Live
-adapters must call `receiveStreamEnvelopeWithFrameBytes` with the original length
-prefix (not a re-encoded JSON size) and bind the state-machine effects to the
-serialized writer/receiver. Until such an adapter is registered, the high-level
-RPC invocation API fails closed for protocol 5 rather than sending an unscoped
-request or treating a stream frame as a final result.
+adapters call `receiveStreamEnvelopeWithFrameBytes` with the original frame body
+length (not a re-encoded JSON size) and bind state-machine effects to the
+serialized writer/receiver. The host generator/simulation integrations and SDK
+runner provide these adapters. The host sends canonical scoped snapshot records
+from odd stream IDs without constructing an inline terrain `Value`, and stages
+even `terrain_delta` records in bounded private temp files. It validates every
+fragment, logical key, scope grant, total, digest, and decoded chunk before one
+atomic publish. Protocol-5 direct invocation helpers that lack host world/scope
+facts still fail closed; protocol 4 retains its unchanged inline path.
 
 ## Backend-neutral external data-source payloads
 

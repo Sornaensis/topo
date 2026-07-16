@@ -124,8 +124,10 @@ library:
     - filepath
     - mtl
     - network
+    - stm
     - text
     - time
+    - temporary
     - transformers
     - vector
     - vector-th-unbox
@@ -159,6 +161,7 @@ tests:
       - directory
       - filepath
       - scientific
+      - stm
       - temporary
       - text
       - time
