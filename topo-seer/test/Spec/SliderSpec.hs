@@ -157,7 +157,6 @@ spec = do
         , (uiWaterLevel, 0.43)
         , (uiRenderWaterLevel, 0.43)
         , (uiSliceLatCenter, 0.6944444444444444)
-        , (uiBoundaryMotionTemp, 0.5)
         , (uiWeatherTick, 0.0)
         , (uiVegBase, 0.2)
         , (uiRainRate, 0.2)

@@ -64,10 +64,7 @@ import qualified Data.Vector.Unboxed.Mutable as UM
 
 -- | Parameter derivation configuration.
 data ParameterConfig = ParameterConfig
-  { pcDetailScale              :: !Float
-  -- ^ Scale factor for noise details (unused after hardness removal, kept
-  --   for future procedural layers).
-  , pcRoughnessScale           :: !Float
+  { pcRoughnessScale           :: !Float
   , pcRockElevationThreshold   :: !Float
   , pcRockHardnessThreshold    :: !Float
   , pcRockHardnessSecondary    :: !Float
@@ -83,8 +80,7 @@ instance FromJSON ParameterConfig where
 -- | Default parameter configuration.
 defaultParameterConfig :: ParameterConfig
 defaultParameterConfig = ParameterConfig
-  { pcDetailScale             = 1
-  , pcRoughnessScale          = 0.75
+  { pcRoughnessScale          = 0.75
   , pcRockElevationThreshold  = 0.6
   , pcRockHardnessThreshold   = 0.6
   , pcRockHardnessSecondary   = 0.45

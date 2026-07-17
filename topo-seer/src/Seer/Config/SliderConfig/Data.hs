@@ -4,7 +4,6 @@ module Seer.Config.SliderConfig.Data
   ( SliderConfigUpdate
   , lookupSliderConfigUpdate
   , snapshotSliderValueForId
-  , updateClimateBoundary
   , updateTerrainGen
   , updateWorldSlice
   ) where
@@ -23,8 +22,7 @@ import Topo.BaseHeight (GenConfig(..), OceanEdgeDepth(..))
 import Topo.Biome (BiomeThresholds(..), BiomeVegetationConfig(..))
 import Topo.BiomeConfig (BiomeConfig(..))
 import Topo.Climate
-  ( BoundaryConfig(..)
-  , ClimateConfig(..)
+  ( ClimateConfig(..)
   , MoistureConfig(..)
   , PrecipitationConfig(..)
   , TemperatureConfig(..)
@@ -68,7 +66,6 @@ data SnapshotContext = SnapshotContext
   , scWind :: !WindConfig
   , scMoisture :: !MoistureConfig
   , scPrecipitation :: !PrecipitationConfig
-  , scBoundary :: !BoundaryConfig
   , scWeather :: !WeatherConfig
   , scBiome :: !BiomeConfig
   , scBiomeVegetation :: !BiomeVegetationConfig
@@ -159,7 +156,6 @@ sliderBindings =
   , bindConfigAndSnapshot (tectonicsInt SliderPlateSize uiPlateSize (\value tectonics -> tectonics { tcPlateSize = value })) (snapshotInt SliderPlateSize (tcPlateSize . scTectonics))
   , bindConfigAndSnapshot (tectonicsFloat SliderUplift uiUplift (\value tectonics -> tectonics { tcUplift = value })) (snapshotFloat SliderUplift (tcUplift . scTectonics))
   , bindConfigAndSnapshot (tectonicsFloat SliderRiftDepth uiRiftDepth (\value tectonics -> tectonics { tcRiftDepth = value })) (snapshotFloat SliderRiftDepth (tcRiftDepth . scTectonics))
-  , bindConfigAndSnapshot (parametersFloat SliderDetailScale uiDetailScale (\value parameters -> parameters { pcDetailScale = value })) (snapshotFloat SliderDetailScale (pcDetailScale . scParameters))
   , bindConfigAndSnapshot (tectonicsFloat SliderPlateSpeed uiPlateSpeed (\value tectonics -> tectonics { tcPlateSpeed = value })) (snapshotFloat SliderPlateSpeed (tcPlateSpeed . scTectonics))
   , bindConfigAndSnapshot (tectonicsFloat SliderBoundarySharpness uiBoundarySharpness (\value tectonics -> tectonics { tcBoundarySharpness = value })) (snapshotFloat SliderBoundarySharpness (tcBoundarySharpness . scTectonics))
   , bindConfigAndSnapshot (tectonicsFloat SliderBoundaryNoiseScale uiBoundaryNoiseScale (\value tectonics -> tectonics { tcBoundaryNoiseScale = value })) (snapshotFloat SliderBoundaryNoiseScale (tcBoundaryNoiseScale . scTectonics))
@@ -212,8 +208,6 @@ sliderBindings =
   , bindConfigAndSnapshot (climateTempFloat SliderLapseRate uiLapseRate (\value temperature -> temperature { tmpLapseRate = value })) (snapshotFloat SliderLapseRate (tmpLapseRate . scTemperature))
   , bindConfigAndSnapshot (climateWindInt SliderWindIterations uiWindIterations (\value wind -> wind { windIterations = value })) (snapshotInt SliderWindIterations (windIterations . scWind))
   , bindConfigAndSnapshot (climateMoistInt SliderMoistureIterations uiMoistureIterations (\value moisture -> moisture { moistIterations = value })) (snapshotInt SliderMoistureIterations (moistIterations . scMoisture))
-  , bindConfigAndSnapshot (climateBoundaryFloat SliderBoundaryMotionTemp uiBoundaryMotionTemp (\value boundary -> boundary { bndMotionTemp = value })) (snapshotFloat SliderBoundaryMotionTemp (bndMotionTemp . scBoundary))
-  , bindConfigAndSnapshot (climateBoundaryFloat SliderBoundaryMotionPrecip uiBoundaryMotionPrecip (\value boundary -> boundary { bndMotionPrecip = value })) (snapshotFloat SliderBoundaryMotionPrecip (bndMotionPrecip . scBoundary))
   , bindConfigAndSnapshot (worldSliceFloat SliderSliceLatCenter uiSliceLatCenter (\value worldSliceConfig -> worldSliceConfig { wsLatCenter = value })) (snapshotFloat SliderSliceLatCenter (wsLatCenter . scWorldSlice))
   , bindConfigAndSnapshot (worldSliceFloat SliderSliceLonCenter uiSliceLonCenter (\value worldSliceConfig -> worldSliceConfig { wsLonCenter = value })) (snapshotFloat SliderSliceLonCenter (wsLonCenter . scWorldSlice))
   , bindConfigAndSnapshot (climateTempFloat SliderLatitudeExponent uiLatitudeExponent (\value temperature -> temperature { tmpLatitudeExponent = value })) (snapshotFloat SliderLatitudeExponent (tmpLatitudeExponent . scTemperature))
@@ -244,7 +238,6 @@ sliderBindings =
   , bindConfigAndSnapshot (climateWindFloat SliderWindBeltBase uiWindBeltBase (\value wind -> wind { windBeltBase = value })) (snapshotFloat SliderWindBeltBase (windBeltBase . scWind))
   , bindConfigAndSnapshot (climateWindFloat SliderWindBeltRange uiWindBeltRange (\value wind -> wind { windBeltRange = value })) (snapshotFloat SliderWindBeltRange (windBeltRange . scWind))
   , bindConfigAndSnapshot (climateWindFloat SliderWindBeltSpeedScale uiWindBeltSpeedScale (\value wind -> wind { windBeltSpeedScale = value })) (snapshotFloat SliderWindBeltSpeedScale (windBeltSpeedScale . scWind))
-  , bindConfigAndSnapshot (climateBoundaryFloat SliderBndLandRange uiBndLandRange (\value boundary -> boundary { bndLandRange = value })) (snapshotFloat SliderBndLandRange (bndLandRange . scBoundary))
   , bindConfigAndSnapshot (hydroFloat SliderPiedmontSmooth uiPiedmontSmooth (\value hydro -> hydro { hcPiedmontSmoothStrength = value })) (snapshotFloat SliderPiedmontSmooth (hcPiedmontSmoothStrength . scHydrology))
   , bindConfigAndSnapshot (hydroFloat SliderPiedmontSlopeMin uiPiedmontSlopeMin (\value hydro -> hydro { hcPiedmontSlopeMin = value })) (snapshotFloat SliderPiedmontSlopeMin (hcPiedmontSlopeMin . scHydrology))
   , bindConfigAndSnapshot (hydroFloat SliderPiedmontSlopeMax uiPiedmontSlopeMax (\value hydro -> hydro { hcPiedmontSlopeMax = value })) (snapshotFloat SliderPiedmontSlopeMax (hcPiedmontSlopeMax . scHydrology))
@@ -468,10 +461,6 @@ climatePrecipInt :: SliderId -> (UiState -> Float) -> (Int -> PrecipitationConfi
 climatePrecipInt sliderIdValue readUi updateField =
   sliderInt sliderIdValue readUi (updateClimatePrecipitation . updateField)
 
-climateBoundaryFloat :: SliderId -> (UiState -> Float) -> (Float -> BoundaryConfig -> BoundaryConfig) -> (SliderId, SliderConfigUpdate)
-climateBoundaryFloat sliderIdValue readUi updateField =
-  sliderFloat sliderIdValue readUi (updateClimateBoundary . updateField)
-
 weatherFloat :: SliderId -> (UiState -> Float) -> (Float -> WeatherConfig -> WeatherConfig) -> (SliderId, SliderConfigUpdate)
 weatherFloat sliderIdValue readUi updateField =
   sliderFloat sliderIdValue readUi (updateWorldWeather . updateField)
@@ -592,11 +581,6 @@ updateClimatePrecipitation updateField cfg =
   let climate = worldClimate cfg
   in cfg { worldClimate = climate { ccPrecipitation = updateField (ccPrecipitation climate) } }
 
-updateClimateBoundary :: (BoundaryConfig -> BoundaryConfig) -> WorldGenConfig -> WorldGenConfig
-updateClimateBoundary updateField cfg =
-  let climate = worldClimate cfg
-  in cfg { worldClimate = climate { ccBoundary = updateField (ccBoundary climate) } }
-
 updateWorldWeather :: (WeatherConfig -> WeatherConfig) -> WorldGenConfig -> WorldGenConfig
 updateWorldWeather updateField cfg =
   cfg { worldWeather = updateField (worldWeather cfg) }
@@ -663,7 +647,6 @@ mkSnapshotContext cfg =
       , scWind = ccWind climate
       , scMoisture = ccMoisture climate
       , scPrecipitation = ccPrecipitation climate
-      , scBoundary = ccBoundary climate
       , scWeather = worldWeather cfg
       , scBiome = biome
       , scBiomeVegetation = bcVegetation biome

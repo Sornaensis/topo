@@ -37,7 +37,6 @@ import Topo.Climate
   , WindConfig(..)
   , MoistureConfig(..)
   , PrecipitationConfig(..)
-  , BoundaryConfig(..)
   , SeasonalityConfig(..)
   , defaultClimateConfig
   , generateClimateStage
@@ -115,7 +114,7 @@ data TerrainConfig = TerrainConfig
   , terrainGlacier :: !GlacierConfig
     -- ^ Glacier accumulation, flow, and erosion.
   , terrainParameters :: !ParameterConfig
-    -- ^ Roughness, detail, and rock layer derivation.
+    -- ^ Roughness and rock layer derivation.
   , terrainFormConfig :: !TerrainFormConfig
     -- ^ Terrain form classification thresholds.
   , terrainSoil :: !SoilConfig
@@ -146,7 +145,7 @@ data WorldGenConfig = WorldGenConfig
     -- ^ All terrain-stage sub-configs.
   , worldClimate :: !ClimateConfig
     -- ^ Climate model (temperature, wind, moisture, precipitation,
-    -- boundary effects, seasonality).
+    -- and seasonality).
   , worldBiome :: !BiomeConfig
     -- ^ Biome classification rules and refinement.
   , worldWeather :: !WeatherConfig

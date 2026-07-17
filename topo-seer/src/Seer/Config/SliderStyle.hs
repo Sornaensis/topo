@@ -72,7 +72,6 @@ sliderFillColorForId sliderIdValue = case sliderIdValue of
   SliderPlateSize -> V4 120 120 170 255
   SliderUplift -> V4 150 120 120 255
   SliderRiftDepth -> V4 120 130 160 255
-  SliderDetailScale -> V4 90 140 160 255
   SliderPlateSpeed -> V4 110 130 180 255
   SliderBoundarySharpness -> V4 130 120 170 255
   SliderBoundaryNoiseScale -> V4 100 140 150 255
@@ -125,8 +124,6 @@ sliderFillColorForId sliderIdValue = case sliderIdValue of
   SliderLapseRate -> V4 120 120 160 255
   SliderWindIterations -> V4 120 140 200 255
   SliderMoistureIterations -> V4 120 150 160 255
-  SliderBoundaryMotionTemp -> V4 110 130 160 255
-  SliderBoundaryMotionPrecip -> V4 120 140 170 255
   SliderSliceLatCenter -> V4 110 140 130 255
   SliderSliceLonCenter -> V4 110 130 150 255
   SliderLatitudeExponent -> V4 150 110 130 255
@@ -157,7 +154,6 @@ sliderFillColorForId sliderIdValue = case sliderIdValue of
   SliderWindBeltBase -> V4 110 130 160 255
   SliderWindBeltRange -> V4 100 140 175 255
   SliderWindBeltSpeedScale -> V4 90 135 185 255
-  SliderBndLandRange -> V4 140 130 100 255
   SliderPiedmontSmooth -> V4 120 150 130 255
   SliderPiedmontSlopeMin -> V4 130 140 120 255
   SliderPiedmontSlopeMax -> V4 140 130 120 255

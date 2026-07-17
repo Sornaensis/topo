@@ -10,7 +10,6 @@
 -- * 'MoistureConfig' — evaporation, advection, condensation.
 -- * 'PrecipitationConfig' — orographic uplift, rain shadow, coastal
 --   moisture boost.
--- * 'BoundaryConfig' — legacy tectonic-bias knobs (currently no-op).
 --
 -- 'ClimateConfig' bundles the five sub-configs and is the single type
 -- threaded through the climate pipeline.
@@ -30,9 +29,6 @@ module Topo.Climate.Config
     -- * Precipitation
   , PrecipitationConfig(..)
   , defaultPrecipitationConfig
-    -- * Boundary
-  , BoundaryConfig(..)
-  , defaultBoundaryConfig
     -- * Seasonality
   , SeasonalityConfig(..)
   , defaultSeasonalityConfig
@@ -465,63 +461,6 @@ defaultPrecipitationConfig = PrecipitationConfig
   }
 
 ------------------------------------------------------------------------
--- Boundary (tectonic plate-boundary influence)
-------------------------------------------------------------------------
-
--- | Legacy tectonic-bias configuration.
---
--- These fields remain in the public config schema for backward
--- compatibility, but direct boundary-driven temperature/precipitation
--- bias is disabled in the climate model.
---
--- Deprecated: retained only for JSON compatibility with older configs.
-data BoundaryConfig = BoundaryConfig
-  { bndMotionTemp        :: !Float
-  -- ^ Velocity → temperature-bias scaling.  Default: @0.5@.
-  , bndMotionPrecip      :: !Float
-  -- ^ Velocity → precipitation-bias scaling.  Default: @0.5@.
-  , bndLandRange         :: !Float
-  -- ^ Normalising range for the land-fraction calculation (must be
-  -- > 0).  Default: @0.6@.
-  , bndTempConvergent    :: !Float
-  -- ^ Temperature bias at convergent boundaries (typically negative
-  -- = cooling).  Default: @−0.042@.
-  , bndTempDivergent     :: !Float
-  -- ^ Temperature bias at divergent boundaries.  Default: @0.014@.
-  , bndTempTransform     :: !Float
-  -- ^ Temperature bias at transform boundaries.  Default: @−0.007@.
-  , bndPrecipConvergent  :: !Float
-  -- ^ Precipitation bias at convergent boundaries.  Default: @0.08@.
-  , bndPrecipDivergent   :: !Float
-  -- ^ Precipitation bias at divergent boundaries.
-  -- Default: @−0.05@.
-  , bndPrecipTransform   :: !Float
-  -- ^ Precipitation bias at transform boundaries.  Default: @0.02@.
-  } deriving (Eq, Show, Generic)
-
--- | Serialise with @bnd@ prefix stripped from field names.
-instance ToJSON BoundaryConfig where
-  toJSON = genericToJSON (configOptions "bnd")
-
--- | Deserialise with defaults for any missing field.
-instance FromJSON BoundaryConfig where
-  parseJSON v = genericParseJSON (configOptions "bnd") (mergeDefaults (toJSON defaultBoundaryConfig) v)
-
--- | Neutral defaults for legacy boundary-bias fields.
-defaultBoundaryConfig :: BoundaryConfig
-defaultBoundaryConfig = BoundaryConfig
-  { bndMotionTemp        = 0
-  , bndMotionPrecip      = 0
-  , bndLandRange         = 0.6
-  , bndTempConvergent    = 0
-  , bndTempDivergent     = 0
-  , bndTempTransform     = 0
-  , bndPrecipConvergent  = 0
-  , bndPrecipDivergent   = 0
-  , bndPrecipTransform   = 0
-  }
-
-------------------------------------------------------------------------
 -- Seasonality
 ------------------------------------------------------------------------
 
@@ -595,8 +534,8 @@ defaultSeasonalityConfig = SeasonalityConfig
 
 -- | Top-level climate configuration.
 --
--- Groups six sub-configs covering temperature, wind, moisture,
--- precipitation, plate-boundary influence, and seasonality.
+-- Groups five sub-configs covering temperature, wind, moisture,
+-- precipitation, and seasonality.
 --
 -- Use 'defaultClimateConfig' for Earth-like defaults.  To tweak
 -- individual knobs, update the relevant sub-config via nested record
@@ -617,8 +556,6 @@ data ClimateConfig = ClimateConfig
   -- ^ Moisture and evaporation parameters.
   , ccPrecipitation  :: !PrecipitationConfig
   -- ^ Precipitation and orographic parameters.
-  , ccBoundary       :: !BoundaryConfig
-  -- ^ Plate-boundary climate influence parameters.
   , ccSeasonality    :: !SeasonalityConfig
   -- ^ Analytical seasonality estimation parameters.
   } deriving (Eq, Show, Generic)
@@ -638,6 +575,5 @@ defaultClimateConfig = ClimateConfig
   , ccWind           = defaultWindConfig
   , ccMoisture       = defaultMoistureConfig
   , ccPrecipitation  = defaultPrecipitationConfig
-  , ccBoundary       = defaultBoundaryConfig
   , ccSeasonality    = defaultSeasonalityConfig
   }

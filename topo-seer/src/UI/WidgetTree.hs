@@ -295,12 +295,10 @@ sliderDefsInWidgetOrder =
       planetDefs = sliderDefsForTab SliderTabPlanet
       erosionDefs = sliderDefsForTab SliderTabErosion
       terrainDefs = sliderDefsForTab SliderTabTerrain
-      (climatePrimary, climateAfterPrimary) = splitAt 9 climateDefs
-      (climateBoundaryMotion, climateRemainder) = splitAt 2 climateAfterPrimary
+      (climatePrimary, climateRemainder) = splitAt 9 climateDefs
   in climatePrimary
       ++ weatherDefs
       ++ biomeDefs
-      ++ climateBoundaryMotion
       ++ planetDefs
       ++ climateRemainder
       ++ erosionDefs

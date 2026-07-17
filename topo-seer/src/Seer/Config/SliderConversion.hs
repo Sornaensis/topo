@@ -107,7 +107,6 @@ sliderConversion sliderIdValue = case sliderIdValue of
   SliderPlateSize -> SliderIntRange 16 128
   SliderUplift -> SliderFloatRange 0.05 0.4
   SliderRiftDepth -> SliderFloatRange 0.05 0.6
-  SliderDetailScale -> SliderFloatRange 0.5 2.5
   SliderPlateSpeed -> SliderFloatRange 0.1 1.5
   SliderBoundarySharpness -> SliderFloatRange 0.5 2.5
   SliderBoundaryNoiseScale -> SliderFloatRange 0.002 0.02
@@ -160,8 +159,6 @@ sliderConversion sliderIdValue = case sliderIdValue of
   SliderLapseRate -> SliderFloatRange 0 1
   SliderWindIterations -> SliderIntRange 1 8
   SliderMoistureIterations -> SliderIntRange 2 72
-  SliderBoundaryMotionTemp -> SliderFloatRange 0 2
-  SliderBoundaryMotionPrecip -> SliderFloatRange 0 2
   SliderSliceLatCenter -> SliderFloatRange (-90) 90
   SliderSliceLonCenter -> SliderFloatRange (-180) 180
   SliderLatitudeExponent -> SliderFloatRange 0.2 1.5
@@ -192,7 +189,6 @@ sliderConversion sliderIdValue = case sliderIdValue of
   SliderWindBeltBase -> SliderFloatRange 0 1
   SliderWindBeltRange -> SliderFloatRange 0 1
   SliderWindBeltSpeedScale -> SliderFloatRange 0 1
-  SliderBndLandRange -> SliderFloatRange 0.1 1.5
   SliderPiedmontSmooth -> SliderFloatRange 0.0 0.6
   SliderPiedmontSlopeMin -> SliderFloatRange 0.01 0.08
   SliderPiedmontSlopeMax -> SliderFloatRange 0.05 0.25

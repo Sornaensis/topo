@@ -12,7 +12,7 @@
 --    also survive serialization.
 module Spec.ConfigJSON (spec) where
 
-import Data.Aeson (FromJSON, ToJSON, decode, encode, Key, Value(..))
+import Data.Aeson (FromJSON, ToJSON, decode, encode, Key, Value(..), object, (.=))
 import qualified Data.Aeson.KeyMap as KM
 import Data.Proxy (Proxy(..))
 import Test.Hspec
@@ -45,11 +45,11 @@ import Topo.Biome.Refine.Tundra   (TundraConfig, defaultTundraConfig)
 import Topo.Biome.Refine.Volcanic (VolcanicConfig, defaultVolcanicConfig)
 import Topo.BiomeConfig            (BiomeConfig, defaultBiomeConfig, aridBiomeConfig, lushBiomeConfig)
 import Topo.Climate.Config
-  ( ClimateConfig, TemperatureConfig, WindConfig, MoistureConfig
-  , PrecipitationConfig, BoundaryConfig, SeasonalityConfig
+  ( ClimateConfig(..), TemperatureConfig(..), WindConfig, MoistureConfig
+  , PrecipitationConfig, SeasonalityConfig
   , defaultClimateConfig, defaultTemperatureConfig, defaultWindConfig
   , defaultMoistureConfig, defaultPrecipitationConfig
-  , defaultBoundaryConfig, defaultSeasonalityConfig
+  , defaultSeasonalityConfig
   )
 import Topo.Erosion                (ErosionConfig, defaultErosionConfig)
 import Topo.Glacier                (GlacierConfig, defaultGlacierConfig)
@@ -58,7 +58,7 @@ import Topo.Hydrology
   , defaultHydroConfig, defaultRiverConfig, defaultGroundwaterConfig
   )
 import Topo.OceanCurrent           (OceanCurrentConfig, defaultOceanCurrentConfig)
-import Topo.Parameters             (ParameterConfig, TerrainFormConfig, defaultParameterConfig, defaultTerrainFormConfig)
+import Topo.Parameters             (ParameterConfig(..), TerrainFormConfig, defaultParameterConfig, defaultTerrainFormConfig)
 import Topo.Planet                  (PlanetConfig, WorldSlice, defaultPlanetConfig, defaultWorldSlice)
 import Topo.River                   (RiverTopologyConfig, defaultRiverTopologyConfig)
 import Topo.Soil                    (SoilConfig, defaultSoilConfig)
@@ -179,15 +179,25 @@ spec = describe "Config JSON serialization" $ do
     roundTrip "WindConfig" defaultWindConfig
     roundTrip "MoistureConfig" defaultMoistureConfig
     roundTrip "PrecipitationConfig" defaultPrecipitationConfig
-    roundTrip "BoundaryConfig" defaultBoundaryConfig
     roundTrip "SeasonalityConfig" defaultSeasonalityConfig
     emptyDecodes "ClimateConfig" defaultClimateConfig
     emptyDecodes "TemperatureConfig" defaultTemperatureConfig
     emptyDecodes "WindConfig" defaultWindConfig
     emptyDecodes "MoistureConfig" defaultMoistureConfig
     emptyDecodes "PrecipitationConfig" defaultPrecipitationConfig
-    emptyDecodes "BoundaryConfig" defaultBoundaryConfig
     emptyDecodes "SeasonalityConfig" defaultSeasonalityConfig
+    it "ignores legacy boundary config while preserving retained climate values" $ do
+      let legacy = object
+            [ "boundary" .= object ["motionTemp" .= (1.75 :: Float)]
+            , "temperature" .= object ["lapseRate" .= (0.31 :: Float)]
+            ]
+          expected = defaultClimateConfig
+            { ccTemperature = defaultTemperatureConfig { tmpLapseRate = 0.31 } }
+      decode (encode legacy) `shouldBe` Just expected
+    it "omits the removed boundary config from current JSON" $
+      case decode (encode defaultClimateConfig) of
+        Just (Object encoded) -> KM.member "boundary" encoded `shouldBe` False
+        _ -> expectationFailure "ClimateConfig did not encode to an object"
 
   describe "Ocean Currents" $ do
     roundTrip "OceanCurrentConfig" defaultOceanCurrentConfig
@@ -202,6 +212,17 @@ spec = describe "Config JSON serialization" $ do
     roundTrip "TerrainFormConfig" defaultTerrainFormConfig
     emptyDecodes "ParameterConfig" defaultParameterConfig
     emptyDecodes "TerrainFormConfig" defaultTerrainFormConfig
+    it "ignores legacy detailScale while preserving retained parameter values" $ do
+      let legacy = object
+            [ "detailScale" .= (2.25 :: Float)
+            , "roughnessScale" .= (0.41 :: Float)
+            ]
+      decode (encode legacy) `shouldBe`
+        Just (defaultParameterConfig { pcRoughnessScale = 0.41 })
+    it "omits removed detailScale from current JSON" $
+      case decode (encode defaultParameterConfig) of
+        Just (Object encoded) -> KM.member "detailScale" encoded `shouldBe` False
+        _ -> expectationFailure "ParameterConfig did not encode to an object"
     partialDecodes "TerrainFormConfig (Phase 3 fields missing)" defaultTerrainFormConfig
       [ "tfcPlateauMaxMicroRelief"
       , "tfcRollingNearFactor"

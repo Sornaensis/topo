@@ -3,6 +3,7 @@
 module Spec.ConfigSliders (spec) where
 
 import Actor.UI (ConfigTab(..), UiState(..), configRowCount, emptyUiState)
+import Data.Foldable (for_)
 import Data.Maybe (isJust, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -43,6 +44,17 @@ spec = describe "config tab and slider component extraction" $ do
     csrMinusWidget firstRow `shouldBe` WidgetSliderMinus SliderWaterLevel
     csrPlusWidget firstRow `shouldBe` WidgetSliderPlus SliderWaterLevel
     csrHitRect firstRow `shouldBe` configParamRowHitRect (configParamRects 0 wideLayout)
+
+  it "keeps retained slider rows contiguous in every slider tab" $
+    for_
+      [ ConfigTerrain, ConfigPlanet, ConfigClimate
+      , ConfigWeather, ConfigBiome, ConfigErosion
+      ] $ \tab -> do
+        let rows = configSliderRowsForTab tab emptyUiState wideLayout
+        map csrHitRect rows `shouldBe`
+          [ configParamRowHitRect (configParamRects idx wideLayout)
+          | idx <- [0 .. length rows - 1]
+          ]
 
   it "renders slider chrome and labels as pure draw commands" $ do
     firstRow <- requireHead "expected climate slider rows" $

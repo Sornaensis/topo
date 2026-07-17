@@ -6,17 +6,14 @@ module Seer.Config.SliderConfig
 
 import Actor.UI (UiState(..))
 import Data.List (foldl')
-import Seer.Config.Range (mapRange)
 import Seer.Config.SliderConfig.Data
   ( lookupSliderConfigUpdate
-  , updateClimateBoundary
   , updateTerrainGen
   , updateWorldSlice
   )
 import Seer.Config.SliderRegistry (SliderDef(..), SliderId(SliderExtentX, SliderExtentY), allSliderDefs)
 import Seer.Config.SliderConversion (sliderToDomainInt)
 import Topo.BaseHeight (GenConfig(..))
-import Topo.Climate (BoundaryConfig(..))
 import Topo.Planet
   ( PlanetConfig(..)
   , WorldSlice(..)
@@ -36,7 +33,7 @@ applySliderConfig ui cfg =
         maybe cfg (\updateSlider -> updateSlider currentUi cfg) (lookupSliderConfigUpdate (sliderId sliderDef))
 
 applyDerivedUiConfig :: UiState -> WorldGenConfig -> WorldGenConfig
-applyDerivedUiConfig ui = applyBoundaryBiases ui . applyWorldSliceExtents ui . applyWorldExtent ui
+applyDerivedUiConfig ui = applyWorldSliceExtents ui . applyWorldExtent ui
 
 applyWorldExtent :: UiState -> WorldGenConfig -> WorldGenConfig
 applyWorldExtent ui =
@@ -65,14 +62,3 @@ applyWorldSliceExtents ui cfg =
     hex = worldHexGrid cfg
     chunkSize = max 1 (uiChunkSize ui)
 
-applyBoundaryBiases :: UiState -> WorldGenConfig -> WorldGenConfig
-applyBoundaryBiases ui =
-  updateClimateBoundary $ \boundary ->
-    boundary
-      { bndTempConvergent = mapRange (-0.2) 0.1 (uiBndTempConvergent ui)
-      , bndTempDivergent = mapRange (-0.1) 0.2 (uiBndTempDivergent ui)
-      , bndTempTransform = mapRange (-0.1) 0.1 (uiBndTempTransform ui)
-      , bndPrecipConvergent = mapRange (-0.1) 0.2 (uiBndPrecipConvergent ui)
-      , bndPrecipDivergent = mapRange (-0.2) 0.1 (uiBndPrecipDivergent ui)
-      , bndPrecipTransform = mapRange (-0.1) 0.1 (uiBndPrecipTransform ui)
-      }

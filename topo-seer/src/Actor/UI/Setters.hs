@@ -108,13 +108,6 @@ module Actor.UI.Setters
   , setUiWindBeltRange
   , setUiWindBeltSpeedScale
   , setUiWindCoriolisDeflection
-  , setUiBndLandRange
-  , setUiBndTempConvergent
-  , setUiBndTempDivergent
-  , setUiBndTempTransform
-  , setUiBndPrecipConvergent
-  , setUiBndPrecipDivergent
-  , setUiBndPrecipTransform
   , setUiConfigTab
   , setUiLeftTab
   , setUiGenScale
@@ -157,7 +150,6 @@ module Actor.UI.Setters
   , setUiRiftDepth
   , setUiTrenchDepth
   , setUiRidgeHeight
-  , setUiDetailScale
   , setUiPlateBiasStrength
   , setUiPlateBiasCenter
   , setUiPlateBiasEdge
@@ -178,8 +170,6 @@ module Actor.UI.Setters
   , setUiRockHardnessSecondary
   , setUiWindIterations
   , setUiMoistureIterations
-  , setUiBoundaryMotionTemp
-  , setUiBoundaryMotionPrecip
   , setUiWeatherTick
   , setUiWeatherPhase
   , setUiWeatherAmplitude
@@ -440,13 +430,6 @@ setUiWindBeltBase = sendSlider SliderWindBeltBase
 setUiWindBeltRange = sendSlider SliderWindBeltRange
 setUiWindBeltSpeedScale = sendSlider SliderWindBeltSpeedScale
 setUiWindCoriolisDeflection = sendSlider SliderWindCoriolisDeflection
-setUiBndLandRange = sendSlider SliderBndLandRange
-setUiBndTempConvergent = sendUnary SetBndTempConvergent
-setUiBndTempDivergent = sendUnary SetBndTempDivergent
-setUiBndTempTransform = sendUnary SetBndTempTransform
-setUiBndPrecipConvergent = sendUnary SetBndPrecipConvergent
-setUiBndPrecipDivergent = sendUnary SetBndPrecipDivergent
-setUiBndPrecipTransform = sendUnary SetBndPrecipTransform
 setUiConfigTab = sendUnary SetConfigTab
 setUiLeftTab = sendUnary SetLeftTab
 setUiGenScale = sendSlider SliderGenScale
@@ -489,7 +472,6 @@ setUiUplift = sendSlider SliderUplift
 setUiRiftDepth = sendSlider SliderRiftDepth
 setUiTrenchDepth = sendSlider SliderTrenchDepth
 setUiRidgeHeight = sendSlider SliderRidgeHeight
-setUiDetailScale = sendSlider SliderDetailScale
 setUiPlateBiasStrength = sendSlider SliderPlateBiasStrength
 setUiPlateBiasCenter = sendSlider SliderPlateBiasCenter
 setUiPlateBiasEdge = sendSlider SliderPlateBiasEdge
@@ -510,8 +492,6 @@ setUiRockHardnessThreshold = sendSlider SliderRockHardnessThreshold
 setUiRockHardnessSecondary = sendSlider SliderRockHardnessSecondary
 setUiWindIterations = sendSlider SliderWindIterations
 setUiMoistureIterations = sendSlider SliderMoistureIterations
-setUiBoundaryMotionTemp = sendSlider SliderBoundaryMotionTemp
-setUiBoundaryMotionPrecip = sendSlider SliderBoundaryMotionPrecip
 setUiWeatherTick = sendSlider SliderWeatherTick
 setUiWeatherPhase = sendSlider SliderWeatherPhase
 setUiWeatherAmplitude = sendSlider SliderWeatherAmplitude

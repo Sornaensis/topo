@@ -3054,6 +3054,19 @@ assertTemplateResourceBodies app = do
     { hreqQuery = [("tab", Just "terrain")] }
   slidersHaveTab "terrain" (hresBody slidersByTab) `shouldBe` True
 
+  allSliders <- request app (mkRequest "GET" ["config", "sliders"])
+  configSummaryResponse <- request app (mkRequest "GET" ["config", "summary"])
+  let retiredSliderNames =
+        [ "SliderDetailScale"
+        , "SliderBoundaryMotionTemp"
+        , "SliderBoundaryMotionPrecip"
+        , "SliderBndLandRange"
+        ]
+      responseText = TextEncoding.decodeUtf8 . LBS.toStrict . Aeson.encode . hresBody
+  forM_ retiredSliderNames $ \retiredName -> do
+    responseText allSliders `shouldNotSatisfy` Text.isInfixOf retiredName
+    responseText configSummaryResponse `shouldNotSatisfy` Text.isInfixOf retiredName
+
   sliderByName <- request app (mkRequest "POST" ["config", "sliders", "get"])
     { hreqBody = Just (object ["name" .= ("SliderGenScale" :: Text)]) }
   lookupText "name" (hresBody sliderByName) `shouldBe` Just "SliderGenScale"

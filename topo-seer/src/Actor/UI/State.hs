@@ -1442,13 +1442,6 @@ data UiState = UiState
   , uiWindBeltRange :: !Float
   , uiWindBeltSpeedScale :: !Float
   , uiWindCoriolisDeflection :: !Float
-  , uiBndLandRange :: !Float
-  , uiBndTempConvergent :: !Float
-  , uiBndTempDivergent :: !Float
-  , uiBndTempTransform :: !Float
-  , uiBndPrecipConvergent :: !Float
-  , uiBndPrecipDivergent :: !Float
-  , uiBndPrecipTransform :: !Float
   , uiGenScale :: !Float
   , uiGenCoordScale :: !Float
   , uiGenOffsetX :: !Float
@@ -1489,7 +1482,6 @@ data UiState = UiState
   , uiRiftDepth :: !Float
   , uiTrenchDepth :: !Float
   , uiRidgeHeight :: !Float
-  , uiDetailScale :: !Float
   , uiPlateBiasStrength :: !Float
   , uiPlateBiasCenter :: !Float
   , uiPlateBiasEdge :: !Float
@@ -1510,8 +1502,6 @@ data UiState = UiState
   , uiRockHardnessSecondary :: !Float
   , uiWindIterations :: !Float
   , uiMoistureIterations :: !Float
-  , uiBoundaryMotionTemp :: !Float
-  , uiBoundaryMotionPrecip :: !Float
   , uiWeatherTick :: !Float
   , uiWeatherPhase :: !Float
   , uiWeatherAmplitude :: !Float
@@ -1711,13 +1701,6 @@ emptyUiState = UiState
   , uiWindBeltRange = sliderDefault SliderWindBeltRange
   , uiWindBeltSpeedScale = sliderDefault SliderWindBeltSpeedScale
   , uiWindCoriolisDeflection = sliderDefault SliderWindCoriolisDeflection
-  , uiBndLandRange = sliderDefault SliderBndLandRange
-  , uiBndTempConvergent = 0.467
-  , uiBndTempDivergent = 0.4
-  , uiBndTempTransform = 0.45
-  , uiBndPrecipConvergent = 0.6
-  , uiBndPrecipDivergent = 0.5
-  , uiBndPrecipTransform = 0.6
   , uiGenScale = sliderDefault SliderGenScale
   , uiGenCoordScale = sliderDefault SliderGenCoordScale
   , uiGenOffsetX = sliderDefault SliderGenOffsetX
@@ -1758,7 +1741,6 @@ emptyUiState = UiState
   , uiRiftDepth = sliderDefault SliderRiftDepth
   , uiTrenchDepth = sliderDefault SliderTrenchDepth
   , uiRidgeHeight = sliderDefault SliderRidgeHeight
-  , uiDetailScale = sliderDefault SliderDetailScale
   , uiPlateBiasStrength = sliderDefault SliderPlateBiasStrength
   , uiPlateBiasCenter = sliderDefault SliderPlateBiasCenter
   , uiPlateBiasEdge = sliderDefault SliderPlateBiasEdge
@@ -1779,8 +1761,6 @@ emptyUiState = UiState
   , uiRockHardnessSecondary = sliderDefault SliderRockHardnessSecondary
   , uiWindIterations = sliderDefault SliderWindIterations
   , uiMoistureIterations = sliderDefault SliderMoistureIterations
-  , uiBoundaryMotionTemp = sliderDefault SliderBoundaryMotionTemp
-  , uiBoundaryMotionPrecip = sliderDefault SliderBoundaryMotionPrecip
   , uiWeatherTick = sliderDefault SliderWeatherTick
   , uiWeatherPhase = sliderDefault SliderWeatherPhase
   , uiWeatherAmplitude = sliderDefault SliderWeatherAmplitude
@@ -1921,12 +1901,6 @@ data UiUpdate
   | SetSeedInput !Text
   | SetSliderValue !SliderId !Float
   | SetRenderWaterLevel !Float
-  | SetBndTempConvergent !Float
-  | SetBndTempDivergent !Float
-  | SetBndTempTransform !Float
-  | SetBndPrecipConvergent !Float
-  | SetBndPrecipDivergent !Float
-  | SetBndPrecipTransform !Float
   | SetPanOffset !(Float, Float)
   | SetZoom !Float
   | SetHoverHex !(Maybe (Int, Int))
@@ -1987,12 +1961,6 @@ applyUpdate upd st = case upd of
   SetSeedInput v -> st { uiSeedInput = v }
   SetSliderValue sliderIdValue v -> applySliderValue sliderIdValue v st
   SetRenderWaterLevel v -> st { uiRenderWaterLevel = clamp01 v }
-  SetBndTempConvergent v -> st { uiBndTempConvergent = clamp01 v }
-  SetBndTempDivergent v -> st { uiBndTempDivergent = clamp01 v }
-  SetBndTempTransform v -> st { uiBndTempTransform = clamp01 v }
-  SetBndPrecipConvergent v -> st { uiBndPrecipConvergent = clamp01 v }
-  SetBndPrecipDivergent v -> st { uiBndPrecipDivergent = clamp01 v }
-  SetBndPrecipTransform v -> st { uiBndPrecipTransform = clamp01 v }
   SetPanOffset v -> st { uiPanOffset = v }
   SetZoom v -> st { uiZoom = clampZoom v }
   SetHoverHex v -> st { uiHoverHex = v }
@@ -2070,7 +2038,6 @@ sliderStateBindingForId sliderIdValue = case sliderIdValue of
   SliderPlateSize -> binding uiPlateSize (\value st -> st { uiPlateSize = clamp01 value })
   SliderUplift -> binding uiUplift (\value st -> st { uiUplift = clamp01 value })
   SliderRiftDepth -> binding uiRiftDepth (\value st -> st { uiRiftDepth = clamp01 value })
-  SliderDetailScale -> binding uiDetailScale (\value st -> st { uiDetailScale = clamp01 value })
   SliderPlateSpeed -> binding uiPlateSpeed (\value st -> st { uiPlateSpeed = clamp01 value })
   SliderBoundarySharpness -> binding uiBoundarySharpness (\value st -> st { uiBoundarySharpness = clamp01 value })
   SliderBoundaryNoiseScale -> binding uiBoundaryNoiseScale (\value st -> st { uiBoundaryNoiseScale = clamp01 value })
@@ -2123,8 +2090,6 @@ sliderStateBindingForId sliderIdValue = case sliderIdValue of
   SliderLapseRate -> binding uiLapseRate (\value st -> st { uiLapseRate = clamp01 value })
   SliderWindIterations -> binding uiWindIterations (\value st -> st { uiWindIterations = clamp01 value })
   SliderMoistureIterations -> binding uiMoistureIterations (\value st -> st { uiMoistureIterations = clamp01 value })
-  SliderBoundaryMotionTemp -> binding uiBoundaryMotionTemp (\value st -> st { uiBoundaryMotionTemp = clamp01 value })
-  SliderBoundaryMotionPrecip -> binding uiBoundaryMotionPrecip (\value st -> st { uiBoundaryMotionPrecip = clamp01 value })
   SliderSliceLatCenter -> binding uiSliceLatCenter (\value st -> st { uiSliceLatCenter = clamp01 value })
   SliderSliceLonCenter -> binding uiSliceLonCenter (\value st -> st { uiSliceLonCenter = clamp01 value })
   SliderLatitudeExponent -> binding uiLatitudeExponent (\value st -> st { uiLatitudeExponent = clamp01 value })
@@ -2155,7 +2120,6 @@ sliderStateBindingForId sliderIdValue = case sliderIdValue of
   SliderWindBeltBase -> binding uiWindBeltBase (\value st -> st { uiWindBeltBase = clamp01 value })
   SliderWindBeltRange -> binding uiWindBeltRange (\value st -> st { uiWindBeltRange = clamp01 value })
   SliderWindBeltSpeedScale -> binding uiWindBeltSpeedScale (\value st -> st { uiWindBeltSpeedScale = clamp01 value })
-  SliderBndLandRange -> binding uiBndLandRange (\value st -> st { uiBndLandRange = clamp01 value })
   SliderPiedmontSmooth -> binding uiPiedmontSmooth (\value st -> st { uiPiedmontSmooth = clamp01 value })
   SliderPiedmontSlopeMin -> binding uiPiedmontSlopeMin (\value st -> st { uiPiedmontSlopeMin = clamp01 value })
   SliderPiedmontSlopeMax -> binding uiPiedmontSlopeMax (\value st -> st { uiPiedmontSlopeMax = clamp01 value })

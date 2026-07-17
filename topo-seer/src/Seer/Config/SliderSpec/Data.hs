@@ -64,7 +64,6 @@ sliderSpecs =
   , specPlateSize
   , specUplift
   , specRiftDepth
-  , specDetailScale
   , specPlateSpeed
   , specBoundarySharpness
   , specBoundaryNoiseScale
@@ -117,8 +116,6 @@ sliderSpecs =
   , specLapseRate
   , specWindIterations
   , specMoistureIterations
-  , specBoundaryMotionTemp
-  , specBoundaryMotionPrecip
   , specSliceLatCenter
   , specSliceLonCenter
   , specLatitudeExponent
@@ -149,7 +146,6 @@ sliderSpecs =
   , specWindBeltBase
   , specWindBeltRange
   , specWindBeltSpeedScale
-  , specBndLandRange
   , specPiedmontSmooth
   , specPiedmontSlopeMin
   , specPiedmontSlopeMax
@@ -336,10 +332,6 @@ specUplift = SliderSpec
 specRiftDepth :: SliderSpec
 specRiftDepth = SliderSpec
   "Rift Depth" "Divergent boundary rift depth" 0.05 0.6 False
-
-specDetailScale :: SliderSpec
-specDetailScale = SliderSpec
-  "Detail Scale" "Scale of per-tile detail noise applied after tectonics" 0.5 2.5 False
 
 specPlateSpeed :: SliderSpec
 specPlateSpeed = SliderSpec
@@ -713,14 +705,6 @@ specBiomeFeedbackBlend :: SliderSpec
 specBiomeFeedbackBlend = SliderSpec
   "Biome Blend" "Biome feedback vs bootstrap blend" 0 1 False
 
-specBoundaryMotionTemp :: SliderSpec
-specBoundaryMotionTemp = SliderSpec
-  "Bound Temp" "Plate-boundary influence on local temperature" 0 2 False
-
-specBoundaryMotionPrecip :: SliderSpec
-specBoundaryMotionPrecip = SliderSpec
-  "Bound Precip" "Plate-boundary influence on local precipitation" 0 2 False
-
 specPlanetRadius :: SliderSpec
 specPlanetRadius = SliderSpec
   "Planet R" "Planet radius in km" 4778 9557 False
@@ -884,14 +868,6 @@ specWindBeltSpeedScale = SliderSpec
 specWindCoriolisDeflection :: SliderSpec
 specWindCoriolisDeflection = SliderSpec
   "Coriolis Defl" "Max Coriolis deflection angle (radians)" 0 1.57 False
-
-------------------------------------------------------------------------
--- Boundary model specs
-------------------------------------------------------------------------
-
-specBndLandRange :: SliderSpec
-specBndLandRange = SliderSpec
-  "Bnd Land R" "Land-fraction normalising range for boundary effects" 0.1 1.5 False
 
 ------------------------------------------------------------------------
 -- Erosion tab specs

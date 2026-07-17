@@ -69,43 +69,42 @@ allSliderDefs =
   , def SliderPlateSize SliderTabTerrain 17
   , def SliderUplift SliderTabTerrain 18
   , def SliderRiftDepth SliderTabTerrain 19
-  , def SliderDetailScale SliderTabTerrain 20
-  , def SliderPlateSpeed SliderTabTerrain 21
-  , def SliderBoundarySharpness SliderTabTerrain 22
-  , def SliderBoundaryNoiseScale SliderTabTerrain 23
-  , def SliderBoundaryNoiseStrength SliderTabTerrain 24
-  , def SliderBoundaryWarpOctaves SliderTabTerrain 25
-  , def SliderBoundaryWarpLacunarity SliderTabTerrain 26
-  , def SliderBoundaryWarpGain SliderTabTerrain 27
-  , def SliderPlateMergeScale SliderTabTerrain 28
-  , def SliderPlateMergeBias SliderTabTerrain 29
-  , def SliderPlateDetailScale SliderTabTerrain 30
-  , def SliderPlateDetailStrength SliderTabTerrain 31
-  , def SliderPlateRidgeStrength SliderTabTerrain 32
-  , def SliderPlateHeightBase SliderTabTerrain 33
-  , def SliderPlateHeightVariance SliderTabTerrain 34
-  , def SliderPlateHardnessBase SliderTabTerrain 35
-  , def SliderPlateHardnessVariance SliderTabTerrain 36
-  , def SliderTrenchDepth SliderTabTerrain 37
-  , def SliderRidgeHeight SliderTabTerrain 38
-  , def SliderPlateBiasStrength SliderTabTerrain 39
-  , def SliderPlateBiasCenter SliderTabTerrain 40
-  , def SliderPlateBiasEdge SliderTabTerrain 41
-  , def SliderPlateBiasNorth SliderTabTerrain 42
-  , def SliderPlateBiasSouth SliderTabTerrain 43
-  , def SliderTfcCliffSlope SliderTabTerrain 44
-  , def SliderTfcMountainSlope SliderTabTerrain 45
-  , def SliderTfcMountainRelief SliderTabTerrain 46
-  , def SliderTfcHillSlope SliderTabTerrain 47
-  , def SliderTfcRollingSlope SliderTabTerrain 48
-  , def SliderValleyCurvature SliderTabTerrain 49
-  , def SliderTfcElevGradient SliderTabTerrain 50
-  , def SliderTfcPlateauMaxRelief2Ring SliderTabTerrain 51
-  , def SliderTfcPlateauMaxMicroRelief SliderTabTerrain 52
-  , def SliderTfcRollingNearFactor SliderTabTerrain 53
-  , def SliderRockElevationThreshold SliderTabTerrain 54
-  , def SliderRockHardnessThreshold SliderTabTerrain 55
-  , def SliderRockHardnessSecondary SliderTabTerrain 56
+  , def SliderPlateSpeed SliderTabTerrain 20
+  , def SliderBoundarySharpness SliderTabTerrain 21
+  , def SliderBoundaryNoiseScale SliderTabTerrain 22
+  , def SliderBoundaryNoiseStrength SliderTabTerrain 23
+  , def SliderBoundaryWarpOctaves SliderTabTerrain 24
+  , def SliderBoundaryWarpLacunarity SliderTabTerrain 25
+  , def SliderBoundaryWarpGain SliderTabTerrain 26
+  , def SliderPlateMergeScale SliderTabTerrain 27
+  , def SliderPlateMergeBias SliderTabTerrain 28
+  , def SliderPlateDetailScale SliderTabTerrain 29
+  , def SliderPlateDetailStrength SliderTabTerrain 30
+  , def SliderPlateRidgeStrength SliderTabTerrain 31
+  , def SliderPlateHeightBase SliderTabTerrain 32
+  , def SliderPlateHeightVariance SliderTabTerrain 33
+  , def SliderPlateHardnessBase SliderTabTerrain 34
+  , def SliderPlateHardnessVariance SliderTabTerrain 35
+  , def SliderTrenchDepth SliderTabTerrain 36
+  , def SliderRidgeHeight SliderTabTerrain 37
+  , def SliderPlateBiasStrength SliderTabTerrain 38
+  , def SliderPlateBiasCenter SliderTabTerrain 39
+  , def SliderPlateBiasEdge SliderTabTerrain 40
+  , def SliderPlateBiasNorth SliderTabTerrain 41
+  , def SliderPlateBiasSouth SliderTabTerrain 42
+  , def SliderTfcCliffSlope SliderTabTerrain 43
+  , def SliderTfcMountainSlope SliderTabTerrain 44
+  , def SliderTfcMountainRelief SliderTabTerrain 45
+  , def SliderTfcHillSlope SliderTabTerrain 46
+  , def SliderTfcRollingSlope SliderTabTerrain 47
+  , def SliderValleyCurvature SliderTabTerrain 48
+  , def SliderTfcElevGradient SliderTabTerrain 49
+  , def SliderTfcPlateauMaxRelief2Ring SliderTabTerrain 50
+  , def SliderTfcPlateauMaxMicroRelief SliderTabTerrain 51
+  , def SliderTfcRollingNearFactor SliderTabTerrain 52
+  , def SliderRockElevationThreshold SliderTabTerrain 53
+  , def SliderRockHardnessThreshold SliderTabTerrain 54
+  , def SliderRockHardnessSecondary SliderTabTerrain 55
   , def SliderPlanetRadius SliderTabPlanet 0
   , def SliderAxialTilt SliderTabPlanet 1
   , def SliderInsolation SliderTabPlanet 2
@@ -123,44 +122,41 @@ allSliderDefs =
   , def SliderLapseRate SliderTabClimate 6
   , def SliderWindIterations SliderTabClimate 7
   , def SliderMoistureIterations SliderTabClimate 8
-  , def SliderBoundaryMotionTemp SliderTabClimate 9
-  , def SliderBoundaryMotionPrecip SliderTabClimate 10
-  , def SliderSliceLatCenter SliderTabClimate 11
-  , def SliderSliceLonCenter SliderTabClimate 12
-  , def SliderLatitudeExponent SliderTabClimate 13
-  , def SliderPlateHeightCooling SliderTabClimate 14
-  , def SliderTempNoiseScale SliderTabClimate 15
-  , def SliderOceanModeration SliderTabClimate 16
-  , def SliderOceanModerateTemp SliderTabClimate 17
-  , def SliderAlbedoSensitivity SliderTabClimate 18
-  , def SliderAlbedoReference SliderTabClimate 19
-  , def SliderMoistAdvect SliderTabClimate 20
-  , def SliderMoistLocal SliderTabClimate 21
-  , def SliderMoistWindEvapScale SliderTabClimate 22
-  , def SliderMoistEvapNoiseScale SliderTabClimate 23
-  , def SliderMoistBareEvapFrac SliderTabClimate 24
-  , def SliderMoistVegTranspFrac SliderTabClimate 25
-  , def SliderMoistWindETScale SliderTabClimate 26
-  , def SliderMoistCondensationRate SliderTabClimate 27
-  , def SliderMoistRecycleRate SliderTabClimate 28
-  , def SliderMoistITCZStrength SliderTabClimate 29
-  , def SliderMoistITCZWidth SliderTabClimate 30
-  , def SliderOrographicScale SliderTabClimate 31
-  , def SliderOrographicStep SliderTabClimate 32
-  , def SliderCoastalIterations SliderTabClimate 33
-  , def SliderCoastalDiffuse SliderTabClimate 34
-  , def SliderCoastalMoistureBoost SliderTabClimate 35
-  , def SliderWindBeltStrength SliderTabClimate 36
-  , def SliderWindBeltHarmonics SliderTabClimate 37
-  , def SliderWindBeltBase SliderTabClimate 38
-  , def SliderWindBeltRange SliderTabClimate 39
-  , def SliderWindBeltSpeedScale SliderTabClimate 40
-  , def SliderBndLandRange SliderTabClimate 41
-  , def SliderPiedmontSmooth SliderTabClimate 42
-  , def SliderPiedmontSlopeMin SliderTabClimate 43
-  , def SliderPiedmontSlopeMax SliderTabClimate 44
-  , def SliderWindCoriolisDeflection SliderTabClimate 45
-  , def SliderMoistMinVegFloor SliderTabClimate 46
+  , def SliderSliceLatCenter SliderTabClimate 9
+  , def SliderSliceLonCenter SliderTabClimate 10
+  , def SliderLatitudeExponent SliderTabClimate 11
+  , def SliderPlateHeightCooling SliderTabClimate 12
+  , def SliderTempNoiseScale SliderTabClimate 13
+  , def SliderOceanModeration SliderTabClimate 14
+  , def SliderOceanModerateTemp SliderTabClimate 15
+  , def SliderAlbedoSensitivity SliderTabClimate 16
+  , def SliderAlbedoReference SliderTabClimate 17
+  , def SliderMoistAdvect SliderTabClimate 18
+  , def SliderMoistLocal SliderTabClimate 19
+  , def SliderMoistWindEvapScale SliderTabClimate 20
+  , def SliderMoistEvapNoiseScale SliderTabClimate 21
+  , def SliderMoistBareEvapFrac SliderTabClimate 22
+  , def SliderMoistVegTranspFrac SliderTabClimate 23
+  , def SliderMoistWindETScale SliderTabClimate 24
+  , def SliderMoistCondensationRate SliderTabClimate 25
+  , def SliderMoistRecycleRate SliderTabClimate 26
+  , def SliderMoistITCZStrength SliderTabClimate 27
+  , def SliderMoistITCZWidth SliderTabClimate 28
+  , def SliderOrographicScale SliderTabClimate 29
+  , def SliderOrographicStep SliderTabClimate 30
+  , def SliderCoastalIterations SliderTabClimate 31
+  , def SliderCoastalDiffuse SliderTabClimate 32
+  , def SliderCoastalMoistureBoost SliderTabClimate 33
+  , def SliderWindBeltStrength SliderTabClimate 34
+  , def SliderWindBeltHarmonics SliderTabClimate 35
+  , def SliderWindBeltBase SliderTabClimate 36
+  , def SliderWindBeltRange SliderTabClimate 37
+  , def SliderWindBeltSpeedScale SliderTabClimate 38
+  , def SliderPiedmontSmooth SliderTabClimate 39
+  , def SliderPiedmontSlopeMin SliderTabClimate 40
+  , def SliderPiedmontSlopeMax SliderTabClimate 41
+  , def SliderWindCoriolisDeflection SliderTabClimate 42
+  , def SliderMoistMinVegFloor SliderTabClimate 43
   , def SliderWeatherTick SliderTabWeather 0
   , def SliderWeatherPhase SliderTabWeather 1
   , def SliderWeatherAmplitude SliderTabWeather 2
@@ -287,7 +283,6 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderPlateSize -> 0.7143
   SliderUplift -> 0.3
   SliderRiftDepth -> 0.35
-  SliderDetailScale -> 0.5
   SliderPlateSpeed -> 0.38
   SliderBoundarySharpness -> 0.35
   SliderBoundaryNoiseScale -> 0.33
@@ -340,8 +335,6 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderLapseRate -> 0.65
   SliderWindIterations -> 0.5
   SliderMoistureIterations -> 0.486
-  SliderBoundaryMotionTemp -> 0.5
-  SliderBoundaryMotionPrecip -> 0.5
   SliderSliceLatCenter -> 0.6944444444444444
   SliderSliceLonCenter -> 0.5
   SliderLatitudeExponent -> 0.615
@@ -372,7 +365,6 @@ sliderDefaultValueForId sliderIdValue = case sliderIdValue of
   SliderWindBeltBase -> 0.4
   SliderWindBeltRange -> 0.6
   SliderWindBeltSpeedScale -> 0.6
-  SliderBndLandRange -> 0.357
   SliderPiedmontSmooth -> 0.4167
   SliderPiedmontSlopeMin -> 0.2857
   SliderPiedmontSlopeMax -> 0.35

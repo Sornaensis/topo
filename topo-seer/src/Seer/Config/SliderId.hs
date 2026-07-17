@@ -23,7 +23,6 @@ data SliderId
   | SliderPlateSize
   | SliderUplift
   | SliderRiftDepth
-  | SliderDetailScale
   | SliderPlateSpeed
   | SliderBoundarySharpness
   | SliderBoundaryNoiseScale
@@ -76,8 +75,6 @@ data SliderId
   | SliderLapseRate
   | SliderWindIterations
   | SliderMoistureIterations
-  | SliderBoundaryMotionTemp
-  | SliderBoundaryMotionPrecip
   | SliderSliceLatCenter
   | SliderSliceLonCenter
   | SliderLatitudeExponent
@@ -108,7 +105,6 @@ data SliderId
   | SliderWindBeltBase
   | SliderWindBeltRange
   | SliderWindBeltSpeedScale
-  | SliderBndLandRange
   | SliderPiedmontSmooth
   | SliderPiedmontSlopeMin
   | SliderPiedmontSlopeMax

@@ -38,10 +38,12 @@ import Seer.Config.Snapshot
 import Seer.Config.SliderSpec (SliderId(..), sliderLabelForId)
 import Seer.Persistence.Name (validatePersistenceName)
 import Topo.BaseHeight (GenConfig(..))
+import Topo.Climate (ClimateConfig(..), TemperatureConfig(..))
 import Topo.Erosion (ErosionConfig(..), defaultErosionConfig)
 import Topo.Hypsometry (HypsometryConfig(..))
 import Topo.Hex (hexSizeKm)
 import Topo.Hydrology (HydroConfig(..))
+import Topo.Parameters (ParameterConfig(..))
 import Topo.Planet (WorldSlice(..), hexesPerDegreeLatitude, hexesPerDegreeLongitude)
 import Topo.Types (worldExtentRadiusX, worldExtentRadiusY)
 import Topo.WaterBody (WaterBodyConfig(..))
@@ -407,6 +409,22 @@ snapshotCompatSpec = describe "Snapshot schema evolution" $ do
               in ecCoastalSmoothIterations erosion `shouldBe` 2
 
   describe "old snapshot applies cleanly" $ do
+    it "migrates v1 snapshots while ignoring removed detail and boundary keys" $ do
+      let legacyJson = "{\"name\":\"legacy\",\"version\":1,\"seed\":99,\"genConfig\":{\"terrain\":{\"parameters\":{\"detailScale\":2.25,\"roughnessScale\":0.41}},\"climate\":{\"boundary\":{\"motionTemp\":1.75,\"landRange\":1.2},\"temperature\":{\"lapseRate\":0.31}}}}"
+      case eitherDecodeStrict' @ConfigSnapshot legacyJson of
+        Left err -> expectationFailure err
+        Right cs -> do
+          csVersion cs `shouldBe` currentSnapshotVersion
+          csSeed cs `shouldBe` 99
+          let cfg = csGenConfig cs
+          pcRoughnessScale (terrainParameters (worldTerrain cfg)) `shouldBe` 0.41
+          tmpLapseRate (ccTemperature (worldClimate cfg)) `shouldBe` 0.31
+          let currentJson = encode cs
+          nestedKeyPresent ["genConfig", "terrain", "parameters"] "detailScale" currentJson
+            `shouldBe` False
+          nestedKeyPresent ["genConfig", "climate"] "boundary" currentJson
+            `shouldBe` False
+
     it "empty genConfig decodes to defaultWorldGenConfig" $ do
       let json = "{\"name\":\"old\",\"genConfig\":{}}"
       case eitherDecodeStrict' @ConfigSnapshot json of
@@ -477,8 +495,20 @@ removeKey key lbs =
     Right (Object o) -> encode (Object (KM.delete (fromText key) o))
     Right v          -> encode v
 
+-- | Check for a key nested under a path of object keys.
+nestedKeyPresent :: [Text] -> Text -> BSL.ByteString -> Bool
+nestedKeyPresent path key lbs =
+  case eitherDecodeStrict' @Value (BSL.toStrict lbs) of
+    Left _ -> False
+    Right value -> go path value
+  where
+    go [] (Object obj) = KM.member (fromText key) obj
+    go (part:rest) (Object obj) =
+      maybe False (go rest) (KM.lookup (fromText part) obj)
+    go _ _ = False
+
 -- | Remove a key nested under a path of object keys.
--- Returns 'Nothing' if the path doesn't exist.
+-- Returns 'Nothing' if the JSON cannot be decoded.
 stripNestedKey :: [Text] -> Text -> BSL.ByteString -> Maybe BSL.ByteString
 stripNestedKey path key lbs =
   case eitherDecodeStrict' @Value (BSL.toStrict lbs) of

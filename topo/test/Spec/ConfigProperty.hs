@@ -38,7 +38,7 @@ import Topo.Biome.Refine.Tundra     (TundraConfig)
 import Topo.Biome.Refine.Volcanic   (VolcanicConfig)
 import Topo.BiomeConfig       (BiomeConfig)
 import Topo.Climate.Config
-  ( BoundaryConfig, ClimateConfig, MoistureConfig
+  ( ClimateConfig, MoistureConfig
   , PrecipitationConfig, SeasonalityConfig, TemperatureConfig, WindConfig
   )
 import Topo.Erosion           (ErosionConfig)
@@ -111,7 +111,6 @@ roundTripSpec = describe "JSON round-trip (QuickCheck)" $ do
   roundTrip "WindConfig"                  (Proxy @WindConfig)
   roundTrip "MoistureConfig"              (Proxy @MoistureConfig)
   roundTrip "PrecipitationConfig"         (Proxy @PrecipitationConfig)
-  roundTrip "BoundaryConfig"              (Proxy @BoundaryConfig)
   roundTrip "SeasonalityConfig"           (Proxy @SeasonalityConfig)
   -- Weather
   roundTrip "WeatherConfig"               (Proxy @WeatherConfig)

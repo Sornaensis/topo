@@ -38,7 +38,7 @@ import Topo.Biome.Refine.Tundra     (TundraConfig)
 import Topo.Biome.Refine.Volcanic   (VolcanicConfig)
 import Topo.BiomeConfig       (BiomeConfig)
 import Topo.Climate.Config
-  ( BoundaryConfig, ClimateConfig, MoistureConfig
+  ( ClimateConfig, MoistureConfig
   , PrecipitationConfig, SeasonalityConfig, TemperatureConfig, WindConfig
   )
 import Topo.Erosion           (ErosionConfig)
@@ -171,7 +171,6 @@ instance Arbitrary TemperatureConfig           where arbitrary = genericArbitrar
 instance Arbitrary WindConfig                  where arbitrary = genericArbitrary
 instance Arbitrary MoistureConfig              where arbitrary = genericArbitrary
 instance Arbitrary PrecipitationConfig         where arbitrary = genericArbitrary
-instance Arbitrary BoundaryConfig              where arbitrary = genericArbitrary
 instance Arbitrary SeasonalityConfig           where arbitrary = genericArbitrary
 
 -- Weather

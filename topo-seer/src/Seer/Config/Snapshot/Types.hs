@@ -42,7 +42,7 @@ import Topo.WorldGen (WorldGenConfig, defaultWorldGenConfig)
 -- | Monotonically increasing version tag for forward compatibility.
 -- Bump this when the set of fields changes.
 currentSnapshotVersion :: Int
-currentSnapshotVersion = 1
+currentSnapshotVersion = 2
 
 -- ---------------------------------------------------------------------------
 -- ConfigSnapshot data type
@@ -79,11 +79,11 @@ data ConfigSnapshot = ConfigSnapshot
 -- JSON instances
 -- ---------------------------------------------------------------------------
 
--- | JSON layout (version 1):
+-- | JSON layout (version 2):
 --
 -- @
 -- { "name": "...",
---   "version": 1,
+--   "version": 2,
 --   "seed": 42,
 --   "chunkSize": 64,
 --   "renderWaterLevel": 0.43,
@@ -105,13 +105,28 @@ instance ToJSON ConfigSnapshot where
 instance FromJSON ConfigSnapshot where
   parseJSON = withObject "ConfigSnapshot" $ \o -> do
     let d = defaultSnapshot
-    ConfigSnapshot
-      <$> o .:? "name"             .!= csName d
-      <*> o .:? "version"          .!= csVersion d
-      <*> o .:? "seed"             .!= csSeed d
-      <*> o .:? "chunkSize"        .!= csChunkSize d
-      <*> o .:? "renderWaterLevel" .!= csRenderWaterLevel d
-      <*> o .:? "genConfig"        .!= csGenConfig d
+    name <- o .:? "name" .!= csName d
+    version <- o .:? "version" .!= csVersion d
+    seed <- o .:? "seed" .!= csSeed d
+    chunkSize <- o .:? "chunkSize" .!= csChunkSize d
+    renderWaterLevel <- o .:? "renderWaterLevel" .!= csRenderWaterLevel d
+    genConfig <- o .:? "genConfig" .!= csGenConfig d
+    pure ConfigSnapshot
+      { csName = name
+      , csVersion = migrateSnapshotVersion version
+      , csSeed = seed
+      , csChunkSize = chunkSize
+      , csRenderWaterLevel = renderWaterLevel
+      , csGenConfig = genConfig
+      }
+
+-- | Loaded snapshots use the current schema version after compatibility
+-- defaults and ignored legacy keys have been applied. Future versions retain
+-- their tag so callers can still identify data produced by a newer release.
+migrateSnapshotVersion :: Int -> Int
+migrateSnapshotVersion version
+  | version < currentSnapshotVersion = currentSnapshotVersion
+  | otherwise = version
 
 -- ---------------------------------------------------------------------------
 -- Default
