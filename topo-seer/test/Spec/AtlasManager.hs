@@ -18,6 +18,7 @@ import Actor.AtlasManager
   , AtlasManager
   , AtlasManagerQueueState(..)
   , AtlasQueuedTarget(..)
+  , ajViewMode
   , atlasManagerHasQueuedWorkFor
   , atlasManagerQueuedCount
   , atlasManagerQueuedRevision
@@ -62,7 +63,6 @@ atlasJobFor mode version =
       atlasKey = atlasKeyFor mode defaultWaterLevel terrainSnap
   in AtlasJob
     { ajKey = atlasKey
-    , ajViewMode = atlasKeyViewMode atlasKey
     , ajViewSelection = legacyViewModeToLayeredViewState mode
     , ajWaterLevel = atlasKeyWaterLevel atlasKey
     , ajSnapshotVersion = SnapshotVersion version
@@ -77,10 +77,8 @@ atlasJobForSelection :: LayeredViewState -> Word64 -> AtlasJob
 atlasJobForSelection selection version =
   let terrainSnap = emptyTerrainSnapshotWithVersion version
       atlasKey = atlasKeyForSelection selection defaultWaterLevel terrainSnap
-      keyMode = atlasKeyViewMode atlasKey
   in AtlasJob
     { ajKey = atlasKey
-    , ajViewMode = keyMode
     , ajViewSelection = selection
     , ajWaterLevel = atlasKeyWaterLevel atlasKey
     , ajSnapshotVersion = SnapshotVersion version
@@ -94,7 +92,6 @@ atlasJobForSelection selection version =
 atlasJobForKey :: LayeredViewState -> SnapshotVersion -> TerrainSnapshot -> AtlasKey -> AtlasJob
 atlasJobForKey selection snapshotVersion terrainSnap atlasKey = AtlasJob
   { ajKey = atlasKey
-  , ajViewMode = atlasKeyViewMode atlasKey
   , ajViewSelection = selection
   , ajWaterLevel = atlasKeyWaterLevel atlasKey
   , ajSnapshotVersion = snapshotVersion

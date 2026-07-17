@@ -12,6 +12,7 @@ import Actor.AtlasCache (AtlasKey(..), atlasKeyFor, atlasKeyVersion)
 import Actor.AtlasManager
   ( AtlasManager
   , AtlasJob(..)
+  , ajViewMode
   , atlasManagerQueuedCount
   , drainAtlasJobs
   , drainFreshAtlasJobs
@@ -89,7 +90,6 @@ atlasJobFor mode version stage =
       atlasKey = atlasKeyFor mode defaultWaterLevel terrainSnap
   in AtlasJob
     { ajKey = atlasKey
-    , ajViewMode = mode
     , ajViewSelection = legacyViewModeToLayeredViewState mode
     , ajWaterLevel = defaultWaterLevel
     , ajSnapshotVersion = SnapshotVersion version
@@ -125,7 +125,6 @@ spec = describe "AtlasScheduler" $ do
         atlasKey = atlasKeyFor ViewElevation defaultWaterLevel terrainSnap
         job = AtlasJob
           { ajKey = atlasKey
-          , ajViewMode = ViewElevation
           , ajViewSelection = legacyViewModeToLayeredViewState ViewElevation
           , ajWaterLevel = defaultWaterLevel
           , ajSnapshotVersion = version
@@ -346,7 +345,6 @@ spec = describe "AtlasScheduler" $ do
           let atlasKey = atlasKeyFor ViewElevation defaultWaterLevel terrainSnap
           in AtlasJob
             { ajKey = atlasKey
-            , ajViewMode = ViewElevation
             , ajViewSelection = legacyViewModeToLayeredViewState ViewElevation
             , ajWaterLevel = defaultWaterLevel
             , ajSnapshotVersion = SnapshotVersion 0
@@ -370,7 +368,6 @@ spec = describe "AtlasScheduler" $ do
           let atlasKey = atlasKeyFor mode defaultWaterLevel terrainSnap
           in AtlasJob
             { ajKey = atlasKey
-            , ajViewMode = mode
             , ajViewSelection = legacyViewModeToLayeredViewState mode
             , ajWaterLevel = defaultWaterLevel
             , ajSnapshotVersion = SnapshotVersion 0
@@ -414,7 +411,6 @@ spec = describe "AtlasScheduler" $ do
           let atlasKey = atlasKeyFor ViewElevation defaultWaterLevel terrainSnap
           in AtlasJob
             { ajKey = atlasKey
-            , ajViewMode = ViewElevation
             , ajViewSelection = legacyViewModeToLayeredViewState ViewElevation
             , ajWaterLevel = defaultWaterLevel
             , ajSnapshotVersion = SnapshotVersion 1
@@ -699,7 +695,6 @@ spec = describe "AtlasScheduler" $ do
         build = AtlasBuild
           { abBuildId = AtlasBuildId 1
           , abKey = key1
-          , abViewMode = ViewElevation
           , abViewSelection = uiViewSelection emptyUiState
           , abWaterLevel = defaultWaterLevel
           , abTerrain = terrainSnap
@@ -752,7 +747,6 @@ spec = describe "AtlasScheduler" $ do
         build = AtlasBuild
           { abBuildId = AtlasBuildId 1
           , abKey = key1
-          , abViewMode = ViewElevation
           , abViewSelection = uiViewSelection emptyUiState
           , abWaterLevel = defaultWaterLevel
           , abTerrain = terrainSnap
@@ -795,7 +789,6 @@ spec = describe "AtlasScheduler" $ do
         buildWith spec = AtlasBuild
           { abBuildId = AtlasBuildId 2
           , abKey = atlasKeyFor ViewElevation defaultWaterLevel terrainSnap
-          , abViewMode = ViewElevation
           , abViewSelection = uiViewSelection emptyUiState
           , abWaterLevel = defaultWaterLevel
           , abTerrain = terrainSnap

@@ -23,7 +23,7 @@ import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog)
 import Actor.Log (LogSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
-import Actor.UI (LayeredViewState(..), LeftTab(..), UiState(..), ViewMode(..), effectiveViewSelection)
+import Actor.UI (LayeredViewState(..), LeftTab(..), UiState(..), ViewMode(..), baseViewModeToViewMode, effectiveViewSelection)
 import Control.Monad (forM_, when)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (isNothing)
@@ -256,7 +256,7 @@ renderFrame context = do
   SDL.rendererDrawBlendMode renderer SDL.$= SDL.BlendAlphaBlend
   ((V2 winW winH), windowSizeElapsed) <- timedMs (SDL.get (SDL.windowSize window))
   loggedWindowSize <- logTiming logHandle timingLogThresholdMs (Text.pack "window size") windowSizeElapsed Nothing
-  let UiState { uiViewMode = mode } = rsUi snapshot
+  let mode = baseViewModeToViewMode (lvsBaseView (uiViewSelection (rsUi snapshot)))
       logSnap = rsLog snapshot
       dataSnap = rsData snapshot
       terrainSnap = rsTerrain snapshot

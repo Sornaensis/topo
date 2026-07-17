@@ -214,7 +214,7 @@ handleEvent inputContext event = do
             let (newZoom, newOffset) = applyZoomAtCursor defaultZoomSettings uiSnap (mx, my) (fromIntegral dy)
             setUiZoom uiHandle newZoom
             setUiPanOffset uiHandle newOffset
-            submitAction inputEnv (UiActionRefreshViewport (uiViewMode uiSnap) (Just (fromIntegral winW, fromIntegral winH)))
+            submitAction inputEnv (UiActionRefreshViewport (Just (fromIntegral winW, fromIntegral winH)))
     SDL.MouseButtonEvent btnEvent
       | SDL.mouseButtonEventMotion btnEvent == SDL.Pressed ->
           case SDL.mouseButtonEventButton btnEvent of
@@ -281,9 +281,8 @@ handleEvent inputContext event = do
                   uiSnap <- getUiSnapshot uiHandle
                   setUiHexTooltipPinned uiHandle (not (uiHexTooltipPinned uiSnap))
                 Just DragState { dsDragging = True } -> do
-                  uiSnap <- getUiSnapshot uiHandle
                   (V2 winW winH) <- SDL.get (SDL.windowSize window)
-                  submitAction inputEnv (UiActionRefreshViewport (uiViewMode uiSnap) (Just (fromIntegral winW, fromIntegral winH)))
+                  submitAction inputEnv (UiActionRefreshViewport (Just (fromIntegral winW, fromIntegral winH)))
                 _ -> pure ()
             SDL.ButtonLeft -> do
               -- Reset flatten reference on stroke end

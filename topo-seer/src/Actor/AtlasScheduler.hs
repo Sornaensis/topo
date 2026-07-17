@@ -323,7 +323,6 @@ runSchedule handles req = do
           enqueueAtlasBuildWork worker AtlasBuild
             { abBuildId   = adjBuildId dispatchJob
             , abKey        = ajKey job
-            , abViewMode   = ajViewMode job
             , abViewSelection = ajViewSelection job
             , abWaterLevel = ajWaterLevel job
             , abTerrain    = ajTerrain job

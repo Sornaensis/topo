@@ -44,6 +44,7 @@ module Actor.UI
   , weatherOverlayTemporalBasis
   , layeredViewStateToJSON
   , effectiveViewSelection
+  , uiViewMode
   , viewModeToLayeredViewState
   , legacyViewModeToLayeredViewState
   , layeredViewStateToViewMode
@@ -119,6 +120,7 @@ import Actor.UI.State
   , requestUiSnapshot
   , setUiSnapshotRef
   , uiActorDef
+  , uiViewMode
   , uiWorldTime
   , viewModeToLayeredViewState
   , weatherBasisFromText

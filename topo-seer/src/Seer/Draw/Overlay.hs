@@ -25,7 +25,7 @@ module Seer.Draw.Overlay
 
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..))
 import Actor.PluginManager.Types (PluginLifecycleSnapshot(..), pluginLifecycleStateText)
-import Actor.UI (UiState(..), ViewMode(..))
+import Actor.UI (LayeredViewState(..), UiState(..), ViewMode(..), baseViewModeToViewMode, layeredViewStateToViewMode)
 import Actor.UI.State (SourceKind(..), TemporalBasis(..), sourceKindToText, temporalBasisToText)
 import Data.Aeson (Value(..), object, toJSON, (.=))
 import Data.IntMap.Strict (IntMap)
@@ -446,7 +446,7 @@ commonInspectorPanelLines ui terrainSnap (q, r) sections =
 
 modeInspectorPanelLines :: UiState -> TerrainSnapshot -> (Int, Int) -> HexSample -> [TerrainInspectorSection] -> [InspectorPanelLine]
 modeInspectorPanelLines ui terrainSnap hexCoord sample sections =
-  case uiViewMode ui of
+  case projectedViewMode ui of
     ViewElevation -> fields "erosion_terrain_form"
       [ "terrain_form", "slope_avg_deg", "slope_max_deg", "slope_min_deg" ]
     ViewTerrainForm -> fields "erosion_terrain_form"
@@ -640,8 +640,14 @@ truncatePanelText text
 clampInt :: Int -> Int -> Int -> Int
 clampInt lo hi value = max lo (min hi value)
 
+projectedViewMode :: UiState -> ViewMode
+projectedViewMode ui =
+  case layeredViewStateToViewMode (uiViewSelection ui) of
+    Just mode -> mode
+    Nothing -> baseViewModeToViewMode (lvsBaseView (uiViewSelection ui))
+
 modeContextLines :: UiState -> TerrainSnapshot -> (Int, Int) -> HexSample -> [Text]
-modeContextLines ui terrainSnap (q, r) sample = modeLines (uiViewMode ui) sample
+modeContextLines ui terrainSnap (q, r) sample = modeLines (projectedViewMode ui) sample
   where
     units = defaultUnitScales
     solarLines = solarLinesFor ui terrainSnap

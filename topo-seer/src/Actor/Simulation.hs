@@ -113,7 +113,6 @@ import Actor.UI
   , SkyOverlayMode(..)
   , Ui
   , UiState(..)
-  , ViewMode(..)
   , WeatherBasis(..)
   , effectiveViewSelection
   , getUiSnapshot
@@ -1237,7 +1236,7 @@ integrateFreshTickResult result st
                 , wpdDataPublished = maybe False (const True) (tprTerrainSnapshot publication)
                 , wpdPublicationPending = ssAutoWeatherPublicationPending (tprState publication)
                 , wpdAtlasWorkEnqueued = atlasShouldEnqueue
-                , wpdAtlasActiveWeatherView = activeWeatherAtlasView (uiViewMode uiSnap)
+                , wpdAtlasActiveWeatherView = activeWeatherAtlasView (uiViewSelection uiSnap)
                 }
               stPublished = tprState publication
               completeLog = SimulationTickLogEntry appliedTick Nothing "completed" completeMsg (Just (strElapsedMs result))
@@ -1256,11 +1255,14 @@ integrateFreshTickResult result st
 chunkList :: IntMap.IntMap a -> [(ChunkId, a)]
 chunkList = map (\(k, v) -> (ChunkId k, v)) . IntMap.toList
 
-activeWeatherAtlasView :: ViewMode -> Maybe Text
-activeWeatherAtlasView ViewWeather = Just "weather"
-activeWeatherAtlasView ViewCloud = Just "cloud"
-activeWeatherAtlasView ViewPrecipCurrent = Just "precipitation_current"
-activeWeatherAtlasView _ = Nothing
+activeWeatherAtlasView :: LayeredViewState -> Maybe Text
+activeWeatherAtlasView selection
+  | lvsWeatherBasis selection /= WeatherBasisCurrent = Nothing
+  | otherwise = case lvsSkyOverlay selection of
+      Just SkyOverlayWeatherTemperature -> Just "weather"
+      Just SkyOverlayCloud -> Just "cloud"
+      Just SkyOverlayPrecipitation -> Just "precipitation_current"
+      _ -> Nothing
 
 weatherNodeScheduleDiagnostic
   :: Word64
@@ -1717,7 +1719,7 @@ flushLatestWeatherPublication st =
                         , wpdDataPublished = True
                         , wpdPublicationPending = False
                         , wpdAtlasWorkEnqueued = True
-                        , wpdAtlasActiveWeatherView = activeWeatherAtlasView (uiViewMode uiSnap)
+                        , wpdAtlasActiveWeatherView = activeWeatherAtlasView (uiViewSelection uiSnap)
                         }
                   pure (st' { ssLastWeatherPublication = Just publicationDiag }, True)
 

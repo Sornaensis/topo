@@ -12,7 +12,7 @@ module Seer.Render.Terrain
 
 import Actor.AtlasCache (terrainSnapshotSelectionVersion)
 import Actor.Data (TerrainSnapshot(..))
-import Actor.UI (LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), effectiveViewSelection, emptyUiState)
+import Actor.UI (LayeredViewState(..), SkyOverlayMode(..), UiState(..), emptyUiState)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Word (Word64)
@@ -37,7 +37,6 @@ import Topo.Weather (getWeatherNormalsFromStore)
 -- rather than deep IntMap equality.
 data TerrainCache = TerrainCache
   { tcVersion :: !Word64
-  , tcViewMode :: !ViewMode
   , tcViewSelection :: !LayeredViewState
   , tcWaterLevel :: !Float
   , tcDayNightEnabled :: !Bool
@@ -54,8 +53,7 @@ data TerrainCache = TerrainCache
 emptyTerrainCache :: TerrainCache
 emptyTerrainCache = TerrainCache
   { tcVersion = 0
-  , tcViewMode = ViewElevation
-  , tcViewSelection = effectiveViewSelection emptyUiState
+  , tcViewSelection = uiViewSelection emptyUiState
   , tcWaterLevel = 0
   , tcDayNightEnabled = True
   , tcDayNightKey = Nothing
@@ -74,13 +72,12 @@ emptyTerrainCache = TerrainCache
 updateTerrainCache :: UiState -> TerrainSnapshot -> TerrainCache -> TerrainCache
 updateTerrainCache uiSnap terrainSnap cache
   | tsChunkSize terrainSnap <= 0 = emptyTerrainCache
-  | tcViewMode cache /= uiViewMode uiSnap = buildTerrainCache uiSnap terrainSnap
-  | tcViewSelection cache /= effectiveViewSelection uiSnap = buildTerrainCache uiSnap terrainSnap
+  | tcViewSelection cache /= uiViewSelection uiSnap = buildTerrainCache uiSnap terrainSnap
   | tcWaterLevel cache /= uiRenderWaterLevel uiSnap = buildTerrainCache uiSnap terrainSnap
   | tcDayNightEnabled cache /= uiDayNightEnabled uiSnap = buildTerrainCache uiSnap terrainSnap
   | tcDayNightKey cache /= terrainDayNightKey uiSnap terrainSnap = buildTerrainCache uiSnap terrainSnap
   | tcChunkSize cache /= tsChunkSize terrainSnap = buildTerrainCache uiSnap terrainSnap
-  | tcVersion cache /= terrainSnapshotSelectionVersion (effectiveViewSelection uiSnap) terrainSnap = buildTerrainCache uiSnap terrainSnap
+  | tcVersion cache /= terrainSnapshotSelectionVersion (uiViewSelection uiSnap) terrainSnap = buildTerrainCache uiSnap terrainSnap
   | otherwise = cache
 
 -- | Whether the fallback terrain cache is stale for the renderable snapshot.
@@ -96,21 +93,19 @@ terrainCacheNeedsRefresh uiSnap terrainSnap cache
         || not (IntMap.null (tcGeometry cache))
         || tcDayNightKey cache /= Nothing
         || not (IntMap.null (tcDayNightGeometry cache))
-  | tcViewMode cache /= uiViewMode uiSnap = True
-  | tcViewSelection cache /= effectiveViewSelection uiSnap = True
+  | tcViewSelection cache /= uiViewSelection uiSnap = True
   | tcWaterLevel cache /= uiRenderWaterLevel uiSnap = True
   | tcDayNightEnabled cache /= uiDayNightEnabled uiSnap = True
   | tcDayNightKey cache /= terrainDayNightKey uiSnap terrainSnap = True
   | tcChunkSize cache /= tsChunkSize terrainSnap = True
-  | tcVersion cache /= terrainSnapshotSelectionVersion (effectiveViewSelection uiSnap) terrainSnap = True
+  | tcVersion cache /= terrainSnapshotSelectionVersion (uiViewSelection uiSnap) terrainSnap = True
   | otherwise = False
 
 -- | Build a fresh terrain cache for the current UI and terrain state.
 buildTerrainCache :: UiState -> TerrainSnapshot -> TerrainCache
 buildTerrainCache uiSnap terrainSnap =
   let config = WorldConfig { wcChunkSize = tsChunkSize terrainSnap }
-      mode = uiViewMode uiSnap
-      selection = effectiveViewSelection uiSnap
+      selection = uiViewSelection uiSnap
       waterLevel = uiRenderWaterLevel uiSnap
       viewVersion = terrainSnapshotSelectionVersion selection terrainSnap
       overlayMap = case lvsSkyOverlay selection of
@@ -140,7 +135,6 @@ buildTerrainCache uiSnap terrainSnap =
         Nothing -> (Nothing, IntMap.empty)
   in TerrainCache
       { tcVersion = viewVersion
-      , tcViewMode = mode
       , tcViewSelection = selection
       , tcWaterLevel = waterLevel
       , tcDayNightEnabled = uiDayNightEnabled uiSnap
@@ -220,7 +214,6 @@ fallbackTerrainNeedsRefresh uiSnap terrainSnap scale cache textureCache =
 chunkTextureMetadataMismatch :: TerrainCache -> Int -> ChunkTextureCache -> Bool
 chunkTextureMetadataMismatch cache scale textureCache =
   ctcVersion textureCache /= tcVersion cache
-    || ctcViewMode textureCache /= tcViewMode cache
     || ctcViewSelection textureCache /= tcViewSelection cache
     || ctcWaterLevel textureCache /= tcWaterLevel cache
     || ctcChunkSize textureCache /= tcChunkSize cache
@@ -236,7 +229,6 @@ updateChunkTextures renderer cache scale textureCache = do
         mapM_ destroyChunkTexture (IntMap.elems (ctcTextures textureCache))
         pure ChunkTextureCache
           { ctcVersion = tcVersion cache
-          , ctcViewMode = tcViewMode cache
           , ctcViewSelection = tcViewSelection cache
           , ctcWaterLevel = tcWaterLevel cache
           , ctcChunkSize = tcChunkSize cache

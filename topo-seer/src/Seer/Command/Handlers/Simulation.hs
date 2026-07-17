@@ -47,7 +47,7 @@ import Actor.Simulation
   , weatherPublicationKindToText
   )
 import Actor.UI.Setters (setUiSimAutoTick, setUiSimTickRate)
-import Actor.UI.State (LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), effectiveViewSelection, getUiSnapshot, readUiSnapshotRef)
+import Actor.UI.State (LayeredViewState(..), SkyOverlayMode(..), UiState(..), WeatherBasis(..), effectiveViewSelection, getUiSnapshot, readUiSnapshotRef)
 import Actor.UiActions.Handles (ActorHandles(..), publishLogMutation)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Render.ZoomStage (orderedZoomStagesForZoom)
@@ -224,17 +224,13 @@ enqueueLatestSimulationAtlasBackfill handles requestedUi snapshotVersion
 
 simulationAtlasBackfillViewAffected :: UiState -> Bool
 simulationAtlasBackfillViewAffected ui =
-  uiDayNightEnabled ui || case lvsSkyOverlay (effectiveViewSelection ui) of
-    Just SkyOverlayWeatherTemperature -> lvsWeatherBasis (effectiveViewSelection ui) == WeatherBasisCurrent
-    Just SkyOverlayPrecipitation -> lvsWeatherBasis (effectiveViewSelection ui) == WeatherBasisCurrent
+  let selection = uiViewSelection ui
+  in uiDayNightEnabled ui || case lvsSkyOverlay selection of
+    Just SkyOverlayWeatherTemperature -> lvsWeatherBasis selection == WeatherBasisCurrent
+    Just SkyOverlayPrecipitation -> lvsWeatherBasis selection == WeatherBasisCurrent
     Just SkyOverlayCloud -> True
     Just (SkyOverlayPlugin name _) -> name == "weather"
-    Nothing -> case uiViewMode ui of
-      ViewWeather -> True
-      ViewCloud -> True
-      ViewPrecipCurrent -> True
-      ViewOverlay name _ -> name == "weather"
-      _ -> False
+    Nothing -> False
 
 simulationBackfillKeyAffected :: UiState -> AtlasKey -> Bool
 simulationBackfillKeyAffected ui key = case atlasKeyLayer key of

@@ -29,7 +29,7 @@ import Actor.AtlasCache
   , atlasOverlayKeyForSelection
   , terrainSnapshotViewVersion
   )
-import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs, setAtlasManagerFreshnessRef)
+import Actor.AtlasManager (AtlasJob(..), AtlasManager, ajViewMode, drainAtlasJobs, setAtlasManagerFreshnessRef)
 import Actor.AtlasResult (AtlasBuildId(..), AtlasBuildResult(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.AtlasResultBroker (AtlasResultRef, atlasResultsPending, drainFreshResultsN, newAtlasResultRef, pushAtlasResult)
 import Actor.AtlasScheduleBroker (newAtlasScheduleRef)

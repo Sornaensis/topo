@@ -11,7 +11,7 @@ import Actor.AtlasResultBroker (atlasResultsPending, drainFreshResultsN, newAtla
 import Actor.AtlasScheduler (AtlasFreshness(..))
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState)
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState, legacyViewModeToLayeredViewState)
 import Data.Maybe (isNothing)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -261,7 +261,7 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
   it "wakes fallback maintenance for visible ViewCloud weather-version changes without render targets" $ do
     let terrainSnapOld = fallbackCloudTerrainSnapshot 1 0.20 0.10 0.00
         terrainSnapNew = fallbackCloudTerrainSnapshot 2 0.85 0.70 0.65
-        uiCloud = emptyUiState { uiViewMode = ViewCloud, uiDayNightEnabled = False }
+        uiCloud = emptyUiState { uiViewSelection = legacyViewModeToLayeredViewState ViewCloud, uiDayNightEnabled = False }
         oldCache = buildTerrainCache uiCloud terrainSnapOld
         scale = zsAtlasScale (stageForZoom (uiZoom uiCloud))
         oldTextures = chunkTexturesFor scale oldCache
@@ -282,8 +282,7 @@ spec = describe "render-loop atlas maintenance wakeups" $ do
           , lvsOverlayOpacity = 0.5
           }
         uiLayered = emptyUiState
-          { uiViewMode = ViewCloud
-          , uiViewSelection = selection
+          { uiViewSelection = selection
           , uiDayNightEnabled = False
           }
         oldCache = buildTerrainCache uiLayered terrainSnapOld
@@ -397,7 +396,6 @@ renderableFallbackTerrainSnapshot = TerrainSnapshot
 chunkTexturesFor :: Int -> TerrainCache -> ChunkTextureCache
 chunkTexturesFor scale cache = ChunkTextureCache
   { ctcVersion = tcVersion cache
-  , ctcViewMode = tcViewMode cache
   , ctcViewSelection = tcViewSelection cache
   , ctcWaterLevel = tcWaterLevel cache
   , ctcChunkSize = tcChunkSize cache

@@ -62,6 +62,7 @@ import Actor.UI.State
   , dataBrowserScopedError
   , effectiveViewSelection
   , getUiSnapshot
+  , layeredViewStateToViewMode
   , readUiSnapshotRef
   )
 import Actor.UI.Setters
@@ -1526,7 +1527,7 @@ widgetActive uiSnap wid = case wid of
     overlayActive mode = Just (lvsSkyOverlay selection == mode)
     basisActive basis = Just
       (weatherBasisEnabled uiSnap && lvsWeatherBasis selection == basis)
-    legacyActive mode = Just (uiViewMode uiSnap == mode)
+    legacyActive mode = Just (layeredViewStateToViewMode selection == Just mode)
     pluginBoolValue pluginName paramName = case
         Map.lookup pluginName (uiPluginParams uiSnap) >>= Map.lookup paramName of
       Just (Bool current) -> current

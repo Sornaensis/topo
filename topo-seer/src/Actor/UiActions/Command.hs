@@ -78,10 +78,8 @@ import Actor.UI
   , UiState(..)
   , ViewMode(..)
   , WeatherBasis
-  , effectiveViewSelection
   , emptyUiState
   , getUiSnapshot
-  , legacyViewModeToLayeredViewState
   , uiChunkSize
   , uiConfigTab
   , uiDisabledStages
@@ -107,7 +105,6 @@ import Actor.UI
   , setUiOverlayNames
   , setUiViewMode
   , setUiViewSelection
-  , uiViewMode
   , uiWaterLevel
   , uiWorldConfig
   , uiZoom
@@ -151,7 +148,7 @@ data UiAction
   | UiActionSetOverlayOpacity !Float
   | UiActionRebuildAtlas !ViewMode
   | UiActionToggleDayNight
-  | UiActionRefreshViewport !ViewMode !(Maybe (Int, Int))
+  | UiActionRefreshViewport !(Maybe (Int, Int))
   | UiActionBrushStroke !(Int, Int)
     -- ^ Apply the current editor brush at the given hex @(q, r)@.
   | UiActionClearFlattenRef
@@ -194,8 +191,8 @@ runUiAction req =
       logTimed req ("Rebuild Atlas " <> viewModeLabel mode) (rebuildAtlasFor req mode)
     UiActionToggleDayNight ->
       logTimed req "Toggle Day/Night" (toggleDayNight req)
-    UiActionRefreshViewport mode mbWindowSize ->
-      logTimed req ("Refresh Viewport " <> viewModeLabel mode) (refreshViewport req mbWindowSize)
+    UiActionRefreshViewport mbWindowSize ->
+      logTimed req "Refresh Viewport" (refreshViewport req mbWindowSize)
     UiActionBrushStroke hex ->
       logTimed req "Brush Stroke" (applyBrush req hex)
     UiActionClearFlattenRef ->
@@ -322,13 +319,13 @@ rebuildAtlas :: UiActionRequest -> IO ()
 rebuildAtlas req = do
   let handles = uarActorHandles req
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  enqueueAtlasRebuildFor handles (uiViewMode uiSnap) uiSnap
+  enqueueAtlasRebuildFor handles uiSnap
 
 rebuildAtlasFor :: UiActionRequest -> ViewMode -> IO ()
-rebuildAtlasFor req mode = do
+rebuildAtlasFor req _mode = do
   let handles = uarActorHandles req
   uiSnap <- getUiSnapshot (ahUiHandle handles)
-  enqueueAtlasRebuildFor handles mode uiSnap
+  enqueueAtlasRebuildFor handles uiSnap
 
 -- | Toggle day/night through the UiActions actor so rapid clicks serialize
 -- against the latest UI state before publishing a rebuild version.
@@ -341,7 +338,7 @@ toggleDayNight req = do
   setUiDayNightEnabled uiHandle (not (uiDayNightEnabled uiSnap))
   postToggle <- getUiSnapshot uiHandle
   (terrainSnap, snapshotVersion) <- publishLatestTerrainSnapshot handles postToggle
-  enqueueAtlasRebuildForTerrainWithForce True handles (uiViewMode postToggle) postToggle snapshotVersion terrainSnap
+  enqueueAtlasRebuildForTerrainWithForce True handles postToggle snapshotVersion terrainSnap
 
 publishLatestTerrainSnapshot :: ActorHandles -> UiState -> IO (TerrainSnapshot, SnapshotVersion)
 publishLatestTerrainSnapshot handles uiSnapshot = do
@@ -354,21 +351,19 @@ publishLatestTerrainSnapshot handles uiSnapshot = do
         (terrainSnapshotUpdate (ahTerrainSnapshotRef handles) terrainSnap)))
   pure (terrainSnap, snapshotVersion)
 
-enqueueAtlasRebuildFor :: ActorHandles -> ViewMode -> UiState -> IO ()
-enqueueAtlasRebuildFor handles mode uiSnap = do
+enqueueAtlasRebuildFor :: ActorHandles -> UiState -> IO ()
+enqueueAtlasRebuildFor handles uiSnap = do
   (terrainSnap, snapshotVersion) <- publishLatestTerrainSnapshot handles uiSnap
-  enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap
+  enqueueAtlasRebuildForTerrain handles uiSnap snapshotVersion terrainSnap
 
 -- | Enqueue a full ordered atlas rebuild using an already-captured terrain snapshot.
-enqueueAtlasRebuildForTerrain :: ActorHandles -> ViewMode -> UiState -> SnapshotVersion -> TerrainSnapshot -> IO ()
-enqueueAtlasRebuildForTerrain handles mode uiSnap snapshotVersion terrainSnap =
-  enqueueAtlasRebuildForTerrainWithForce False handles mode uiSnap snapshotVersion terrainSnap
+enqueueAtlasRebuildForTerrain :: ActorHandles -> UiState -> SnapshotVersion -> TerrainSnapshot -> IO ()
+enqueueAtlasRebuildForTerrain handles uiSnap snapshotVersion terrainSnap =
+  enqueueAtlasRebuildForTerrainWithForce False handles uiSnap snapshotVersion terrainSnap
 
-enqueueAtlasRebuildForTerrainWithForce :: Bool -> ActorHandles -> ViewMode -> UiState -> SnapshotVersion -> TerrainSnapshot -> IO ()
-enqueueAtlasRebuildForTerrainWithForce forceRebuild handles mode uiSnap snapshotVersion terrainSnap = do
-  let selection = if uiViewMode uiSnap == mode
-        then effectiveViewSelection uiSnap
-        else legacyViewModeToLayeredViewState mode
+enqueueAtlasRebuildForTerrainWithForce :: Bool -> ActorHandles -> UiState -> SnapshotVersion -> TerrainSnapshot -> IO ()
+enqueueAtlasRebuildForTerrainWithForce forceRebuild handles uiSnap snapshotVersion terrainSnap = do
+  let selection = uiViewSelection uiSnap
       -- Enqueue the current zoom stage first so the visible tiles are
       -- prioritised by the scheduler's round-robin dispatch.
       orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
@@ -379,8 +374,8 @@ enqueueAtlasRebuildForTerrainWithForce forceRebuild handles mode uiSnap snapshot
 -- | Enqueue only the layer keys that changed during a view-selection transition.
 enqueueAtlasTransitionForTerrain :: ActorHandles -> UiState -> UiState -> SnapshotVersion -> TerrainSnapshot -> IO ()
 enqueueAtlasTransitionForTerrain handles previousUi uiSnap snapshotVersion terrainSnap = do
-  let previousSelection = effectiveViewSelection previousUi
-      selection = effectiveViewSelection uiSnap
+  let previousSelection = uiViewSelection previousUi
+      selection = uiViewSelection uiSnap
       orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
       jobs = atlasJobsForSelectionTransition
         snapshotVersion
@@ -411,7 +406,7 @@ enqueueViewportRefreshForCurrentUiWithWindow :: ActorHandles -> Maybe (Int, Int)
 enqueueViewportRefreshForCurrentUiWithWindow handles mbWindowSize = do
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   (terrainSnap, snapshotVersion) <- publishLatestTerrainSnapshot handles uiSnap
-  let selection = effectiveViewSelection uiSnap
+  let selection = uiViewSelection uiSnap
       currentStage = stageForZoom (uiZoom uiSnap)
       viewportCoverage = viewportCoverageFor terrainSnap uiSnap mbWindowSize currentStage
       jobs = atlasJobsForSelection snapshotVersion selection (uiRenderWaterLevel uiSnap) terrainSnap [currentStage] viewportCoverage
@@ -452,7 +447,7 @@ setViewSelectionAndRebuild req selection =
 
 mutateViewSelectionAndRebuild :: UiActionRequest -> (LayeredViewState -> LayeredViewState) -> IO ()
 mutateViewSelectionAndRebuild req mutate =
-  setViewSelectionFromPrevious req (mutate . effectiveViewSelection)
+  setViewSelectionFromPrevious req (mutate . uiViewSelection)
 
 setViewSelectionFromPrevious :: UiActionRequest -> (UiState -> LayeredViewState) -> IO ()
 setViewSelectionFromPrevious req chooseSelection = do
@@ -490,7 +485,7 @@ resetConfig req = do
   setUiSeedInput uiHandle (Text.pack (show (uiSeed defaults)))
   setUiSeedEditing uiHandle (uiSeedEditing defaults)
   setUiChunkSize uiHandle (uiChunkSize defaults)
-  setUiViewMode uiHandle (uiViewMode defaults)
+  setUiViewSelection uiHandle (uiViewSelection defaults)
   setUiRenderWaterLevel uiHandle (uiRenderWaterLevel defaults)
   setUiConfigTab uiHandle (uiConfigTab defaults)
   setUiWorldConfig uiHandle Nothing
@@ -646,7 +641,7 @@ applyBrush req hex = do
           (dataAndTerrainSnapshotUpdate
             (ahDataSnapshotRef handles) dataSnap'
             (ahTerrainSnapshotRef handles) terrainSnap'))
-      enqueueAtlasRebuildForTerrain handles (uiViewMode publishedUi) publishedUi snapshotVersion terrainSnap'
+      enqueueAtlasRebuildForTerrain handles publishedUi snapshotVersion terrainSnap'
 
 -- | Human-readable label for each editor tool.
 toolLabel :: EditorTool -> Text
@@ -737,7 +732,7 @@ applyChunkRestore handles chunks = do
       (dataAndTerrainSnapshotUpdate
         (ahDataSnapshotRef handles) dataSnap'
         (ahTerrainSnapshotRef handles) terrainSnap'))
-  enqueueAtlasRebuildForTerrain handles (uiViewMode uiSnap) uiSnap snapshotVersion terrainSnap'
+  enqueueAtlasRebuildForTerrain handles uiSnap snapshotVersion terrainSnap'
 
 writeTerrainChunkMap
   :: ActorHandle Data (Protocol Data)

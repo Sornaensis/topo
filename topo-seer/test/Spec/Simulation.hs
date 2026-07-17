@@ -19,7 +19,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
 import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
-import Actor.AtlasManager (AtlasJob(..), AtlasManager, drainAtlasJobs)
+import Actor.AtlasManager (AtlasJob(..), AtlasManager, ajViewMode, drainAtlasJobs)
 import Actor.Data (Data, DataSnapshot(..), TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext, getTerrainSnapshot, replaceTerrainData)
 import Actor.Log (Log, getLogSnapshot, leMessage, lsEntries)
 import Actor.Simulation

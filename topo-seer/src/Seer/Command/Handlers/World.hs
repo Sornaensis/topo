@@ -55,7 +55,7 @@ import Actor.SnapshotReceiver
 import Actor.UI.Setters (setUiWorldName, setUiWorldConfig, setUiWorldList, setUiWorldSelected, setUiOverlayNames, setUiSimTickCount, setUiViewSelection)
 import Actor.UiActions (enqueueAtlasRebuildForTerrain)
 import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
-import Actor.UI.State (UiState(..), ViewMode(..), defaultLayeredViewState, getUiSnapshot, readUiSnapshotRef)
+import Actor.UI.State (LayeredViewState(..), SkyOverlayMode(..), UiState(..), defaultLayeredViewState, getUiSnapshot, readUiSnapshotRef)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
 import Seer.Persistence.Name (validatePersistenceName)
@@ -133,8 +133,8 @@ handleGetOverlays ctx reqId _params = do
   snap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
   let store = tsOverlayStore snap
       names = overlayNames store
-      active = case uiViewMode ui of
-        ViewOverlay name fieldIdx -> Just (name, fieldIdx)
+      active = case lvsSkyOverlay (uiViewSelection ui) of
+        Just (SkyOverlayPlugin name fieldIdx) -> Just (name, fieldIdx)
         _ -> Nothing
   pure $ okResponse reqId $ object
     [ "overlay_count" .= length names
@@ -325,7 +325,7 @@ handleLoadWorld ctx reqId params = do
                       (ahTerrainSnapshotRef handles) terrainSnap')))
               cancelSimWorldTransition simH
               enqueueAtlasRebuildForTerrain
-                handles (uiViewMode ui) ui snapshotVersion terrainSnap'
+                handles ui snapshotVersion terrainSnap'
               pure $ okResponse reqId $ object
                 [ "name" .= name
                 , "loaded" .= True

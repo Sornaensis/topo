@@ -17,7 +17,7 @@ import Actor.AtlasCache
   , atlasKeysForSelection
   , atlasOverlayKeyForSelection
   )
-import Actor.AtlasManager (AtlasJob(..), atlasJobsForSelectionTransition)
+import Actor.AtlasManager (AtlasJob(..), ajViewMode, atlasJobsForSelectionTransition)
 import Actor.Data (TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.AtlasResult (AtlasBuildId(..), AtlasTileSetManifest(..), atlasManifestTarget)
 import Actor.SnapshotReceiver (SnapshotVersion(..))

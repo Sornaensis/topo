@@ -188,7 +188,6 @@ manifestJsonSpec = describe "WorldSaveManifest JSON round-trip" $ do
     let ui = emptyUiState
           { uiSeed = 707
           , uiChunkSize = 64
-          , uiViewMode = ViewCloudTypical
           , uiViewSelection = defaultLayeredViewState
               { lvsBaseView = BaseViewBiome
               , lvsSkyOverlay = Just SkyOverlayCloud

@@ -55,6 +55,7 @@ module Actor.UI.State
   , layeredViewStateToJSON
   , layeredViewStateDataSemantics
   , effectiveViewSelection
+  , uiViewMode
   , viewModeToLayeredViewState
   , legacyViewModeToLayeredViewState
   , layeredViewStateToViewMode
@@ -214,9 +215,8 @@ data WeatherBasis
   | WeatherBasisCurrent
   deriving (Eq, Ord, Show)
 
--- | Layered view selection used by new callers.  'uiViewMode' remains in
--- 'UiState' as a compatibility facade for legacy render, command, and test
--- paths while call sites migrate.
+-- | Canonical terrain and overlay selection. Legacy 'ViewMode' values are
+-- converted only at explicit compatibility boundaries.
 data LayeredViewState = LayeredViewState
   { lvsBaseView       :: !BaseViewMode
   , lvsSkyOverlay     :: !(Maybe SkyOverlayMode)
@@ -1334,7 +1334,6 @@ data PipelineStageRunState = PipelineStageRunState
 data UiState = UiState
   { uiSeed :: !Word64
   , uiGenerating :: !Bool
-  , uiViewMode :: !ViewMode
   , uiViewSelection :: !LayeredViewState
   , uiChunkSize :: !Int
   , uiShowConfig :: !Bool
@@ -1593,7 +1592,6 @@ emptyUiState :: UiState
 emptyUiState = UiState
   { uiSeed = 0
   , uiGenerating = False
-  , uiViewMode = ViewElevation
   , uiViewSelection = defaultLayeredViewState
   , uiChunkSize = 64
   , uiShowConfig = False
@@ -1858,17 +1856,18 @@ uiWorldTime ui = WorldTime
   , wtTickRate = simulationTickSeconds
   }
 
--- | Return a layered selection consistent with the compatibility 'uiViewMode'.
--- Tests and older call sites sometimes update the legacy mode field directly;
--- this adapter keeps render/cache paths from using a stale layered selection in
--- those states while preserving explicit layered selections that do not have a
--- legacy 'ViewMode' equivalent.
+-- | Canonical layered selection accessor retained to avoid churn at callers
+-- that adopted the layered model before it became the sole stored state.
 effectiveViewSelection :: UiState -> LayeredViewState
-effectiveViewSelection ui =
+effectiveViewSelection = uiViewSelection
+
+-- | Read-only legacy projection for external protocol compatibility. Internal
+-- rendering and scheduling must consume 'uiViewSelection' instead.
+uiViewMode :: UiState -> ViewMode
+uiViewMode ui =
   case layeredViewStateToViewMode (uiViewSelection ui) of
-    Just mode | mode == uiViewMode ui -> uiViewSelection ui
-    Just _ -> legacyViewModeToLayeredViewState (uiViewMode ui)
-    Nothing -> uiViewSelection ui
+    Just mode -> mode
+    Nothing -> baseViewModeToViewMode (lvsBaseView (uiViewSelection ui))
 
 sliderDefault :: SliderId -> Float
 sliderDefault = sliderDefaultValueForId
@@ -1936,12 +1935,12 @@ applyUpdate :: UiUpdate -> UiState -> UiState
 applyUpdate upd st = case upd of
   SetSeed v -> st { uiSeed = v }
   SetGenerating v -> st { uiGenerating = v }
-  SetViewMode v -> st { uiViewMode = v, uiViewSelection = viewModeToLayeredViewState v }
+  SetViewMode v -> applyLayeredViewState (viewModeToLayeredViewState v) st
   SetViewSelection v -> applyLayeredViewState v st
-  SetBaseViewMode v -> applyLayeredViewState ((effectiveViewSelection st) { lvsBaseView = v }) st
-  SetSkyOverlayMode v -> applyLayeredViewState ((effectiveViewSelection st) { lvsSkyOverlay = v }) st
-  SetWeatherBasis v -> applyLayeredViewState ((effectiveViewSelection st) { lvsWeatherBasis = v }) st
-  SetOverlayOpacity v -> applyLayeredViewState ((effectiveViewSelection st) { lvsOverlayOpacity = v }) st
+  SetBaseViewMode v -> applyLayeredViewState ((uiViewSelection st) { lvsBaseView = v }) st
+  SetSkyOverlayMode v -> applyLayeredViewState ((uiViewSelection st) { lvsSkyOverlay = v }) st
+  SetWeatherBasis v -> applyLayeredViewState ((uiViewSelection st) { lvsWeatherBasis = v }) st
+  SetOverlayOpacity v -> applyLayeredViewState ((uiViewSelection st) { lvsOverlayOpacity = v }) st
   SetChunkSize v -> st { uiChunkSize = clampChunk v }
   SetShowConfig v -> st { uiShowConfig = v }
   SetShowLeftPanel v -> st { uiShowLeftPanel = v }
@@ -2001,11 +2000,7 @@ applyUpdate upd st = case upd of
 
 applyLayeredViewState :: LayeredViewState -> UiState -> UiState
 applyLayeredViewState selection st =
-  let selection' = normalizeLayeredViewState selection
-  in st
-       { uiViewSelection = selection'
-       , uiViewMode = maybe (uiViewMode st) id (layeredViewStateToViewMode selection')
-       }
+  st { uiViewSelection = normalizeLayeredViewState selection }
 
 normalizeLayeredViewState :: LayeredViewState -> LayeredViewState
 normalizeLayeredViewState selection =

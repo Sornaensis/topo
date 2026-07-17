@@ -22,7 +22,7 @@ import System.Timeout (timeout)
 import Test.Hspec
 
 import Actor.AtlasCache (atlasKeyFor, atlasKeyVersion, terrainSnapshotViewVersion)
-import Actor.AtlasManager (AtlasJob(..), drainAtlasJobs)
+import Actor.AtlasManager (AtlasJob(..), ajViewMode, drainAtlasJobs)
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), getTerrainSnapshot, replaceTerrainData)
 import Actor.Simulation
   ( SimulationDagSnapshot(..)
@@ -34,7 +34,7 @@ import Actor.Simulation
   , setSimWorldWithNodes
   )
 import Actor.SnapshotReceiver (readSnapshotVersion, readTerrainSnapshot)
-import Actor.UI (UiState(..), ViewMode(..), getUiSnapshot, setUiDayNightEnabled, setUiZoom)
+import Actor.UI (UiState(..), ViewMode(..), getUiSnapshot, setUiDayNightEnabled, setUiZoom, uiViewMode)
 import Actor.UiActions (ActorHandles(..))
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Headless

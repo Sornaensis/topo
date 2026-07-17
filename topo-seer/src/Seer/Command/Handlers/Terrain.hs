@@ -505,13 +505,14 @@ handleGetHex ctx reqId params =
                         , "water_depth" .= object ["normalized" .= (waterBodyChunk >>= \wb -> safeIndex (wbDepth wb) tileIdx), "converted" .= fmap (negate . normDepthToMetres units) (waterBodyChunk >>= \wb -> safeIndex (wbDepth wb) tileIdx), "unit" .= ("m" :: Text)]
                         ]
 
-                      activeSelection = effectiveViewSelection ui
-                      activeMetadata = viewModeMetadata (uiViewMode ui)
-                      activeSemantics = viewModeDataSemantics (uiViewMode ui)
+                      activeSelection = uiViewSelection ui
                       activeBaseMode = baseViewModeToViewMode (lvsBaseView activeSelection)
+                      activeMode = maybe activeBaseMode id (layeredViewStateToViewMode activeSelection)
+                      activeMetadata = viewModeMetadata activeMode
+                      activeSemantics = viewModeDataSemantics activeMode
                       activeOverlayMode = lvsSkyOverlay activeSelection >>= skyOverlayModeToViewMode (lvsWeatherBasis activeSelection)
                       activeViewLayer = object
-                        [ "mode" .= viewModeToText (uiViewMode ui)
+                        [ "mode" .= viewModeToText activeMode
                         , "base_mode" .= baseViewModeToText (lvsBaseView activeSelection)
                         , "overlay_mode" .= overlayModeName (lvsSkyOverlay activeSelection)
                         , "plugin_overlay" .= pluginOverlayName (lvsSkyOverlay activeSelection)
@@ -519,14 +520,14 @@ handleGetHex ctx reqId params =
                         , "weather_basis" .= weatherBasisToText (lvsWeatherBasis activeSelection)
                         , "overlay_opacity" .= lvsOverlayOpacity activeSelection
                         , "legacy_view_mode" .= fmap viewModeToText (layeredViewStateToViewMode activeSelection)
-                        , "label" .= maybe (viewModeToText (uiViewMode ui)) vmmLabel activeMetadata
+                        , "label" .= maybe (viewModeToText activeMode) vmmLabel activeMetadata
                         , "description" .= maybe Null (Aeson.toJSON . vmmDescription) activeMetadata
                         , "basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) activeSemantics
                         , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) activeSemantics
                         , "source_kind" .= fmap (sourceKindToText . vmdsSourceKind) activeSemantics
-                        , "weather_version" .= activeWeatherVersion (uiViewMode ui) snap
-                        , "published_weather_version" .= activeWeatherVersion (uiViewMode ui) snap
-                        , "data_weather_version" .= activeWeatherVersion (uiViewMode ui) latestSnap
+                        , "weather_version" .= activeWeatherVersion activeMode snap
+                        , "published_weather_version" .= activeWeatherVersion activeMode snap
+                        , "data_weather_version" .= activeWeatherVersion activeMode latestSnap
                         , "unit" .= maybe Null (maybe Null Aeson.toJSON . vmmUnitLabel) activeMetadata
                         , "color_scale" .= maybe Null (Aeson.toJSON . vmmColorScale) activeMetadata
                         , "tooltip_fields" .= maybe [] vmmTooltipFields activeMetadata
@@ -534,7 +535,7 @@ handleGetHex ctx reqId params =
                         , "export_fields" .= maybe [] vmmExportFields activeMetadata
                         , "active_base" .= activeLayerObject snap latestSnap activeBaseMode (activeViewValuesFor activeBaseMode)
                         , "active_overlay" .= fmap (\mode -> activeLayerObject snap latestSnap mode (activeViewValuesFor mode)) activeOverlayMode
-                        , "values" .= activeViewValuesFor (uiViewMode ui)
+                        , "values" .= activeViewValuesFor activeMode
                         ]
                       activeViewValuesFor mode = case mode of
                         ViewElevation -> object

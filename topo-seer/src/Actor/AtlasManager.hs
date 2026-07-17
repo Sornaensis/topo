@@ -8,6 +8,7 @@
 module Actor.AtlasManager
   ( AtlasManager
   , AtlasJob(..)
+  , ajViewMode
   , AtlasDispatchJob(..)
   , AtlasFreshDrainRequest(..)
   , AtlasFreshDrainStats(..)
@@ -55,7 +56,6 @@ import Seer.Render.ZoomStage (ZoomStage(..))
 
 data AtlasJob = AtlasJob
   { ajKey        :: !AtlasKey
-  , ajViewMode   :: !ViewMode
   , ajViewSelection :: !LayeredViewState
   , ajWaterLevel :: !Float
   , ajSnapshotVersion :: !SnapshotVersion
@@ -65,6 +65,10 @@ data AtlasJob = AtlasJob
   , ajViewportCoverage :: !(Maybe AtlasViewportCoverage)
   , ajForceRebuild :: !Bool
   }
+
+-- | Read-only legacy projection used by diagnostics and compatibility tests.
+ajViewMode :: AtlasJob -> ViewMode
+ajViewMode = atlasKeyViewMode . ajKey
 
 data AtlasDispatchJob = AtlasDispatchJob
   { adjBuildId :: !AtlasBuildId
@@ -223,7 +227,7 @@ emptyAtlasManagerState = AtlasManagerState
   }
 
 atlasJobSlot :: AtlasJob -> AtlasJobSlot
-atlasJobSlot job = AtlasJobSlot (ajViewMode job) (ajWaterLevel job) (ajHexRadius job) (ajAtlasScale job)
+atlasJobSlot job = AtlasJobSlot (atlasKeyViewMode (ajKey job)) (ajWaterLevel job) (ajHexRadius job) (ajAtlasScale job)
 
 atlasJobTarget :: AtlasJob -> AtlasBuildTarget
 atlasJobTarget job = AtlasBuildTarget
@@ -278,7 +282,6 @@ atlasJobsForKeys
 atlasJobsForKeys snapshotVersion selection _waterLevel terrainSnap keys stages viewportCoverage =
   [ AtlasJob
       { ajKey = key
-      , ajViewMode = atlasKeyViewMode key
       , ajViewSelection = selection
       , ajWaterLevel = atlasKeyWaterLevel key
       , ajSnapshotVersion = snapshotVersion
@@ -369,7 +372,7 @@ queuedTargetFromDispatch dispatchJob =
   let job = adjJob dispatchJob
   in AtlasQueuedTarget
     { aqtBuildId = adjBuildId dispatchJob
-    , aqtViewMode = ajViewMode job
+    , aqtViewMode = atlasKeyViewMode (ajKey job)
     , aqtWaterLevel = ajWaterLevel job
     , aqtKeyVersion = atlasKeyVersion (ajKey job)
     , aqtSnapshotVersion = ajSnapshotVersion job
@@ -444,7 +447,7 @@ selectFreshDrain req queue =
       requestSnapshotVersion = afSnapshotVersion freshness
       safeLimit = max 0 (afdrLimit req)
       sameKeyFamily job =
-        ajViewMode job == atlasKeyViewMode key
+        atlasKeyViewMode (ajKey job) == atlasKeyViewMode key
           && ajWaterLevel job == atlasKeyWaterLevel key
           && atlasKeySelectionTag (ajKey job) == atlasKeySelectionTag key
       isDispatchable queued =

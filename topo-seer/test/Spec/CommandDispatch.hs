@@ -37,7 +37,7 @@ import System.FilePath ((</>))
 import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, replyTo, shutdownActorSystem)
 import Test.Hspec
 
-import Actor.AtlasManager (AtlasJob(..), AtlasManager, atlasJobsForSelection, atlasJobsForSelectionTransition, drainAtlasJobs)
+import Actor.AtlasManager (AtlasJob(..), AtlasManager, ajViewMode, atlasJobsForSelection, atlasJobsForSelectionTransition, drainAtlasJobs)
 import Actor.Data (Data, DataSnapshot(..), TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext, getDataSnapshot, getTerrainSnapshot, setOverlayStoreData, setTerrainChunkCount, setTerrainChunkData, setTerrainGeoContextData)
 import Actor.Log (Log, LogEntry(..), LogLevel(..), LogSnapshot(..), getLogSnapshot, newLogSnapshotRef, setLogSnapshotRef)
 import Actor.PluginManager (LoadedPlugin(..), PluginManager, discoverPlugins, getLoadedPlugins)
@@ -78,6 +78,7 @@ import Actor.UI
   , setUiEditor
   , setUiGenerating
   , setUiSnapshotRef
+  , uiViewMode
   )
 import Actor.UI.Setters
   ( setUiConfigTab

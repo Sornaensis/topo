@@ -3,7 +3,7 @@ module Spec.CacheProperties (spec) where
 import Actor.AtlasCache (AtlasKey(..), atlasKeyFor, atlasKeyVersion, terrainSnapshotSelectionVersion, terrainSnapshotViewVersion)
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.TerrainCacheWorker (TerrainCacheKey(..), terrainCacheKeyFrom)
-import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, effectiveViewSelection, emptyUiState)
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, effectiveViewSelection, emptyUiState, legacyViewModeToLayeredViewState)
 import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore, emptyOverlay, emptyOverlayStore, insertOverlay)
@@ -46,8 +46,8 @@ spec = describe "Cache properties" $ do
     property $ \(Positive chunkSize) ->
       forAll distinctViewModes $ \(modeA, modeB) ->
         let terrainSnap = emptyTerrainSnapshot { tsChunkSize = chunkSize }
-            uiA = emptyUiState { uiViewMode = modeA }
-            uiB = emptyUiState { uiViewMode = modeB }
+            uiA = emptyUiState { uiViewSelection = legacyViewModeToLayeredViewState modeA }
+            uiB = emptyUiState { uiViewSelection = legacyViewModeToLayeredViewState modeB }
             cacheA = buildTerrainCache uiA terrainSnap
             updated = updateTerrainCache uiB terrainSnap cacheA
         in not (sameTerrainCache updated cacheA)
@@ -55,8 +55,8 @@ spec = describe "Cache properties" $ do
   it "invalidates terrain cache when switching to or from weather view" $
     property $ \(Positive chunkSize) ->
       let terrainSnap = emptyTerrainSnapshot { tsChunkSize = chunkSize }
-          uiWeather = emptyUiState { uiViewMode = ViewWeather }
-          uiElevation = emptyUiState { uiViewMode = ViewElevation }
+          uiWeather = emptyUiState { uiViewSelection = legacyViewModeToLayeredViewState ViewWeather }
+          uiElevation = emptyUiState { uiViewSelection = legacyViewModeToLayeredViewState ViewElevation }
           cacheWeather = buildTerrainCache uiWeather terrainSnap
           updatedFromWeather = updateTerrainCache uiElevation terrainSnap cacheWeather
           cacheElevation = buildTerrainCache uiElevation terrainSnap
@@ -86,8 +86,8 @@ spec = describe "Cache properties" $ do
           , lvsOverlayOpacity = 0.25
           }
         selectionB = selectionA { lvsOverlayOpacity = 0.75 }
-        uiA = emptyUiState { uiViewMode = ViewWeather, uiViewSelection = selectionA }
-        uiB = emptyUiState { uiViewMode = ViewWeather, uiViewSelection = selectionB }
+        uiA = emptyUiState { uiViewSelection = selectionA }
+        uiB = emptyUiState { uiViewSelection = selectionB }
     fmap tckViewSelection (terrainCacheKeyFrom uiA terrainSnap) `shouldBe` Just selectionA
     terrainCacheKeyFrom uiA terrainSnap `shouldNotBe` terrainCacheKeyFrom uiB terrainSnap
 
@@ -133,7 +133,7 @@ spec = describe "Cache properties" $ do
     BaseAtlasKey (lvsBaseView selection) waterLevel (tsVersion terrainSnapBase) `shouldNotBe` baseKey0
 
   it "refreshes ViewCloud terrain cache when weather version changes" $ do
-    let uiCloud = emptyUiState { uiViewMode = ViewCloud }
+    let uiCloud = emptyUiState { uiViewSelection = legacyViewModeToLayeredViewState ViewCloud }
         terrainSnap0 = renderableTerrainSnapshot 1 3 sampleWeatherChunkA
         terrainSnap1 = renderableTerrainSnapshot 1 4 sampleWeatherChunkB
         cache0 = buildTerrainCache uiCloud terrainSnap0
@@ -154,7 +154,7 @@ spec = describe "Cache properties" $ do
         in not (sameTerrainCache updated cacheA)
 
   it "keeps fallback ViewCloud frames incomplete after weather auto-ticks until terrain cache refreshes" $ do
-    let uiCloud = emptyUiState { uiViewMode = ViewCloud }
+    let uiCloud = emptyUiState { uiViewSelection = legacyViewModeToLayeredViewState ViewCloud }
         terrainSnap0 = renderableTerrainSnapshot 1 1 sampleWeatherChunkA
         terrainSnap1 = renderableTerrainSnapshot 1 2 sampleWeatherChunkB
         oldCache = buildTerrainCache uiCloud terrainSnap0
@@ -163,7 +163,7 @@ spec = describe "Cache properties" $ do
     fallbackTerrainNeedsRefresh uiCloud terrainSnap1 1 oldCache oldTextures `shouldBe` True
 
   it "keeps fallback ViewWeather frames incomplete after worker results until chunk textures refresh" $ do
-    let uiWeather = emptyUiState { uiViewMode = ViewWeather }
+    let uiWeather = emptyUiState { uiViewSelection = legacyViewModeToLayeredViewState ViewWeather }
         terrainSnap0 = renderableTerrainSnapshot 1 1 sampleWeatherChunkA
         terrainSnap1 = renderableTerrainSnapshot 1 2 sampleWeatherChunkB
         oldCache = buildTerrainCache uiWeather terrainSnap0
@@ -263,7 +263,6 @@ sampleWeatherChunk value = WeatherChunk
 chunkTexturesFor :: Int -> TerrainCache -> ChunkTextureCache
 chunkTexturesFor scale cache = ChunkTextureCache
   { ctcVersion = tcVersion cache
-  , ctcViewMode = tcViewMode cache
   , ctcViewSelection = tcViewSelection cache
   , ctcWaterLevel = tcWaterLevel cache
   , ctcChunkSize = tcChunkSize cache
@@ -347,7 +346,7 @@ viewModes =
 sameTerrainCache :: TerrainCache -> TerrainCache -> Bool
 sameTerrainCache left right =
   tcVersion left == tcVersion right
-    && tcViewMode left == tcViewMode right
+    && tcViewSelection left == tcViewSelection right
     && tcWaterLevel left == tcWaterLevel right
     && tcDayNightEnabled left == tcDayNightEnabled right
     && tcDayNightKey left == tcDayNightKey right

@@ -200,7 +200,7 @@ handleSelectHex ctx reqId params = do
 -- | Enqueue atlas rebuild jobs for all zoom scales after a view mode change.
 -- Mirrors the logic in 'Actor.UiActions.Command.rebuildAtlasFor'.
 scheduleAtlasRebuild :: ActorHandles -> ViewMode -> IO ()
-scheduleAtlasRebuild handles mode = do
+scheduleAtlasRebuild handles _mode = do
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   logSnapshot <- getLogSnapshot (ahLogHandle handles)
@@ -209,16 +209,14 @@ scheduleAtlasRebuild handles mode = do
     (withLogSnapshot logSnapshot
       (withUiSnapshot uiSnap
         (terrainSnapshotUpdate (ahTerrainSnapshotRef handles) terrainSnap)))
-  let selection = if uiViewMode uiSnap == mode
-        then effectiveViewSelection uiSnap
-        else legacyViewModeToLayeredViewState mode
+  let selection = uiViewSelection uiSnap
       orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
       jobs = atlasJobsForSelection snapshotVersion selection (uiRenderWaterLevel uiSnap) terrainSnap orderedStages Nothing
   mapM_ (enqueueAtlasBuild (ahAtlasManagerHandle handles)) jobs
 
 -- | Enqueue only layer keys that changed while switching views/overlays.
 scheduleAtlasTransitionRebuild :: ActorHandles -> UiState -> ViewMode -> IO ()
-scheduleAtlasTransitionRebuild handles previousUi mode = do
+scheduleAtlasTransitionRebuild handles previousUi _mode = do
   uiSnap <- getUiSnapshot (ahUiHandle handles)
   terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
   logSnapshot <- getLogSnapshot (ahLogHandle handles)
@@ -227,13 +225,11 @@ scheduleAtlasTransitionRebuild handles previousUi mode = do
     (withLogSnapshot logSnapshot
       (withUiSnapshot uiSnap
         (terrainSnapshotUpdate (ahTerrainSnapshotRef handles) terrainSnap)))
-  let selection = if uiViewMode uiSnap == mode
-        then effectiveViewSelection uiSnap
-        else legacyViewModeToLayeredViewState mode
+  let selection = uiViewSelection uiSnap
       orderedStages = orderedZoomStagesForZoom (uiZoom uiSnap)
       jobs = atlasJobsForSelectionTransition
         snapshotVersion
-        (effectiveViewSelection previousUi)
+        (uiViewSelection previousUi)
         (uiRenderWaterLevel previousUi)
         selection
         (uiRenderWaterLevel uiSnap)

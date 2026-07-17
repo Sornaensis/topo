@@ -94,6 +94,17 @@ spec = describe "UiActor" $ do
       { lvsSkyOverlay = Just (SkyOverlayPlugin "roads" 2)
       , lvsOverlayOpacity = 0.0
       }
+    setUiBaseViewMode handle BaseViewBiome
+    setUiWeatherBasis handle WeatherBasisAverage
+    setUiOverlayOpacity handle 0.4
+    snapshotComposited <- getUiSnapshot handle
+    uiViewSelection snapshotComposited `shouldBe` defaultLayeredViewState
+      { lvsBaseView = BaseViewBiome
+      , lvsSkyOverlay = Just (SkyOverlayPlugin "roads" 2)
+      , lvsWeatherBasis = WeatherBasisAverage
+      , lvsOverlayOpacity = 0.4
+      }
+    uiViewMode snapshotComposited `shouldBe` ViewOverlay "roads" 2
 
   it "updates generation flag" $ withSystem $ \system -> do
     handle <- get @Ui system

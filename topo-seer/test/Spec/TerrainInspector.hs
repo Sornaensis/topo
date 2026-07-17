@@ -5,7 +5,7 @@ module Spec.TerrainInspector (spec) where
 
 import Control.Monad (forM_)
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
-import Actor.UI (UiState(..), ViewMode(..), emptyUiState)
+import Actor.UI (UiState(..), ViewMode(..), emptyUiState, legacyViewModeToLayeredViewState)
 import Actor.UI.State (allBuiltinViewModes)
 import Data.Aeson (Value(..))
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -70,6 +70,9 @@ import Topo.Types
   , pattern WaterLake
   )
 
+uiForMode :: ViewMode -> UiState
+uiForMode mode = emptyUiState { uiViewSelection = legacyViewModeToLayeredViewState mode }
+
 spec :: Spec
 spec = describe "terrain inspector view model" $ do
   it "is absent until a hover hex is available" $ do
@@ -81,7 +84,7 @@ spec = describe "terrain inspector view model" $ do
       `shouldBe` Just ["Hex (3, -2)", "No data"]
 
   it "builds mode-specific lines from terrain samples" $ do
-    let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewElevation }
+    let ui = (uiForMode ViewElevation) { uiHoverHex = Just (0, 0) }
         Just view = terrainInspectorView ui terrainSnapshotWithChunk
     tivHex view `shouldBe` (0, 0)
     take 1 (tivLines view) `shouldBe` ["Hex (0, 0)"]
@@ -102,7 +105,7 @@ spec = describe "terrain inspector view model" $ do
     let overlayMode = ViewOverlay "culture" 0
         modes = allBuiltinViewModes <> [overlayMode]
     forM_ modes $ \mode -> do
-      let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = mode }
+      let ui = (uiForMode mode) { uiHoverHex = Just (0, 0) }
           Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
           panel = tivPanelLines view
       length panel `shouldSatisfy` (<= terrainInspectorPanelLineHardCap)
@@ -114,7 +117,7 @@ spec = describe "terrain inspector view model" $ do
 
   it "keeps compact panel lines scoped to the active view mode" $ do
     let panelFor mode =
-          let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = mode }
+          let ui = (uiForMode mode) { uiHoverHex = Just (0, 0) }
               Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
           in tivPanelLines view
         climatePanel = panelFor ViewClimate
@@ -129,13 +132,13 @@ spec = describe "terrain inspector view model" $ do
     biomePanel `shouldNotSatisfy` any (Text.isInfixOf "Pressure")
 
   it "clarifies current simulated Cloud/Storm aggregate render and layer context in inspector lines" $ do
-    let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewCloud }
+    let ui = (uiForMode ViewCloud) { uiHoverHex = Just (0, 0) }
         Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
     tivLines view `shouldSatisfy` elem "Current simulated clouds/storm aggregate render"
     tivLines view `shouldSatisfy` elem "  Layer fields: context only"
 
   it "reports typical cloud normals as unavailable without falling back to current clouds" $ do
-    let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewCloudTypical }
+    let ui = (uiForMode ViewCloudTypical) { uiHoverHex = Just (0, 0) }
         Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
     tivLines view `shouldSatisfy` elem "Typical weather normals unavailable"
     tivLines view `shouldSatisfy` elem "No weather_normals overlay is loaded; not using current clouds as a fallback"
@@ -143,7 +146,7 @@ spec = describe "terrain inspector view model" $ do
 
   it "uses the render geo/time context for solar inspector lines" $ do
     let snap = solarTerrainSnapshot
-        ui = emptyUiState { uiViewMode = ViewElevation }
+        ui = uiForMode ViewElevation
         centerView = terrainInspectorViewAt ui snap (8, 8)
         eastView = terrainInspectorViewAt ui snap (12, 8)
         Just dayNightFn = mkDayNightFn snap
@@ -157,10 +160,8 @@ spec = describe "terrain inspector view model" $ do
 
   it "clips compact panel lines by available height and truncates long display values" $ do
     let longOverlay = Text.replicate 140 "x"
-        ui = emptyUiState
-          { uiHoverHex = Just (0, 0)
-          , uiViewMode = ViewOverlay longOverlay 0
-          }
+        ui = (uiForMode (ViewOverlay longOverlay 0))
+          { uiHoverHex = Just (0, 0) }
         Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
         shortPanel = terrainInspectorPanelLinesForHeight 60 view
     length shortPanel `shouldSatisfy` (<= 2)
@@ -173,10 +174,8 @@ spec = describe "terrain inspector view model" $ do
     let culture = mkSparseFloatOverlay "culture" "Culture score" 0.87 (OverlayProvenance 99 3 "plugin:civ" Nothing)
         roads = mkSparseFloatOverlay "roads" "Road density" 0.42 (OverlayProvenance 100 4 "plugin:roads" Nothing)
         snap = terrainSnapshotWithChunk { tsOverlayStore = insertOverlay roads (insertOverlay culture emptyOverlayStore) }
-        ui = emptyUiState
-          { uiHoverHex = Just (0, 0)
-          , uiViewMode = ViewOverlay "roads" 0
-          }
+        ui = (uiForMode (ViewOverlay "roads" 0))
+          { uiHoverHex = Just (0, 0) }
         Just view = terrainInspectorView ui snap
         panel = tivPanelLines view
     panel `shouldSatisfy` any (Text.isInfixOf "Overlay roads")
@@ -191,7 +190,7 @@ spec = describe "terrain inspector view model" $ do
         record = DataRecord (Map.fromList [("id", Number 1), ("name", String "Hillfort")])
         result = QueryResult "settlements" [record] (Just 1)
         pluginData = [TerrainInspectorPluginData "civ" settlementResourceSchema (Just (Right result))]
-        ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewElevation }
+        ui = (uiForMode ViewElevation) { uiHoverHex = Just (0, 0) }
         view = terrainInspectorViewAtWithPluginData pluginData ui snap (0, 0)
         panel = tivPanelLines view
     panel `shouldSatisfy` any (Text.isInfixOf "overlays 1")
@@ -204,13 +203,13 @@ spec = describe "terrain inspector view model" $ do
     map tisKey (tivSections view) `shouldSatisfy` elem "export_links"
 
   it "surfaces populated water body and water-table section fields" $ do
-    let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewElevation }
+    let ui = (uiForMode ViewElevation) { uiHoverHex = Just (0, 0) }
         Just view = terrainInspectorView ui terrainSnapshotWithWater
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Type Lake")
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Storage 0.25")
 
   it "surfaces climate, weather, biome, soil, vegetation, glacier, volcanism, and currents" $ do
-    let ui = emptyUiState { uiHoverHex = Just (0, 0), uiViewMode = ViewClimate }
+    let ui = (uiForMode ViewClimate) { uiHoverHex = Just (0, 0) }
         Just view = terrainInspectorView ui terrainSnapshotWithDomainLayers
     map tisKey (tivSections view) `shouldSatisfy` elem "climate_weather"
     map tisKey (tivSections view) `shouldSatisfy` elem "weather_snapshot"
@@ -239,10 +238,8 @@ spec = describe "terrain inspector view model" $ do
     tivLines view `shouldSatisfy` any (Text.isInfixOf "Est temp Δ")
 
   it "surfaces missing overlay state for overlay view mode" $ do
-    let ui = emptyUiState
-          { uiHoverHex = Just (0, 0)
-          , uiViewMode = ViewOverlay "culture" 0
-          }
+    let ui = (uiForMode (ViewOverlay "culture" 0))
+          { uiHoverHex = Just (0, 0) }
         Just view = terrainInspectorView ui terrainSnapshotWithChunk
     tivLines view `shouldSatisfy` elem "Overlay culture"
     tivLines view `shouldSatisfy` elem "(not loaded)"

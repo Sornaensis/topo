@@ -32,7 +32,7 @@ import Actor.AtlasResult (AtlasBuildId, AtlasBuildResult(..), AtlasBuildTarget(.
 import Actor.AtlasResultBroker (AtlasResultRef, pushAtlasResult)
 import Actor.Data (TerrainSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion)
-import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), ViewMode(..))
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate, onException)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
@@ -55,7 +55,6 @@ import Topo.Weather (getWeatherNormalsFromStore)
 data AtlasBuild = AtlasBuild
   { abBuildId    :: !AtlasBuildId
   , abKey        :: AtlasKey
-  , abViewMode   :: ViewMode
   , abViewSelection :: !LayeredViewState
   , abWaterLevel :: Float
   , abTerrain    :: TerrainSnapshot
