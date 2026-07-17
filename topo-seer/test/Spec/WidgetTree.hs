@@ -36,6 +36,8 @@ import Seer.Command.Handlers.Widgets
   , widgetState
   )
 import Seer.Config.SliderSpec (SliderId(..))
+import Seer.Config.Snapshot (presetCatalogueMatches)
+import Seer.Draw.Dialog (presetListLabel)
 import Seer.Editor.Types (EditorState(..), EditorTool(..))
 import Test.Hspec
 import Topo.Pipeline.Stage (allBuiltinStageIds)
@@ -68,6 +70,12 @@ rectBottom (Rect (V2 _ y, V2 _ h)) = y + h
 
 spec :: Spec
 spec = describe "UI.WidgetTree" $ do
+  it "labels and filters built-ins through catalogue display metadata" $ do
+    presetListLabel "builtin:large-ocean" `shouldBe` "Large Ocean [built-in]"
+    presetListLabel "My saved preset" `shouldBe` "My saved preset"
+    presetCatalogueMatches "large ocean" "builtin:large-ocean" `shouldBe` True
+    presetCatalogueMatches "built-in" "builtin:large-ocean" `shouldBe` True
+
   it "round-trips canonical widget IDs with adversarial text arguments" $ do
     let ids =
           [ WidgetGenerate

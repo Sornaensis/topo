@@ -53,6 +53,7 @@ import Actor.UI.State
   , effectiveViewSelection
   )
 import Actor.UiActions.Handles (ActorHandles(..))
+import Seer.Config.PresetCatalogue (presetCatalogueMatches)
 import Seer.DataBrowser.Lifecycle (DataBrowserAppAction(..))
 import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..))
 import Seer.Input.Seed (parseSeedText)
@@ -483,8 +484,7 @@ focusedDataField ui =
 
 filteredPresets :: UiState -> [Text]
 filteredPresets ui =
-  let needle = Text.toLower (uiPresetFilter ui)
-  in filter (Text.isInfixOf needle . Text.toLower) (uiPresetList ui)
+  filter (presetCatalogueMatches (uiPresetFilter ui)) (uiPresetList ui)
 
 filteredWorlds :: UiState -> [WorldSaveManifest]
 filteredWorlds ui =

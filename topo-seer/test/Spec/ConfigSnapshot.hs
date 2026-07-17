@@ -3,13 +3,14 @@
 
 module Spec.ConfigSnapshot (spec) where
 
-import Control.Exception (IOException, bracket, try)
-import Data.Aeson (Value(..), encode, eitherDecodeStrict')
+import Control.Exception (IOException, bracket, finally, try)
+import Data.Aeson (Value(..), encode, eitherDecodeStrict', toJSON)
 import Data.Aeson.Key (fromText)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Text as Text
+import Data.Foldable (toList)
 import Data.Text (Text)
 import Hyperspace.Actor (ActorSystem, get, newActorSystem, shutdownActorSystem)
 import System.Directory
@@ -26,11 +27,18 @@ import Actor.UI.State (sliderValueForId)
 import Seer.Config (configFromUi, mapRange)
 import Seer.Config.Snapshot
   ( ConfigSnapshot(..)
+  , PresetCatalogueEntry(..)
+  , PresetSource(..)
   , applySnapshotToUi
+  , builtinPresetEntries
   , currentSnapshotVersion
   , defaultSnapshot
+  , deleteNamedSnapshot
   , listSnapshots
+  , loadPresetSnapshot
   , loadSnapshot
+  , presetCatalogue
+  , saveNamedSnapshot
   , saveSnapshot
   , snapshotDir
   , snapshotFromUi
@@ -300,6 +308,56 @@ fileIOSpec = describe "File I/O" $ do
 
 presetVariantSpec :: Spec
 presetVariantSpec = describe "Preset variant serialization" $ do
+  it "exposes all maintained WorldGen presets under immutable namespaced IDs" $ do
+    let expected =
+          [ ("builtin:continental", continentalWorldGenConfig)
+          , ("builtin:archipelago", archipelagoWorldGenConfig)
+          , ("builtin:large-ocean", largeOceanWorldGenConfig)
+          , ("builtin:inland-sea", inlandSeaWorldGenConfig)
+          , ("builtin:arid", aridWorldGenConfig)
+          , ("builtin:lush", lushWorldGenConfig)
+          ]
+    map presetCatalogueId builtinPresetEntries `shouldBe` map fst expected
+    map presetCatalogueSource builtinPresetEntries `shouldSatisfy` all (== PresetBuiltin)
+    map presetCatalogueReadOnly builtinPresetEntries `shouldSatisfy` and
+    mapM_ (\(presetId, config) -> do
+      loaded <- loadPresetSnapshot presetId
+      csGenConfig <$> loaded `shouldBe` Right config) expected
+
+  it "reconstructs each effective built-in config modulo derived slice extents" $
+    withSystem $ \system -> do
+      handle <- get @Ui system
+      mapM_ (\(presetId, expectedConfig) -> do
+        loaded <- loadPresetSnapshot presetId
+        case loaded of
+          Left err -> expectationFailure (Text.unpack err)
+          Right snapshot -> do
+            applySnapshotToUi snapshot handle
+            restored <- getUiSnapshot handle
+            normalizeDerivedSlice expectedConfig (configFromUi restored)
+              `shouldSatisfy` configApproximately expectedConfig) builtinConfigCases
+
+  it "keeps namespaced built-ins out of user save and delete operations" $ do
+    saveNamedSnapshot "builtin:continental" defaultSnapshot >>= (`shouldSatisfy` isLeft)
+    deleteNamedSnapshot "builtin:continental" >>= (`shouldSatisfy` isLeft)
+
+  it "catalogues validated user presets without shadowing built-ins" $ do
+    let name = "__test_catalogue_user__"
+    dir <- snapshotDir
+    let path = dir </> Text.unpack name <> ".json"
+        cleanup = do
+          _ <- try @IOException (removeFile path)
+          pure ()
+    cleanup
+    (do
+        saveNamedSnapshot name (defaultSnapshot { csName = name }) `shouldReturn` Right ()
+        entries <- presetCatalogue
+        let matching = filter ((== name) . presetCatalogueId) entries
+        matching `shouldBe`
+          [ PresetCatalogueEntry name name PresetUser False ]
+        loadPresetSnapshot name `shouldReturn` Right (defaultSnapshot { csName = name }))
+      `finally` cleanup
+
   it "aridWorldGenConfig round-trips through ConfigSnapshot" $ do
     let snap = defaultSnapshot { csGenConfig = aridWorldGenConfig }
         bytes = BSL.toStrict (encode snap)
@@ -353,6 +411,38 @@ presetVariantSpec = describe "Preset variant serialization" $ do
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
+
+builtinConfigCases :: [(Text, WorldGenConfig)]
+builtinConfigCases =
+  [ ("builtin:continental", continentalWorldGenConfig)
+  , ("builtin:archipelago", archipelagoWorldGenConfig)
+  , ("builtin:large-ocean", largeOceanWorldGenConfig)
+  , ("builtin:inland-sea", inlandSeaWorldGenConfig)
+  , ("builtin:arid", aridWorldGenConfig)
+  , ("builtin:lush", lushWorldGenConfig)
+  ]
+
+normalizeDerivedSlice :: WorldGenConfig -> WorldGenConfig -> WorldGenConfig
+normalizeDerivedSlice expected actual = actual
+  { worldSlice = (worldSlice actual)
+      { wsLatExtent = wsLatExtent (worldSlice expected)
+      , wsLonExtent = wsLonExtent (worldSlice expected)
+      }
+  }
+
+configApproximately :: WorldGenConfig -> WorldGenConfig -> Bool
+configApproximately expected actual = jsonApproximately (toJSON expected) (toJSON actual)
+
+jsonApproximately :: Value -> Value -> Bool
+jsonApproximately (Number expected) (Number actual) =
+  abs (realToFrac expected - realToFrac actual :: Double) < 1.0e-4
+jsonApproximately (Array expected) (Array actual) =
+  length expected == length actual
+    && and (zipWith jsonApproximately (toList expected) (toList actual))
+jsonApproximately (Object expected) (Object actual) =
+  KM.size expected == KM.size actual
+    && all (\(key, value) -> maybe False (jsonApproximately value) (KM.lookup key actual)) (KM.toList expected)
+jsonApproximately expected actual = expected == actual
 
 assertPresetRoundTrip :: (Text, WorldGenConfig) -> Expectation
 assertPresetRoundTrip (name, cfg) = do

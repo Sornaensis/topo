@@ -66,6 +66,8 @@ import Seer.Service.AppService
   , appServiceOperationSpecs
   , appServiceOperations
   , ConfigListPresetsResponse(..)
+  , ConfigPresetSource(..)
+  , ConfigPresetSummary(..)
   , ConfigSliderSummary(..)
   , ConfigSlidersResponse(..)
   , DataResourceStateResponse(..)
@@ -488,7 +490,9 @@ spec = describe "AppService surface" $ do
     configSliderSummaryTab configSliderContract `shouldBe` "climate"
     configSliderSummaryValueKind configSliderContract `shouldBe` "float"
     map configSliderSummaryId (configSlidersResponseSliders configSlidersContract) `shouldBe` ["SliderWaterLevel"]
-    configPresetNames configPresetsContract `shouldBe` ["default"]
+    configPresetNames configPresetsContract `shouldBe` ["builtin:continental"]
+    map configPresetSummarySource (configPresetEntries configPresetsContract) `shouldBe` [ConfigPresetBuiltin]
+    map configPresetSummaryReadOnly (configPresetEntries configPresetsContract) `shouldBe` [True]
     uiCameraSnapshotZoom uiCameraContract `shouldBe` 1.25
     uiPanelTabName (uiPanelsLeftPanel uiPanelsContract) `shouldBe` "topo"
     uiLogPanelLevel (uiPanelsLogPanel uiPanelsContract) `shouldBe` "info"
@@ -940,7 +944,15 @@ configSlidersContract = ConfigSlidersResponse
 configPresetsContract :: ConfigListPresetsResponse
 configPresetsContract = ConfigListPresetsResponse
   { configPresetCount = 1
-  , configPresetNames = ["default"]
+  , configPresetNames = ["builtin:continental"]
+  , configPresetEntries =
+      [ ConfigPresetSummary
+          { configPresetSummaryId = "builtin:continental"
+          , configPresetSummaryName = "Continental"
+          , configPresetSummarySource = ConfigPresetBuiltin
+          , configPresetSummaryReadOnly = True
+          }
+      ]
   }
 
 uiCameraContract :: UiCameraSnapshot

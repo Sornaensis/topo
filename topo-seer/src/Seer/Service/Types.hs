@@ -401,7 +401,7 @@ appServiceRequestValidators =
   , ("set_sliders", fields "set_sliders" [requiredObject "values"])
   , ("get_enums", fields "get_enums" [requiredText "type"])
   , ("save_preset", persistenceNameFields "save_preset")
-  , ("load_preset", persistenceNameFields "load_preset")
+  , ("load_preset", fields "load_preset" [requiredText "name"])
 
   , ("save_world", persistenceNameFields "save_world")
   , ("load_world", persistenceNameFields "load_world")

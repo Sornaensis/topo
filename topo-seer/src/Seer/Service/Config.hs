@@ -21,6 +21,8 @@ module Seer.Service.Config
   , ConfigEnumValue(..)
   , ConfigEnumsResponse(..)
   , ConfigListPresetsRequest(..)
+  , ConfigPresetSource(..)
+  , ConfigPresetSummary(..)
   , ConfigListPresetsResponse(..)
   , ConfigSavePresetRequest(..)
   , ConfigSavePresetResponse(..)
@@ -150,9 +152,20 @@ newtype ConfigEnumsResponse = ConfigEnumsResponse
 data ConfigListPresetsRequest = ConfigListPresetsRequest
   deriving (Eq, Show)
 
+data ConfigPresetSource = ConfigPresetBuiltin | ConfigPresetUser
+  deriving (Eq, Show)
+
+data ConfigPresetSummary = ConfigPresetSummary
+  { configPresetSummaryId :: !Text
+  , configPresetSummaryName :: !Text
+  , configPresetSummarySource :: !ConfigPresetSource
+  , configPresetSummaryReadOnly :: !Bool
+  } deriving (Eq, Show)
+
 data ConfigListPresetsResponse = ConfigListPresetsResponse
   { configPresetCount :: !Int
   , configPresetNames :: ![Text]
+  , configPresetEntries :: ![ConfigPresetSummary]
   } deriving (Eq, Show)
 
 newtype ConfigSavePresetRequest = ConfigSavePresetRequest
@@ -220,7 +233,7 @@ configGetEnumsOperation = typedOperation $
 
 configListPresetsOperation :: TypedServiceOperation ConfigListPresetsRequest ConfigListPresetsResponse
 configListPresetsOperation = typedOperation $
-  operationSpec "config.presets.list" "list_presets" "List saved configuration presets."
+  operationSpec "config.presets.list" "list_presets" "List built-in and saved configuration presets."
 
 configSavePresetOperation :: TypedServiceOperation ConfigSavePresetRequest ConfigSavePresetResponse
 configSavePresetOperation = typedOperation $

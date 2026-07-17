@@ -99,12 +99,21 @@ import Seer.HTTP.Server
   )
 import Seer.Command.Dispatch (CommandContext(..))
 import Seer.Config.Runtime (TopoSeerConfig(..))
-import Seer.Config.Snapshot (defaultSnapshot)
+import Seer.Config.Snapshot (ConfigSnapshot(..), defaultSnapshot)
 import Seer.Editor.Types (EditorState(..), EditorTool(..))
 import Seer.Render.ZoomStage (orderedZoomStagesForZoom, stageForZoom)
 import Seer.System.Cache (RenderCacheState, initialRenderCacheState)
 import Seer.System.Snapshot (SnapshotPollEnv(..), pollRenderSnapshot)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
+import Topo.WorldGen
+  ( WorldGenConfig
+  , archipelagoWorldGenConfig
+  , aridWorldGenConfig
+  , continentalWorldGenConfig
+  , inlandSeaWorldGenConfig
+  , largeOceanWorldGenConfig
+  , lushWorldGenConfig
+  )
 import Seer.Service.AppService
   ( AppService(..)
   , ConfigService(..)
@@ -234,6 +243,22 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupText "source" (hresBody screenshot) `shouldBe` Just "headless"
       lookupNestedValue ["saved_path"] (hresBody screenshot) `shouldBe` Just Null
       lookupText "image_base64" (hresBody screenshot) `shouldSatisfy` maybe False (not . Text.null)
+
+  it "lists and loads all built-in presets through HTTP" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      listed <- request app (mkRequest "GET" ["presets"])
+      hresStatusCode listed `shouldBe` 200
+      forM_ httpBuiltinPresetCases $ \(presetId, _) -> do
+        arrayFieldContainsText "presets" presetId (hresBody listed) `shouldBe` True
+        presetEntryIsBuiltinReadOnly presetId (hresBody listed) `shouldBe` True
+
+      let uiH = ahUiHandle (ccActorHandles (headlessCommandContext app))
+      forM_ httpBuiltinPresetCases $ \(presetId, expectedConfig) -> do
+        loaded <- request app $ withBody "POST" ["presets", "load"]
+          (object ["name" .= presetId])
+        hresStatusCode loaded `shouldBe` 200
+        ui <- getUiSnapshot uiH
+        (csGenConfig <$> uiWorldConfig ui) `shouldBe` Just expectedConfig
 
   it "validates screenshot paths and reports disabled writes on the screenshot route" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -3342,6 +3367,26 @@ arrayFieldContainsObjectWithText arrayField objectField expected (Object obj) =
       KM.lookup (Key.fromText objectField) item == Just (String expected)
     objectFieldMatches _ = False
 arrayFieldContainsObjectWithText _ _ _ _ = False
+
+httpBuiltinPresetCases :: [(Text, WorldGenConfig)]
+httpBuiltinPresetCases =
+  [ ("builtin:continental", continentalWorldGenConfig)
+  , ("builtin:archipelago", archipelagoWorldGenConfig)
+  , ("builtin:large-ocean", largeOceanWorldGenConfig)
+  , ("builtin:inland-sea", inlandSeaWorldGenConfig)
+  , ("builtin:arid", aridWorldGenConfig)
+  , ("builtin:lush", lushWorldGenConfig)
+  ]
+
+presetEntryIsBuiltinReadOnly :: Text -> Value -> Bool
+presetEntryIsBuiltinReadOnly presetId body = case lookupValue "entries" body of
+  Just (Array entries) -> any matches (toList entries)
+  _ -> False
+  where
+    matches entry =
+      lookupValue "id" entry == Just (String presetId)
+        && lookupValue "source" entry == Just (String "builtin")
+        && lookupValue "read_only" entry == Just (Bool True)
 
 pipelineStagesExposeDiagnostics :: Value -> Bool
 pipelineStagesExposeDiagnostics (Object obj) = case KM.lookup "stages" obj of

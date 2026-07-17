@@ -36,6 +36,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Linear (V2(..))
+import Seer.Config.PresetCatalogue (presetCatalogueMatches)
 import Seer.Config.SliderRegistry (SliderTab(..), SliderDef(..), allSliderDefs, sliderDefsForTab, sliderMinusWidgetId, sliderPlusWidgetId)
 import Seer.Editor.Types (EditorState(..), EditorTool(..))
 import Seer.World.Persist.Types (WorldSaveManifest(..))
@@ -102,7 +103,7 @@ buildMenuWidgets ui layout = case uiMenuMode ui of
     [ Widget WidgetPresetLoadOk (presetLoadOkRect layout)
     , Widget WidgetPresetLoadCancel (presetLoadCancelRect layout)
     ] ++ [ Widget WidgetPresetLoadItem (presetLoadListRect layout)
-         | any (matches (uiPresetFilter ui)) (uiPresetList ui)
+         | any (presetCatalogueMatches (uiPresetFilter ui)) (uiPresetList ui)
          ]
   MenuWorldSave ->
     [ Widget WidgetWorldSaveOk (worldSaveOkRect layout)

@@ -16,6 +16,14 @@ module Seer.Config.Snapshot
     -- * Conversion
   , snapshotFromUi
   , applySnapshotToUi
+    -- * Preset catalogue
+  , PresetSource(..)
+  , PresetCatalogueEntry(..)
+  , builtinPresetEntries
+  , presetCatalogueLabel
+  , presetCatalogueMatches
+  , presetCatalogue
+  , loadPresetSnapshot
     -- * File I/O
   , snapshotDir
   , saveSnapshot
@@ -55,11 +63,13 @@ import Actor.UI
 
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Config (configFromUi)
+import Seer.Config.PresetCatalogue
 import Seer.Config.SliderRegistry (SliderDef(..), SliderId(..), allSliderDefs)
 import Seer.Config.SliderSnapshot (snapshotSliderValueForId)
 import Seer.Config.SliderState (setSliderValue)
 import Seer.Config.Snapshot.Types
 import Seer.Persistence.Name (validatePersistenceName)
+import Topo.WorldGen (WorldGenConfig)
 
 -- ---------------------------------------------------------------------------
 -- Conversion: UI → Snapshot
@@ -101,6 +111,39 @@ applySnapshotToUi cs h = do
 applySnapshotSliderValue :: ConfigSnapshot -> ActorHandle Ui (Protocol Ui) -> SliderId -> IO ()
 applySnapshotSliderValue cs h sliderIdValue =
   setSliderValue h sliderIdValue (snapshotSliderValueForId (csGenConfig cs) sliderIdValue)
+
+-- ---------------------------------------------------------------------------
+-- Preset catalogue
+-- ---------------------------------------------------------------------------
+
+-- | List the complete collision-free preset catalogue. Invalid filenames are
+-- not surfaced as loadable user presets.
+presetCatalogue :: IO [PresetCatalogueEntry]
+presetCatalogue = do
+  userNames <- filter isValidUserPreset <$> listSnapshots
+  pure (builtinPresetEntries ++ map userPresetEntry userNames)
+  where
+    isValidUserPreset name = case validatePersistenceName name of
+      Right () -> True
+      Left _ -> False
+
+-- | Resolve either an immutable built-in ID or a validated user preset name.
+loadPresetSnapshot :: Text -> IO (Either Text ConfigSnapshot)
+loadPresetSnapshot presetId = case lookup presetId builtinPresetSnapshots of
+  Just snapshot -> pure (Right snapshot)
+  Nothing -> loadNamedSnapshot presetId
+
+builtinPresetSnapshots :: [(Text, ConfigSnapshot)]
+builtinPresetSnapshots =
+  [ (presetCatalogueId entry, builtinSnapshot (presetCatalogueId entry) config)
+  | (entry, config) <- builtinPresetDefinitions
+  ]
+
+builtinSnapshot :: Text -> WorldGenConfig -> ConfigSnapshot
+builtinSnapshot presetId config = defaultSnapshot
+  { csName = presetId
+  , csGenConfig = config
+  }
 
 -- ---------------------------------------------------------------------------
 -- File I/O

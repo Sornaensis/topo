@@ -487,9 +487,19 @@ enumEntrySchema = inlineObjectSchema
 
 presetsListResponseSchema :: JsonSchema
 presetsListResponseSchema = objectSchema "PresetsListResponse"
-  [ "preset_count", "presets" ]
+  [ "preset_count", "presets", "entries" ]
   [ ("preset_count", integerSchema)
   , ("presets", arraySchema stringSchema)
+  , ("entries", arraySchema presetSummarySchema)
+  ]
+
+presetSummarySchema :: Value
+presetSummarySchema = inlineObjectSchema
+  [ "id", "name", "source", "read_only" ]
+  [ ("id", stringSchema)
+  , ("name", stringSchema)
+  , ("source", enumStringSchema ["builtin", "user"])
+  , ("read_only", booleanSchema)
   ]
 
 presetsSaveRequestSchema :: JsonSchema

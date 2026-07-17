@@ -222,7 +222,7 @@ sliderConversion sliderIdValue = case sliderIdValue of
   SliderBtCoastalBand -> SliderFloatRange 0 0.1
   SliderBtSnowMaxTemp -> SliderFloatRange 0.0 0.5
   SliderBtAlpineMaxTemp -> SliderFloatRange 0.1 0.7
-  SliderBtIceCapTemp -> SliderFloatRange 0 0.2
+  SliderBtIceCapTemp -> SliderFloatRange 0 0.3
   SliderBtMontaneMaxTemp -> SliderFloatRange 0.2 0.8
   SliderBtMontanePrecip -> SliderFloatRange 0.1 0.6
   SliderBtCliffSlope -> SliderFloatRange 0.2 0.8

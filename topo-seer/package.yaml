@@ -186,6 +186,7 @@ library:
     - Seer.Command.Context
     - Seer.Service.Headless
     - Seer.Config.SliderAccess
+    - Seer.Config.PresetCatalogue
     - Seer.Config.Range
     - Seer.Config.SliderConversion
     - Seer.Config.SliderConfig

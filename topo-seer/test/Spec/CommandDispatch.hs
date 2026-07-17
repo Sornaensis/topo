@@ -111,7 +111,7 @@ import Seer.DataBrowser.Executor
   ( newDataBrowserExecutor
   , shutdownDataBrowserExecutor
   )
-import Seer.Config.Snapshot (snapshotDir)
+import Seer.Config.Snapshot (ConfigSnapshot(..), snapshotDir)
 import Seer.Editor.History (emptyHistory)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
 import Seer.System.Cache (RenderCacheState, initialRenderCacheState)
@@ -166,6 +166,15 @@ import Seer.Service.Types
   , serviceErrorHTTPStatus
   , serviceErrorKind
   , serviceErrorText
+  )
+import Topo.WorldGen
+  ( WorldGenConfig
+  , archipelagoWorldGenConfig
+  , aridWorldGenConfig
+  , continentalWorldGenConfig
+  , inlandSeaWorldGenConfig
+  , largeOceanWorldGenConfig
+  , lushWorldGenConfig
   )
 import Topo
   ( ClimateChunk(..)
@@ -1571,6 +1580,36 @@ spec = describe "CommandDispatch" $ do
             Map.lookup "enabled" (lpParams plugin)
       managerValue `shouldBe` Just (Bool True)
 
+    it "loads all built-ins through the SDL preset dialog widget path" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+          click widgetId extra = dispatch ctx "click_widget" (object
+            (["widget_id" .= (widgetId :: Text)] ++ extra))
+      setUiShowConfig uiH True
+      _ <- getUiSnapshot uiH
+
+      openedForFilter <- click "WidgetConfigPresetLoad" []
+      srSuccess openedForFilter `shouldBe` True
+      setUiPresetFilter uiH "large ocean"
+      displayFiltered <- dispatch ctx "get_dialog_state" Null
+      lookupKey "preset_count" (srResult displayFiltered) `shouldBe` Just (Number 1)
+      setUiPresetFilter uiH "built-in"
+      markerFiltered <- dispatch ctx "get_dialog_state" Null
+      lookupKey "preset_count" (srResult markerFiltered) `shouldBe` Just (Number 6)
+      _ <- click "WidgetPresetLoadCancel" []
+
+      forM_ (zip [0 :: Int ..] builtinWorldGenCases) $ \(index, (presetId, expectedConfig)) -> do
+        opened <- click "WidgetConfigPresetLoad" []
+        srSuccess opened `shouldBe` True
+        dialog <- getUiSnapshot uiH
+        uiPresetList dialog `shouldSatisfy` (presetId `elem`)
+        selected <- click "WidgetPresetLoadItem" ["item_index" .= index]
+        srSuccess selected `shouldBe` True
+        loaded <- click "WidgetPresetLoadOk" []
+        srSuccess loaded `shouldBe` True
+        ui <- getUiSnapshot uiH
+        uiMenuMode ui `shouldBe` MenuNone
+        (csGenConfig <$> uiWorldConfig ui) `shouldBe` Just expectedConfig
+
     it "click_widget toggles plugin parameter checkboxes through pipeline action helpers" $ withPluginCtx $ \ctx -> do
       showPipelineWidgets ctx
       setUiPluginExpanded (ahUiHandle (ccActorHandles ctx)) "example" True
@@ -2051,11 +2090,19 @@ spec = describe "CommandDispatch" $ do
   -- list_presets
   -- -------------------------------------------------------------------
   describe "list_presets" $ do
+    it "returns the six namespaced read-only built-ins through AppService" $ withCtx $ \ctx -> do
+      result <- runAppServiceOperation commandAppService ctx "list_presets" Null
+      body <- expectServiceBody result
+      lookupKey "presets" body `shouldSatisfy` maybe False (allBuiltinIdsPresent . toListValue)
+      lookupKey "entries" body `shouldSatisfy` maybe False (allBuiltinEntriesReadOnly . toListValue)
+
     it "returns success with preset list" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "list_presets" Null
       srSuccess rsp `shouldBe` True
       case srResult rsp of
-        Object o -> KM.member "preset_count" o `shouldBe` True
+        Object o -> do
+          KM.member "preset_count" o `shouldBe` True
+          KM.member "entries" o `shouldBe` True
         _ -> expectationFailure "expected JSON object in result"
 
   -- -------------------------------------------------------------------
@@ -2075,7 +2122,38 @@ spec = describe "CommandDispatch" $ do
       srSuccess rsp `shouldBe` False
       srError rsp `shouldSatisfy` maybe False (Text.isInfixOf "path separators")
 
+    it "cannot overwrite a built-in ID" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "save_preset" (object ["name" .= ("builtin:continental" :: Text)])
+      srSuccess rsp `shouldBe` False
+
+    it "preserves user preset round-trips through the service" $ withCtx $ \ctx -> do
+      let presetName = "__test_service_user_round_trip__"
+          uiH = ahUiHandle (ccActorHandles ctx)
+      dir <- snapshotDir
+      let path = dir </> Text.unpack presetName <> ".json"
+          cleanup = do
+            exists <- doesFileExist path
+            when exists (removeFile path)
+      cleanup
+      (do
+          _ <- dispatch ctx "set_seed" (object ["seed" .= (777 :: Int)])
+          saved <- dispatch ctx "save_preset" (object ["name" .= presetName])
+          srSuccess saved `shouldBe` True
+          _ <- dispatch ctx "set_seed" (object ["seed" .= (42 :: Int)])
+          loaded <- dispatch ctx "load_preset" (object ["name" .= presetName])
+          srSuccess loaded `shouldBe` True
+          uiSeed <$> getUiSnapshot uiH `shouldReturn` 777)
+        `finally` cleanup
+
   describe "load_preset" $ do
+    it "loads every built-in's full WorldGenConfig through AppService" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+      forM_ builtinWorldGenCases $ \(presetId, expectedConfig) -> do
+        result <- runAppServiceOperation commandAppService ctx "load_preset" (object ["name" .= presetId])
+        _ <- expectServiceBody result
+        ui <- getUiSnapshot uiH
+        (csGenConfig <$> uiWorldConfig ui) `shouldBe` Just expectedConfig
+
     it "returns error when name is missing" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "load_preset" Null
       srSuccess rsp `shouldBe` False
@@ -3096,10 +3174,12 @@ serviceHarnessApp = commandAppService
           (\response -> object
               [ "preset_count" .= configPresetCount response
               , "presets" .= configPresetNames response
+              , "entries" .= ([] :: [Value])
               ])
           (\_ ConfigListPresetsRequest -> pure $ Right ConfigListPresetsResponse
             { configPresetCount = 0
             , configPresetNames = []
+            , configPresetEntries = []
             })
       }
   , appWorld = (appWorld commandAppService)
@@ -3299,6 +3379,39 @@ shouldReturnSatisfying action predicate = action >>= (`shouldSatisfy` predicate)
 lookupKey :: Key -> Value -> Maybe Value
 lookupKey k (Object o) = KM.lookup k o
 lookupKey _ _          = Nothing
+
+expectServiceBody :: ServiceResult -> IO Value
+expectServiceBody (Right (ServiceResponse body)) = pure body
+expectServiceBody (Left err) = do
+  expectationFailure ("expected service success, got: " <> Text.unpack (serviceErrorText err))
+  pure Null
+
+toListValue :: Value -> [Value]
+toListValue (Array values) = toList values
+toListValue _ = []
+
+builtinWorldGenCases :: [(Text, WorldGenConfig)]
+builtinWorldGenCases =
+  [ ("builtin:continental", continentalWorldGenConfig)
+  , ("builtin:archipelago", archipelagoWorldGenConfig)
+  , ("builtin:large-ocean", largeOceanWorldGenConfig)
+  , ("builtin:inland-sea", inlandSeaWorldGenConfig)
+  , ("builtin:arid", aridWorldGenConfig)
+  , ("builtin:lush", lushWorldGenConfig)
+  ]
+
+allBuiltinIdsPresent :: [Value] -> Bool
+allBuiltinIdsPresent values =
+  all ((`elem` values) . String . fst) builtinWorldGenCases
+
+allBuiltinEntriesReadOnly :: [Value] -> Bool
+allBuiltinEntriesReadOnly entries = all hasReadOnlyEntry builtinWorldGenCases
+  where
+    hasReadOnlyEntry (presetId, _) = any (matches presetId) entries
+    matches presetId entry =
+      lookupKey "id" entry == Just (String presetId)
+        && lookupKey "source" entry == Just (String "builtin")
+        && lookupKey "read_only" entry == Just (Bool True)
 
 worldResponseContains :: Text -> SeerResponse -> Bool
 worldResponseContains name response = case lookupKey "worlds" (srResult response) of

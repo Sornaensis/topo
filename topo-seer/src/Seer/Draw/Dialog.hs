@@ -14,6 +14,7 @@ module Seer.Draw.Dialog
     -- * Input elements
   , drawTextInputField
   , drawListSelection
+  , presetListLabel
     -- * Buttons
   , drawDialogButton
   ) where
@@ -21,6 +22,7 @@ module Seer.Draw.Dialog
 import Control.Monad (when)
 import Data.Text (Text)
 import Linear (V2(..), V4(..))
+import Seer.Config.PresetCatalogue (presetCatalogueLabel)
 import qualified SDL
 import UI.Font (FontCache)
 import UI.Theme
@@ -99,6 +101,11 @@ drawListSelection renderer fontCache listRect _itemHeight maxVisible sel itemRec
     let col = if isSelected then textDialogContentSel else textDialogContent
     drawLeftTruncated fontCache col r (labelFn i item)
     ) (zip [0..] visible)
+
+-- | Render the namespaced catalogue ID as a human-readable immutable entry.
+-- User preset names are retained verbatim.
+presetListLabel :: Text -> Text
+presetListLabel = presetCatalogueLabel
 
 -------------------------------------------------------------------------------
 -- Buttons

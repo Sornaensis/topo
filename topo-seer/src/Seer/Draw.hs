@@ -56,7 +56,8 @@ import Topo.Planet (PlanetConfig(..))
 import UI.Font (FontCache, textSize)
 import UI.Layout
 import UI.Widgets (Rect(..))
-import Seer.Draw.Dialog (drawDialogButton, drawDialogPanel, drawDialogTitle, drawListSelection, drawTextInputField)
+import Seer.Config.PresetCatalogue (presetCatalogueMatches)
+import Seer.Draw.Dialog (drawDialogButton, drawDialogPanel, drawDialogTitle, drawListSelection, drawTextInputField, presetListLabel)
 import Seer.Draw.Config (drawConfigPanel, drawConfigTabs, drawDataDetailPopover)
 import Seer.Draw.Config.Labels (drawConfigLabels)
 import UI.WidgetsDraw (drawCentered, drawLabelAbove, drawLeft, drawTextLine, drawTextLineTruncated, rectToSDL)
@@ -213,15 +214,14 @@ drawPresetLoadDialog renderer fontCache ui layout =
           listR    = presetLoadListRect layout
           okR      = presetLoadOkRect layout
           cancelR  = presetLoadCancelRect layout
-          fText    = Text.toLower (uiPresetFilter ui)
-          items    = filter (\n -> Text.isInfixOf fText (Text.toLower n))
+          items    = filter (presetCatalogueMatches (uiPresetFilter ui))
                             (uiPresetList ui)
           sel      = min (uiPresetSelected ui) (max 0 (length items - 1))
       drawDialogPanel renderer dialog
       drawDialogTitle renderer fontCache dialog "Load Preset"
       drawTextInputField renderer fontCache filterR (uiPresetFilter ui)
       drawListSelection renderer fontCache listR 24 9 sel
-        (presetLoadItemRect layout) (\_ name -> name) items
+        (presetLoadItemRect layout) (\_ name -> presetListLabel name) items
       let hasItems = not (null items)
       drawDialogButton renderer fontCache okR "Load" hasItems
       drawDialogButton renderer fontCache cancelR "Cancel" True

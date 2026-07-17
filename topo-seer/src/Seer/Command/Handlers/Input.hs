@@ -43,6 +43,7 @@ import Actor.UI.State
   )
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
+import Seer.Config.PresetCatalogue (presetCatalogueMatches)
 import Seer.DataBrowser.Executor (submitDataBrowserAction)
 import qualified Seer.DataBrowser.Lifecycle as DataBrowser
 import Seer.DataBrowser.Model (DataBrowserBeginResult(..))
@@ -86,7 +87,7 @@ handleGetDialogState ctx reqId _params = do
     , "preset_input"    .= uiPresetInput ui
     , "preset_filter"   .= uiPresetFilter ui
     , "preset_selected" .= uiPresetSelected ui
-    , "preset_count"    .= length (uiPresetList ui)
+    , "preset_count"    .= length (filter (presetCatalogueMatches (uiPresetFilter ui)) (uiPresetList ui))
     , "world_save_input" .= uiWorldSaveInput ui
     , "world_filter"    .= uiWorldFilter ui
     , "world_selected"  .= uiWorldSelected ui

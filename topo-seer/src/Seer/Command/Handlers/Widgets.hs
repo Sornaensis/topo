@@ -99,7 +99,7 @@ import qualified Seer.Command.Handlers.Sliders as HSliders
 import Seer.Config.SliderId (SliderId(..))
 import Seer.Config.SliderRegistry (SliderDef(..), SliderPart(..), sliderDefsForTab, SliderTab(..))
 import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
-import Seer.Config.Snapshot (listSnapshots)
+import Seer.Config.Snapshot (PresetCatalogueEntry(..), presetCatalogue, presetCatalogueMatches)
 import Seer.Config.SliderUi (sliderValueForId)
 import Seer.Service.Types (ServiceError(..), ServiceResponse(..), ServiceResult)
 import Seer.World.Persist (listWorlds)
@@ -769,8 +769,8 @@ executeWidgetClick ctx uiSnap invocation = do
       setUiMenuMode uiH MenuPresetSave
       pure $ Right "preset save dialog opened"
     WidgetConfigPresetLoad -> do
-      names <- listSnapshots
-      setUiPresetList uiH names
+      entries <- presetCatalogue
+      setUiPresetList uiH (map presetCatalogueId entries)
       setUiPresetSelected uiH 0
       setUiPresetFilter uiH Text.empty
       setUiMenuMode uiH MenuPresetLoad
@@ -984,7 +984,7 @@ selectWorldItem uiH uiSnap maybeIndex = case maybeIndex >>= (`atIndex` filteredW
     setUiWorldSelected uiH index
     pure $ completed "world selected"
 
-filteredPresets uiSnap = filter (matches (uiPresetFilter uiSnap)) (uiPresetList uiSnap)
+filteredPresets uiSnap = filter (presetCatalogueMatches (uiPresetFilter uiSnap)) (uiPresetList uiSnap)
 filteredWorlds uiSnap = filter (matches (uiWorldFilter uiSnap) . wsmName) (uiWorldList uiSnap)
 matches query candidate = Text.toLower query `Text.isInfixOf` Text.toLower candidate
 
@@ -1411,7 +1411,7 @@ widgetPreconditions uiSnap wid = case wid of
   where
     dbs = uiDataBrowser uiSnap
     editor = uiEditor uiSnap
-    filteredPresets = filter (matches (uiPresetFilter uiSnap)) (uiPresetList uiSnap)
+    filteredPresets = filter (presetCatalogueMatches (uiPresetFilter uiSnap)) (uiPresetList uiSnap)
     presetSelectionValid =
       uiPresetSelected uiSnap >= 0 && uiPresetSelected uiSnap < length filteredPresets
     filteredWorlds = filter (matches (uiWorldFilter uiSnap) . wsmName) (uiWorldList uiSnap)

@@ -35,6 +35,7 @@ import qualified Data.Text as Text
 import Linear (V2(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
+import Seer.Config.PresetCatalogue (presetCatalogueMatches)
 import Seer.Config.SliderRegistry
   ( SliderDef(..)
   , sliderDefForWidget
@@ -228,8 +229,7 @@ handleClick inputContext (SDL.P (V2 x y)) = do
     itemIndexArgument currentLayout (V2 _ clickY) uiState wid = case wid of
       WidgetPresetLoadItem ->
         let Rect (V2 _ listY, _) = presetLoadListRect currentLayout
-            query = Text.toLower (uiPresetFilter uiState)
-            count = length (filter (Text.isInfixOf query . Text.toLower) (uiPresetList uiState))
+            count = length (filter (presetCatalogueMatches (uiPresetFilter uiState)) (uiPresetList uiState))
         in if count <= 0 then [] else ["item_index" .= min (count - 1) (max 0 ((clickY - listY) `div` 24))]
       WidgetWorldLoadItem ->
         let Rect (V2 _ listY, _) = worldLoadListRect currentLayout
