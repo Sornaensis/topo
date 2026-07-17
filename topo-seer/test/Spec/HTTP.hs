@@ -104,6 +104,7 @@ import Seer.Editor.Types (EditorState(..), EditorTool(..))
 import Seer.Render.ZoomStage (orderedZoomStagesForZoom, stageForZoom)
 import Seer.System.Cache (RenderCacheState, initialRenderCacheState)
 import Seer.System.Snapshot (SnapshotPollEnv(..), pollRenderSnapshot)
+import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Seer.Service.AppService
   ( AppService(..)
   , ConfigService(..)
@@ -950,6 +951,40 @@ spec = describe "Seer.HTTP.Server" $ do
 
           assertWeatherOverlayAvailable loadApp
           assertBackendNeutralPluginDataSurfaces loadApp
+
+          beforeDelete <- beginHttpPublicationAssertion loadApp
+          listedBeforeDelete <- request loadApp (mkRequest "GET" ["worlds"])
+          worldListContains smokeName (hresBody listedBeforeDelete) `shouldBe` True
+          deleted <- request loadApp (mkRequest "DELETE" ["worlds"])
+            { hreqBody = Just (object ["name" .= smokeName]) }
+          hresStatusCode deleted `shouldBe` 200
+          lookupText "name" (hresBody deleted) `shouldBe` Just smokeName
+          lookupValue "deleted" (hresBody deleted) `shouldBe` Just (Bool True)
+          (_, committedDelete) <- expectExactHttpPublication loadApp beforeDelete
+          uiWorldName (rsUi committedDelete) `shouldBe` uiWorldName (rsUi committedLoad)
+          uiWorldConfig (rsUi committedDelete) `shouldBe` uiWorldConfig (rsUi committedLoad)
+          rsData committedDelete `shouldBe` rsData committedLoad
+          rsTerrain committedDelete `shouldBe` rsTerrain committedLoad
+          map wsmName (uiWorldList (rsUi committedDelete)) `shouldNotSatisfy` elem smokeName
+
+          listedAfterDelete <- request loadApp (mkRequest "GET" ["worlds"])
+          worldListContains smokeName (hresBody listedAfterDelete) `shouldBe` False
+          stillLoaded <- request loadApp (mkRequest "GET" ["world"])
+          lookupText "world_name" (hresBody stillLoaded) `shouldBe` Just smokeName
+          lookupValue "chunk_count" (hresBody stillLoaded) `shouldBe` generatedChunkCount
+
+          missingDelete <- request loadApp (mkRequest "DELETE" ["worlds"])
+            { hreqBody = Just (object ["name" .= smokeName]) }
+          hresStatusCode missingDelete `shouldBe` 404
+          lookupNestedText ["error", "code"] (hresBody missingDelete) `shouldBe` Just "not_found"
+
+          unsafeDelete <- request loadApp (mkRequest "DELETE" ["worlds"])
+            { hreqBody = Just (object ["name" .= ("../sibling" :: Text)]) }
+          hresStatusCode unsafeDelete `shouldBe` 400
+          lookupNestedText ["error", "code"] (hresBody unsafeDelete) `shouldBe` Just "validation_failed"
+          errorDetailCode (hresBody unsafeDelete) `shouldBe` Just "invalid_persistence_name"
+          deleteEvents <- request loadApp (mkRequest "GET" ["events"])
+          eventsContainTopic "world.saved.deleted" (hresBody deleteEvents) `shouldBe` True
 
   it "coerces query params by declared route schema before service dispatch" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -1808,6 +1843,7 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/presets", "get", "PresetsListResponse")
           , ("/presets", "post", "PresetsSaveResponse")
           , ("/presets/load", "post", "PresetsLoadResponse")
+          , ("/worlds", "delete", "WorldDeleteResponse")
           , ("/pipeline", "get", "PipelineGetResponse")
           , ("/pipeline/stages", "patch", "PipelineSetStageEnabledResponse")
           , ("/plugins", "get", "PluginListResponse")
@@ -1841,6 +1877,7 @@ spec = describe "Seer.HTTP.Server" $ do
         requestRefs =
           [ ("/presets", "post", "PresetsSaveRequest")
           , ("/presets/load", "post", "PresetsLoadRequest")
+          , ("/worlds", "delete", "WorldDeleteRequest")
           , ("/pipeline/stages", "patch", "PipelineSetStageEnabledRequest")
           , ("/plugins/enabled", "patch", "PluginSetEnabledRequest")
           , ("/plugins/params", "patch", "PluginSetParamRequest")
@@ -2048,7 +2085,7 @@ spec = describe "Seer.HTTP.Server" $ do
   it "maps retired MCP tools/list and tools/call coverage to HTTP, service, and OpenAPI routes" $ do
     let doc = openApiDocument publicHttpRouteSpecs
         toolNames = map ptLegacyName retiredMcpToolTargets
-    length retiredMcpToolTargets `shouldBe` 85
+    length retiredMcpToolTargets `shouldBe` 86
     toolNames `shouldBe` nub toolNames
     forM_ retiredMcpToolTargets $ \target -> do
       assertFriendlyRouteTarget target
@@ -3070,6 +3107,7 @@ retiredMcpToolTargets =
   , target "select_hex" "POST" ["ui", "select-hex"] "ui.hex.select" "select_hex"
   , target "save_world" "POST" ["worlds", "save"] "worlds.save" "save_world"
   , target "load_world" "POST" ["worlds", "load"] "worlds.load" "load_world"
+  , target "delete_world" "DELETE" ["worlds"] "worlds.delete" "delete_world"
   , target "list_presets" "GET" ["presets"] "presets.list" "list_presets"
   , target "save_preset" "POST" ["presets"] "presets.save" "save_preset"
   , target "load_preset" "POST" ["presets", "load"] "presets.load" "load_preset"

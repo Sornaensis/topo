@@ -88,6 +88,7 @@ requestSchemasByOperation =
   , ("world.generate", worldGenerateRequestSchema)
   , ("worlds.save", worldSaveRequestSchema)
   , ("worlds.load", worldLoadRequestSchema)
+  , ("worlds.delete", worldDeleteRequestSchema)
   , ("world.name.set", worldNameSetRequestSchema)
   , ("terrain.search", terrainSearchRequestSchema)
   , ("terrain.export", terrainExportRequestSchema)
@@ -169,6 +170,7 @@ responseSchemasByOperation =
   , ("worlds.list", worldsListResponseSchema)
   , ("worlds.save", worldSaveResponseSchema)
   , ("worlds.load", worldLoadResponseSchema)
+  , ("worlds.delete", worldDeleteResponseSchema)
   , ("world.name.set", worldNameSetResponseSchema)
   , ("terrain.hex", terrainHexResponseSchema)
   , ("terrain.chunks", terrainChunksResponseSchema)
@@ -574,6 +576,17 @@ worldLoadResponseSchema = objectSchema "WorldLoadResponse"
   , ("formats", arraySchema stringSchema)
   , ("overlay_names", arraySchema stringSchema)
   , ("diagnostics", arraySchema diagnosticSchema)
+  ]
+
+worldDeleteRequestSchema :: JsonSchema
+worldDeleteRequestSchema = nameRequestSchema "WorldDeleteRequest"
+
+worldDeleteResponseSchema :: JsonSchema
+worldDeleteResponseSchema = objectSchema "WorldDeleteResponse"
+  [ "name", "deleted", "world_count" ]
+  [ ("name", stringSchema)
+  , ("deleted", booleanSchema)
+  , ("world_count", integerSchema)
   ]
 
 worldNameSetRequestSchema :: JsonSchema

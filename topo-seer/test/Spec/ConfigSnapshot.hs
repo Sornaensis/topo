@@ -36,6 +36,7 @@ import Seer.Config.Snapshot
   , snapshotFromUi
   )
 import Seer.Config.SliderSpec (SliderId(..), sliderLabelForId)
+import Seer.Persistence.Name (validatePersistenceName)
 import Topo.BaseHeight (GenConfig(..))
 import Topo.Erosion (ErosionConfig(..), defaultErosionConfig)
 import Topo.Hypsometry (HypsometryConfig(..))
@@ -233,6 +234,17 @@ withSystem = bracket newActorSystem shutdownActorSystem
 
 fileIOSpec :: Spec
 fileIOSpec = describe "File I/O" $ do
+  describe "logical persistence names" $ do
+    it "accepts ordinary basenames" $
+      validatePersistenceName "world 01-alpha" `shouldBe` Right ()
+
+    it "rejects blank, traversal, separators, drive forms, and controls" $
+      map validatePersistenceName
+        [ "", "   ", ".", "..", "../sibling", "nested/name"
+        , "nested\\name", "C:relative", "C:\\absolute", "name:stream"
+        , "victim.", "victim ", "NUL", "con.txt", "COM1", "bad\NULname"
+        ] `shouldSatisfy` all isLeft
+
   describe "saveSnapshot / loadSnapshot" $ do
     it "round-trips through a temp file" $ withTempDir $ \dir -> do
       let path = dir </> "round-trip.json"

@@ -84,6 +84,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 
+import Seer.Persistence.Name (persistenceNameExpectation, validatePersistenceName)
 import Seer.Service.Context (ServiceContext)
 import Seer.Service.EventTypes
 import Topo.Plugin.RPC.DataService
@@ -399,11 +400,12 @@ appServiceRequestValidators =
   , ("set_slider", fields "set_slider" [requiredText "name", requiredNumber "value"])
   , ("set_sliders", fields "set_sliders" [requiredObject "values"])
   , ("get_enums", fields "get_enums" [requiredText "type"])
-  , ("save_preset", fields "save_preset" [requiredText "name"])
-  , ("load_preset", fields "load_preset" [requiredText "name"])
+  , ("save_preset", persistenceNameFields "save_preset")
+  , ("load_preset", persistenceNameFields "load_preset")
 
-  , ("save_world", fields "save_world" [requiredText "name"])
-  , ("load_world", fields "load_world" [requiredText "name"])
+  , ("save_world", persistenceNameFields "save_world")
+  , ("load_world", persistenceNameFields "load_world")
+  , ("delete_world", persistenceNameFields "delete_world")
   , ("set_world_name", fields "set_world_name" [requiredText "name"])
 
   , ("get_hex", fields "get_hex" [requiredInt "q", requiredInt "r"])
@@ -490,6 +492,21 @@ appServiceRequestValidators =
   where
     fields = validateFields
     objectFields = validateObjectFields
+
+persistenceNameFields :: Text -> RequestValidator
+persistenceNameFields label value = do
+  validateFields label [requiredText "name"] value
+  case value of
+    Object fields -> case KM.lookup "name" fields of
+      Just (String name) -> case validatePersistenceName name of
+        Left message -> Left (validationError [ServiceErrorDetail
+          { serviceErrorDetailPath = ["name"]
+          , serviceErrorDetailCode = "invalid_persistence_name"
+          , serviceErrorDetailMessage = message <> " (expected " <> persistenceNameExpectation <> ")"
+          }])
+        Right () -> Right ()
+      _ -> Right ()
+    _ -> Right ()
 
 -- | Type-level association between an operation and its request/response pair.
 --

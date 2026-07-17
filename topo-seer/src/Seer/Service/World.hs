@@ -15,6 +15,8 @@ module Seer.Service.World
   , WorldSaveResponse(..)
   , WorldLoadRequest(..)
   , WorldLoadResponse(..)
+  , WorldDeleteRequest(..)
+  , WorldDeleteResponse(..)
   , WorldSetNameRequest(..)
   , WorldSetNameResponse(..)
   , worldGenerateOperation
@@ -23,6 +25,7 @@ module Seer.Service.World
   , worldListOperation
   , worldSaveOperation
   , worldLoadOperation
+  , worldDeleteOperation
   , worldSetNameOperation
   , worldServiceGroup
   , worldServiceOperationSpecs
@@ -42,6 +45,7 @@ data WorldService = WorldService
   , worldList :: !(ServiceHandler WorldListRequest WorldListResponse)
   , worldSave :: !(ServiceHandler WorldSaveRequest WorldSaveResponse)
   , worldLoad :: !(ServiceHandler WorldLoadRequest WorldLoadResponse)
+  , worldDelete :: !(ServiceHandler WorldDeleteRequest WorldDeleteResponse)
   , worldSetName :: !(ServiceHandler WorldSetNameRequest WorldSetNameResponse)
   }
 
@@ -105,6 +109,16 @@ data WorldLoadResponse = WorldLoadResponse
   , worldLoaded :: !Bool
   } deriving (Eq, Show)
 
+newtype WorldDeleteRequest = WorldDeleteRequest
+  { worldDeleteName :: Text
+  } deriving (Eq, Show)
+
+data WorldDeleteResponse = WorldDeleteResponse
+  { worldDeletedName :: !Text
+  , worldDeleted :: !Bool
+  , worldDeleteRemainingCount :: !Int
+  } deriving (Eq, Show)
+
 newtype WorldSetNameRequest = WorldSetNameRequest
   { worldSetNameValue :: Text
   } deriving (Eq, Show)
@@ -124,6 +138,7 @@ worldServiceOperationSpecs =
   , typedServiceOperationSpec worldListOperation
   , typedServiceOperationSpec worldSaveOperation
   , typedServiceOperationSpec worldLoadOperation
+  , typedServiceOperationSpec worldDeleteOperation
   , typedServiceOperationSpec worldSetNameOperation
   ]
 
@@ -150,6 +165,10 @@ worldSaveOperation = typedOperation $
 worldLoadOperation :: TypedServiceOperation WorldLoadRequest WorldLoadResponse
 worldLoadOperation = typedOperation $
   operationSpec "world.load" "load_world" "Load a saved world."
+
+worldDeleteOperation :: TypedServiceOperation WorldDeleteRequest WorldDeleteResponse
+worldDeleteOperation = typedOperation $
+  operationSpec "world.delete" "delete_world" "Delete a saved world bundle."
 
 worldSetNameOperation :: TypedServiceOperation WorldSetNameRequest WorldSetNameResponse
 worldSetNameOperation = typedOperation $

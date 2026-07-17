@@ -477,6 +477,7 @@ eventTopic spec status
     base
       | op == "world.generate" = "world.generation.requested"
       | op == "world.generationStatus" = "world.generation.status"
+      | op == "worlds.delete" = "world.saved.deleted"
       | op == "plugins.list" || op == "plugins.status" || op == "plugins.state" || op == "plugins.dependencies" = "plugins.status"
       | op == "plugins.setEnabled" || op == "plugins.params.set" = "plugins.changed"
       | op == "logs.get" = "logs.read"
@@ -942,6 +943,7 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   , service "GET" ["worlds"] "worlds.list" "world" "list_worlds" "List saved worlds." NoRequestBody
   , service "POST" ["worlds", "save"] "worlds.save" "world" "save_world" "Save a world." RequiredJsonRequestBody
   , service "POST" ["worlds", "load"] "worlds.load" "world" "load_world" "Load a world." RequiredJsonRequestBody
+  , service "DELETE" ["worlds"] "worlds.delete" "world" "delete_world" "Delete a saved world." RequiredJsonRequestBody
   , service "PATCH" ["world", "name"] "world.name.set" "world" "set_world_name" "Set world name." RequiredJsonRequestBody
 
   , serviceWithQuery "GET" ["terrain", "hex"] "terrain.hex" "terrain" "get_hex" "Read one hex." NoRequestBody

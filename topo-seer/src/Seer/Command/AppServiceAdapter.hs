@@ -92,6 +92,7 @@ commandAppService = app
       , worldList = commandServiceHandler worldListOperation HWorld.handleListWorlds
       , worldSave = commandServiceHandler worldSaveOperation HWorld.handleSaveWorld
       , worldLoad = commandServiceHandler worldLoadOperation HWorld.handleLoadWorld
+      , worldDelete = commandServiceHandler worldDeleteOperation HWorld.handleDeleteWorld
       , worldSetName = commandServiceHandler worldSetNameOperation HWorld.handleSetWorldName
       }
   , appTerrain = TerrainService
@@ -262,6 +263,7 @@ commandErrorToServiceError msg
   | Just failure <- parseDataResourceFailureText msg =
       ServiceDataResourceError (drfCode failure) (drfMessage failure) []
   | matches ["not found", "unknown ", "chunk not found", "record not found"] = ServiceNotFound msg
+  | matches ["failed to delete world"] = ServiceInternalError msg
   | matches ["not visible", "not available", "no terrain loaded", "no terrain generated"] = ServiceUnavailable msg
   | matches ["failed", "rejected"] = ServiceRejected msg
   | otherwise = ServiceInvalidRequest msg

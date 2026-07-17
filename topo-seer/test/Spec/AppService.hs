@@ -106,6 +106,8 @@ import Seer.Service.AppService
   , UiSetViewRequest(..)
   , UiSetViewResponse(..)
   , UiViewportClickResponse(..)
+  , WorldDeleteRequest(..)
+  , WorldDeleteResponse(..)
   , WorldGenerationStatusResponse(..)
   , WorldMetaResponse(..)
   , dataResourceCreateRecordOperation
@@ -195,6 +197,7 @@ import Seer.Service.AppService
   , uiDialogCancelOperation
   , uiSendKeyOperation
   , uiZoomToChunkOperation
+  , worldDeleteOperation
   , worldGenerateOperation
   , worldGetGenerationStatusOperation
   , worldGetMetaOperation
@@ -206,6 +209,7 @@ import Seer.Service.AppService
 import Seer.Service.Types
   ( AsyncStatusPhase(..)
   , AsyncStatusSnapshot(..)
+  , ServiceErrorDetail(..)
   , ServiceEventEnvelope(..)
   , ServiceEventPublishRequest(..)
   , ServiceEventPublishResponse(..)
@@ -219,6 +223,7 @@ import Seer.Service.Types
   , serviceErrorCode
   , serviceErrorHTTPStatus
   , serviceEventPublishOperation
+  , validateAppServiceRequest
   )
 
 spec :: Spec
@@ -243,6 +248,14 @@ spec = describe "AppService surface" $ do
   it "defines focused service groups for the M2 behaviour boundary" $
     map (\group -> (serviceGroupName group, groupOperationMethods group)) appServiceGroups
       `shouldBe` expectedServiceGroups
+
+  it "validates persistence names with a stable structured service detail" $ do
+    case validateAppServiceRequest "delete_world" (object ["name" .= ("../sibling" :: Text)]) of
+      Left (ServiceValidationError _ [detail]) -> do
+        serviceErrorDetailPath detail `shouldBe` ["name"]
+        serviceErrorDetailCode detail `shouldBe` "invalid_persistence_name"
+        serviceErrorDetailMessage detail `shouldSatisfy` Text.isInfixOf "path separators"
+      other -> expectationFailure ("expected structured name validation error, got: " <> show other)
 
   it "maps standardized data-resource service errors to codes and HTTP statuses" $ do
     let cases =
@@ -285,6 +298,7 @@ spec = describe "AppService surface" $ do
       , "list_worlds"
       , "save_world"
       , "load_world"
+      , "delete_world"
       , "set_world_name"
       , "get_hex"
       , "get_chunks"
@@ -363,6 +377,8 @@ spec = describe "AppService surface" $ do
 
   it "keeps world, terrain, editor, and overlay contracts typed" $ do
     worldMetaChunkIds worldMetaContract `shouldBe` [ChunkId 0]
+    worldDeleteName worldDeleteRequestContract `shouldBe` "demo"
+    worldDeleteRemainingCount worldDeleteResponseContract `shouldBe` 2
     map terrainFindFilterOp (terrainFindFilters terrainFindContract) `shouldBe` [TerrainOpEq]
     terrainFindLimit terrainFindContract `shouldBe` Just 25
     editorSetBrushStrength editorBrushContract `shouldBe` Just 0.4
@@ -519,6 +535,7 @@ typedOperationMethods =
   , typedOperationMethod worldListOperation
   , typedOperationMethod worldSaveOperation
   , typedOperationMethod worldLoadOperation
+  , typedOperationMethod worldDeleteOperation
   , typedOperationMethod worldSetNameOperation
   , typedOperationMethod terrainGetHexOperation
   , typedOperationMethod terrainGetChunksOperation
@@ -597,6 +614,16 @@ typedOperationMethods =
 
 typedOperationMethod :: TypedServiceOperation request response -> Text
 typedOperationMethod = serviceOperationMethod . typedServiceOperationSpec
+
+worldDeleteRequestContract :: WorldDeleteRequest
+worldDeleteRequestContract = WorldDeleteRequest "demo"
+
+worldDeleteResponseContract :: WorldDeleteResponse
+worldDeleteResponseContract = WorldDeleteResponse
+  { worldDeletedName = "demo"
+  , worldDeleted = True
+  , worldDeleteRemainingCount = 2
+  }
 
 worldMetaContract :: WorldMetaResponse
 worldMetaContract = WorldMetaResponse
@@ -1232,6 +1259,7 @@ expectedServiceGroups =
       , "list_worlds"
       , "save_world"
       , "load_world"
+      , "delete_world"
       , "set_world_name"
       ]
     )

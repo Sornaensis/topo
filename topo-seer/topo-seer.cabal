@@ -86,6 +86,7 @@ library
       Seer.Input.Seed
       Seer.Input.ViewControls
       Seer.Input.Widgets
+      Seer.Persistence.Name
       Seer.Render
       Seer.Render.Atlas
       Seer.Render.Frame

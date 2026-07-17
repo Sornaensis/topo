@@ -11,20 +11,18 @@ import Data.Aeson (Value(..), object, (.=), (.:))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
 import Data.Text (Text)
-import qualified Data.Text as Text
-import System.FilePath ((</>))
 
 import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Actor.UI.State (readUiSnapshotRef)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config.Snapshot
   ( listSnapshots
-  , snapshotDir
-  , saveSnapshot
-  , loadSnapshot
+  , saveNamedSnapshot
+  , loadNamedSnapshot
   , snapshotFromUi
   , applySnapshotToUi
   )
+import Seer.Persistence.Name (validatePersistenceName)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
 
 -- | Handle @list_presets@ — return all saved config preset names.
@@ -43,22 +41,19 @@ handleSavePreset ctx reqId params = do
   case Aeson.parseMaybe parseName params of
     Nothing ->
       pure $ errResponse reqId "missing or invalid 'name' parameter"
-    Just name
-      | Text.null name ->
-          pure $ errResponse reqId "preset name must not be empty"
-      | otherwise -> do
-          ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
-          dir <- snapshotDir
-          let path = dir </> Text.unpack name <> ".json"
-          result <- saveSnapshot path (snapshotFromUi ui name)
-          case result of
-            Right () ->
-              pure $ okResponse reqId $ object
-                [ "name" .= name
-                , "saved" .= True
-                ]
-            Left err ->
-              pure $ errResponse reqId ("failed to save preset: " <> err)
+    Just name -> case validatePersistenceName name of
+      Left err -> pure $ errResponse reqId ("invalid preset name: " <> err)
+      Right () -> do
+        ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
+        result <- saveNamedSnapshot name (snapshotFromUi ui name)
+        case result of
+          Right () ->
+            pure $ okResponse reqId $ object
+              [ "name" .= name
+              , "saved" .= True
+              ]
+          Left err ->
+            pure $ errResponse reqId ("failed to save preset: " <> err)
 
 -- | Handle @load_preset@ — load a named preset and apply it to the UI.
 -- Params: @{ "name": "my-preset" }@
@@ -67,24 +62,21 @@ handleLoadPreset ctx reqId params = do
   case Aeson.parseMaybe parseName params of
     Nothing ->
       pure $ errResponse reqId "missing or invalid 'name' parameter"
-    Just name
-      | Text.null name ->
-          pure $ errResponse reqId "preset name must not be empty"
-      | otherwise -> do
-          dir <- snapshotDir
-          let path = dir </> Text.unpack name <> ".json"
-          result <- loadSnapshot path
-          case result of
-            Right cs -> do
-              let handles = ccActorHandles ctx
-              applySnapshotToUi cs (ahUiHandle handles)
-              _ <- publishUiMutation handles
-              pure $ okResponse reqId $ object
-                [ "name" .= name
-                , "loaded" .= True
-                ]
-            Left err ->
-              pure $ errResponse reqId ("failed to load preset: " <> err)
+    Just name -> case validatePersistenceName name of
+      Left err -> pure $ errResponse reqId ("invalid preset name: " <> err)
+      Right () -> do
+        result <- loadNamedSnapshot name
+        case result of
+          Right cs -> do
+            let handles = ccActorHandles ctx
+            applySnapshotToUi cs (ahUiHandle handles)
+            _ <- publishUiMutation handles
+            pure $ okResponse reqId $ object
+              [ "name" .= name
+              , "loaded" .= True
+              ]
+          Left err ->
+            pure $ errResponse reqId ("failed to load preset: " <> err)
 
 -- --------------------------------------------------------------------------
 -- Helpers

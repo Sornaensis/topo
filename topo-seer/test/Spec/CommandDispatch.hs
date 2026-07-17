@@ -2070,6 +2070,11 @@ spec = describe "CommandDispatch" $ do
       rsp <- dispatch ctx "save_preset" (object ["name" .= ("" :: String)])
       srSuccess rsp `shouldBe` False
 
+    it "rejects path traversal names" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "save_preset" (object ["name" .= ("../sibling" :: Text)])
+      srSuccess rsp `shouldBe` False
+      srError rsp `shouldSatisfy` maybe False (Text.isInfixOf "path separators")
+
   describe "load_preset" $ do
     it "returns error when name is missing" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "load_preset" Null
@@ -2078,6 +2083,11 @@ spec = describe "CommandDispatch" $ do
     it "returns error for non-existent preset" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "load_preset" (object ["name" .= ("__nonexistent_test_preset__" :: String)])
       srSuccess rsp `shouldBe` False
+
+    it "rejects drive-form names" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "load_preset" (object ["name" .= ("C:outside" :: Text)])
+      srSuccess rsp `shouldBe` False
+      srError rsp `shouldSatisfy` maybe False (Text.isInfixOf "drive path")
 
   -- -------------------------------------------------------------------
   -- save_world / load_world
@@ -2090,6 +2100,11 @@ spec = describe "CommandDispatch" $ do
     it "returns error for empty name" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "save_world" (object ["name" .= ("" :: String)])
       srSuccess rsp `shouldBe` False
+
+    it "rejects path traversal names" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "save_world" (object ["name" .= ("../sibling" :: Text)])
+      srSuccess rsp `shouldBe` False
+      srError rsp `shouldSatisfy` maybe False (Text.isInfixOf "path separators")
 
   describe "load_world" $ do
     it "returns error when name is missing" $ withCtx $ \ctx -> do
@@ -2160,6 +2175,42 @@ spec = describe "CommandDispatch" $ do
               _ -> expectationFailure "expected get_ui_state.view.selection object"
           _ -> expectationFailure "expected get_ui_state.view object")
         `finally` (deleteNamedWorld worldName >> pure ())
+
+  describe "delete_world" $ do
+    it "refreshes saved worlds while leaving the current in-memory world unchanged" $ withCtx $ \ctx -> do
+      let worldName = "__topo_command_dispatch_delete__"
+      _ <- deleteNamedWorld worldName
+      finally
+        (do
+            _ <- writeReadyTerrainData ctx
+            saveRsp <- dispatch ctx "save_world" (object ["name" .= worldName])
+            srSuccess saveRsp `shouldBe` True
+            before <- beginPublicationAssertion ctx
+            beforeWorlds <- dispatch ctx "list_worlds" Null
+            worldResponseContains worldName beforeWorlds `shouldBe` True
+
+            deleteRsp <- dispatch ctx "delete_world" (object ["name" .= worldName])
+            srSuccess deleteRsp `shouldBe` True
+            lookupKey "deleted" (srResult deleteRsp) `shouldBe` Just (Bool True)
+            (_, afterDelete) <- expectExactPublication ctx before
+            uiWorldName (rsUi afterDelete) `shouldBe` uiWorldName (rsUi (pbSnapshot before))
+            uiWorldConfig (rsUi afterDelete) `shouldBe` uiWorldConfig (rsUi (pbSnapshot before))
+            rsData afterDelete `shouldBe` rsData (pbSnapshot before)
+            rsTerrain afterDelete `shouldBe` rsTerrain (pbSnapshot before)
+            map wsmName (uiWorldList (rsUi afterDelete))
+              `shouldSatisfy` notElem worldName
+
+            afterWorlds <- dispatch ctx "list_worlds" Null
+            worldResponseContains worldName afterWorlds `shouldBe` False
+            missing <- dispatch ctx "delete_world" (object ["name" .= worldName])
+            srSuccess missing `shouldBe` False
+        )
+        (deleteNamedWorld worldName >> pure ())
+
+    it "rejects traversal before deletion" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "delete_world" (object ["name" .= ("../sibling" :: Text)])
+      srSuccess rsp `shouldBe` False
+      srError rsp `shouldSatisfy` maybe False (Text.isInfixOf "path separators")
 
   -- -------------------------------------------------------------------
   -- take_screenshot
@@ -3148,6 +3199,7 @@ serviceOperationCases =
   , serviceCase "list_worlds" Null ExpectServiceSuccess
   , serviceCase "save_world" Null ExpectServiceFailure
   , serviceCase "load_world" Null ExpectServiceFailure
+  , serviceCase "delete_world" Null ExpectServiceFailure
   , serviceCase "set_world_name" (object ["name" .= ("Service Test World" :: String)]) ExpectServiceSuccess
   , serviceCase "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)]) ExpectServiceFailure
   , serviceCase "get_chunks" Null ExpectServiceSuccess
@@ -3247,6 +3299,13 @@ shouldReturnSatisfying action predicate = action >>= (`shouldSatisfy` predicate)
 lookupKey :: Key -> Value -> Maybe Value
 lookupKey k (Object o) = KM.lookup k o
 lookupKey _ _          = Nothing
+
+worldResponseContains :: Text -> SeerResponse -> Bool
+worldResponseContains name response = case lookupKey "worlds" (srResult response) of
+  Just (Array worlds) -> any hasName (toList worlds)
+  _ -> False
+  where
+    hasName world = lookupKey "name" world == Just (String name)
 
 valueHasKey :: Key -> Value -> Bool
 valueHasKey key (Object obj) = KM.member key obj

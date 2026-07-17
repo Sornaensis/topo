@@ -4,7 +4,7 @@
 
 -- | Handlers for world/meta queries and mutations:
 -- @get_world_meta@, @get_generation_status@, @get_overlays@, @list_worlds@,
--- @save_world@, @load_world@.
+-- @save_world@, @load_world@, @delete_world@.
 module Seer.Command.Handlers.World
   ( handleGetWorldMeta
   , handleGetGenerationStatus
@@ -16,6 +16,7 @@ module Seer.Command.Handlers.World
   , handleListWorlds
   , handleSaveWorld
   , handleLoadWorld
+  , handleDeleteWorld
   , handleSetWorldName
   ) where
 
@@ -51,16 +52,18 @@ import Actor.SnapshotReceiver
   , withLogSnapshot
   , withUiSnapshot
   )
-import Actor.UI.Setters (setUiWorldName, setUiWorldConfig, setUiOverlayNames, setUiSimTickCount, setUiViewSelection)
+import Actor.UI.Setters (setUiWorldName, setUiWorldConfig, setUiWorldList, setUiWorldSelected, setUiOverlayNames, setUiSimTickCount, setUiViewSelection)
 import Actor.UiActions (enqueueAtlasRebuildForTerrain)
 import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Actor.UI.State (UiState(..), ViewMode(..), defaultLayeredViewState, getUiSnapshot, readUiSnapshotRef)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config.Snapshot (snapshotFromUi, applySnapshotToUi)
+import Seer.Persistence.Name (validatePersistenceName)
 import Seer.World.Persist
   ( listWorlds
   , saveNamedWorldWithPluginsAndExternalData
   , loadNamedWorld
+  , deleteNamedWorld
   , snapshotToWorld
   , worldDir
   )
@@ -232,10 +235,9 @@ handleSaveWorld ctx reqId params = do
   case Aeson.parseMaybe parseName params of
     Nothing ->
       pure $ errResponse reqId "missing or invalid 'name' parameter"
-    Just name
-      | Text.null name ->
-          pure $ errResponse reqId "world name must not be empty"
-      | otherwise -> do
+    Just name -> case validatePersistenceName name of
+      Left err -> pure $ errResponse reqId ("invalid world name: " <> err)
+      Right () -> do
           let handles = ccActorHandles ctx
           ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
           terrainSnap <- getTerrainSnapshot (ahDataHandle handles)
@@ -273,10 +275,9 @@ handleLoadWorld ctx reqId params = do
   case Aeson.parseMaybe parseName params of
     Nothing ->
       pure $ errResponse reqId "missing or invalid 'name' parameter"
-    Just name
-      | Text.null name ->
-          pure $ errResponse reqId "world name must not be empty"
-      | otherwise -> do
+    Just name -> case validatePersistenceName name of
+      Left err -> pure $ errResponse reqId ("invalid world name: " <> err)
+      Right () -> do
           let handles = ccActorHandles ctx
               simH = ahSimulationHandle handles
           beginSimWorldTransition simH
@@ -332,6 +333,31 @@ handleLoadWorld ctx reqId params = do
                 , "overlay_names" .= wsmOverlayNames manifest
                 , "diagnostics" .= [diagnostic "info" "world_loaded" "world bundle, config snapshot, manifest, and overlay sidecar were loaded"]
                 ]
+
+-- | Handle @delete_world@ — delete a saved bundle without changing the
+-- currently loaded world's name, config, terrain, or provider-owned data.
+handleDeleteWorld :: CommandContext -> Int -> Value -> IO SeerResponse
+handleDeleteWorld ctx reqId params =
+  case Aeson.parseMaybe parseName params of
+    Nothing -> pure $ errResponse reqId "missing or invalid 'name' parameter"
+    Just name -> case validatePersistenceName name of
+      Left err -> pure $ errResponse reqId ("invalid world name: " <> err)
+      Right () -> do
+        result <- deleteNamedWorld name
+        case result of
+          Left err -> pure $ errResponse reqId err
+          Right () -> do
+            let handles = ccActorHandles ctx
+                uiH = ahUiHandle handles
+            worlds <- listWorlds
+            setUiWorldList uiH worlds
+            setUiWorldSelected uiH 0
+            _ <- publishUiMutation handles
+            pure $ okResponse reqId $ object
+              [ "name" .= name
+              , "deleted" .= True
+              , "world_count" .= length worlds
+              ]
 
 -- | Handle @set_world_name@ — set the display name of the current world.
 --

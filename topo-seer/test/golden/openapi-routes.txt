@@ -22,6 +22,7 @@ GET /world/generation-status world.generationStatus
 GET /worlds worlds.list
 POST /worlds/save worlds.save
 POST /worlds/load worlds.load
+DELETE /worlds worlds.delete
 PATCH /world/name world.name.set
 GET /terrain/hex terrain.hex
 GET /terrain/chunks terrain.chunks

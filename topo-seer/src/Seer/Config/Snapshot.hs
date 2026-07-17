@@ -20,6 +20,9 @@ module Seer.Config.Snapshot
   , snapshotDir
   , saveSnapshot
   , loadSnapshot
+  , saveNamedSnapshot
+  , loadNamedSnapshot
+  , deleteNamedSnapshot
   , listSnapshots
   ) where
 
@@ -56,6 +59,7 @@ import Seer.Config.SliderRegistry (SliderDef(..), SliderId(..), allSliderDefs)
 import Seer.Config.SliderSnapshot (snapshotSliderValueForId)
 import Seer.Config.SliderState (setSliderValue)
 import Seer.Config.Snapshot.Types
+import Seer.Persistence.Name (validatePersistenceName)
 
 -- ---------------------------------------------------------------------------
 -- Conversion: UI → Snapshot
@@ -136,6 +140,38 @@ loadSnapshot path = do
       case eitherDecodeStrict' bs of
         Right cs -> Right cs
         Left err -> Left (Text.pack err)
+
+-- | Save a config snapshot by logical preset name.
+saveNamedSnapshot :: Text -> ConfigSnapshot -> IO (Either Text ())
+saveNamedSnapshot name snapshot = case validatePersistenceName name of
+  Left err -> pure (Left err)
+  Right () -> do
+    dir <- snapshotDir
+    saveSnapshot (dir </> Text.unpack name <> ".json") snapshot
+
+-- | Load a config snapshot by logical preset name.
+loadNamedSnapshot :: Text -> IO (Either Text ConfigSnapshot)
+loadNamedSnapshot name = case validatePersistenceName name of
+  Left err -> pure (Left err)
+  Right () -> do
+    dir <- snapshotDir
+    loadSnapshot (dir </> Text.unpack name <> ".json")
+
+-- | Delete a config snapshot by logical preset name.
+deleteNamedSnapshot :: Text -> IO (Either Text ())
+deleteNamedSnapshot name = case validatePersistenceName name of
+  Left err -> pure (Left err)
+  Right () -> do
+    dir <- snapshotDir
+    let path = dir </> Text.unpack name <> ".json"
+    exists <- doesFileExist path
+    if not exists
+      then pure (Left ("Preset not found: " <> name))
+      else do
+        result <- try @IOException (removeFile path)
+        pure $ case result of
+          Left err -> Left (Text.pack (show err))
+          Right () -> Right ()
 
 -- | List all config names in the snapshot directory, sorted
 -- alphabetically.  Names are returned without the @.json@ extension.

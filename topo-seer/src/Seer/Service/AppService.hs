@@ -140,6 +140,7 @@ appServiceOperations app = concat
     , appOperation worldListOperation (worldList worldSvc)
     , appOperation worldSaveOperation (worldSave worldSvc)
     , appOperation worldLoadOperation (worldLoad worldSvc)
+    , appOperation worldDeleteOperation (worldDelete worldSvc)
     , appOperation worldSetNameOperation (worldSetName worldSvc)
     ]
   , [ appOperation terrainGetHexOperation (terrainGetHex terrainSvc)

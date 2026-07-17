@@ -4,7 +4,7 @@
 module Spec.WorldPersist (spec) where
 
 import Control.Exception (bracket, throwIO, try, IOException)
-import Control.Monad (when)
+import Control.Monad (forM_, when)
 import Data.Aeson (Value(..), encode, eitherDecodeStrict', object, toJSON, (.=))
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
@@ -112,6 +112,7 @@ spec :: Spec
 spec = describe "WorldPersist" $ do
   manifestJsonSpec
   worldRoundTripSpec
+  deletionSpec
   snapshotToWorldSpec
   listWorldsSpec
 
@@ -993,6 +994,88 @@ worldRoundTripSpec = describe "saveNamedWorld / loadNamedWorld" $
                 wsmOverlayNames loadedManifest `shouldBe` []
                 lookupOverlay "weather" (twOverlays loadedWorld) `shouldBe` Nothing
         )
+
+deletionSpec :: Spec
+deletionSpec = describe "deleteNamedWorld" $ do
+  it "supports list-delete-list without touching sibling provider data" $ do
+    let name = "__topo_test_delete_world__"
+        siblingName = "__topo_test_provider_owned__" :: Text.Text
+        malformedName = "__topo_test_malformed_world__" :: Text.Text
+        stagingName = name <> ".saving"
+        ui = emptyUiState { uiSeed = 303, uiChunkSize = 64 }
+        world = emptyWorld (WorldConfig { wcChunkSize = 64 }) defaultHexGridMeta
+    worldsRoot <- worldDir
+    let siblingDir = worldsRoot </> ".." </> Text.unpack siblingName
+        marker = siblingDir </> "provider-state.txt"
+        malformedDir = worldsRoot </> Text.unpack malformedName
+        malformedMarker = malformedDir </> "uncommitted-state.txt"
+        stagingDir = worldsRoot </> Text.unpack stagingName
+        stagingMarker = stagingDir </> "staging-state.txt"
+        cleanup = do
+          _ <- deleteNamedWorld name
+          _ <- try @IOException (removePathForcibly siblingDir)
+          _ <- try @IOException (removePathForcibly malformedDir)
+          _ <- try @IOException (removePathForcibly stagingDir)
+          pure ()
+    bracket
+      (do
+          cleanup
+          createDirectoryIfMissing True siblingDir
+          writeFile marker "provider-owned"
+          createDirectoryIfMissing True malformedDir
+          writeFile malformedMarker "not-a-saved-world"
+      )
+      (const cleanup)
+      (\_ -> do
+          saved <- saveNamedWorldWithPluginsAndExternalData
+            name ui world [] [testExternalDataSourceSnapshot]
+          saved `shouldBe` Right ()
+          before <- map wsmName <$> listWorlds
+          before `shouldSatisfy` elem name
+          loaded <- loadNamedWorld name
+          manifest <- case loaded of
+            Left err -> expectationFailure (Text.unpack err) >> fail "unreachable"
+            Right (savedManifest, _, _) -> pure savedManifest
+          createDirectoryIfMissing True stagingDir
+          BSL.writeFile (stagingDir </> "meta.json") (encode manifest)
+          writeFile stagingMarker "in-progress"
+
+          deleteNamedWorld ("../" <> siblingName) `shouldReturn` Left
+            "persistence name must not contain path separators"
+          doesFileExist marker `shouldReturn` True
+          deleteNamedWorld malformedName `shouldReturn` Left
+            ("World not found: " <> malformedName)
+          doesFileExist malformedMarker `shouldReturn` True
+          deleteNamedWorld stagingName `shouldReturn` Left
+            ("World not found: " <> stagingName)
+          doesFileExist stagingMarker `shouldReturn` True
+
+          deleteNamedWorld name `shouldReturn` Right ()
+          after <- map wsmName <$> listWorlds
+          after `shouldNotSatisfy` elem name
+          doesFileExist marker `shouldReturn` True
+          deleteNamedWorld name `shouldReturn` Left ("World not found: " <> name)
+      )
+
+  it "rejects unsafe names consistently for save, load, and delete" $ do
+    let world = emptyWorld (WorldConfig { wcChunkSize = 64 }) defaultHexGridMeta
+        ui = emptyUiState
+    forM_ ["", " ", ".", "..", "nested/name", "nested\\name", "C:world", "name:stream", "NUL", "con.txt", "COM1", "victim.", "victim ", "bad\NULname"] $ \name -> do
+      saveNamedWorld name ui world `shouldReturn` Left
+        (expectedNameError name)
+      fmap (fmap (const ())) (loadNamedWorld name)
+        `shouldReturn` Left (expectedNameError name)
+      deleteNamedWorld name `shouldReturn` Left (expectedNameError name)
+  where
+    expectedNameError name
+      | Text.null (Text.strip name) = "persistence name must not be blank"
+      | name == "." || name == ".." = "persistence name must not be a dot segment"
+      | Text.any (\c -> c == '\NUL') name = "persistence name must not contain control characters"
+      | Text.any (\c -> c == '/' || c == '\\') name = "persistence name must not contain path separators"
+      | Text.length name >= 2 && Text.index name 1 == ':' = "persistence name must not be an absolute or drive path"
+      | Text.any (`elem` ("<>:\"|?*" :: String)) name = "persistence name must not contain reserved path characters"
+      | Text.toUpper (Text.takeWhile (/= '.') name) `elem` ["NUL", "CON", "COM1"] = "persistence name must not be a reserved device name"
+      | otherwise = "persistence name must not end in a dot or space"
 
 snapshotToWorldSpec :: Spec
 snapshotToWorldSpec = describe "snapshotToWorld" $

@@ -31,7 +31,7 @@ module Seer.World.Persist
   , snapshotToWorld
     -- * Listing
   , listWorlds
-    -- * Deletion (stub)
+    -- * Deletion
   , deleteNamedWorld
   ) where
 
@@ -56,12 +56,14 @@ import System.Directory
   , removeDirectoryRecursive
   )
 import System.FilePath (isAbsolute, (</>))
+import System.IO.Error (isDoesNotExistError)
 
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..))
 import Actor.UI (UiState(..))
 import Seer.Config (configFromUi)
 import Seer.Config.Snapshot (snapshotFromUi, loadSnapshot)
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
+import Seer.Persistence.Name (validatePersistenceName)
 import Seer.World.Persist.Types
   ( WorldPluginDataDirectory(..)
   , WorldExternalDataSourceSnapshot(..)
@@ -195,54 +197,57 @@ saveNamedWorldWithPluginsAndExternalDataAndHooks
   -> [WorldPluginDataDirectory]
   -> [WorldExternalDataSourceSnapshot]
   -> IO (Either Text ())
-saveNamedWorldWithPluginsAndExternalDataAndHooks hooks name uiSnap world pluginDirs externalDataSources = do
-  dir <- worldDir
-  let nameStr   = Text.unpack name
-      worldPath = dir </> nameStr
-      topoFile  = worldPath </> "world.topo"
-  result <- try @IOException $ do
-    createDirectoryIfMissing True dir
+saveNamedWorldWithPluginsAndExternalDataAndHooks hooks name uiSnap world pluginDirs externalDataSources =
+  case validatePersistenceName name of
+    Left err -> pure (Left err)
+    Right () -> do
+      dir <- worldDir
+      let nameStr   = Text.unpack name
+          worldPath = dir </> nameStr
+          topoFile  = worldPath </> "world.topo"
+      result <- try @IOException $ do
+        createDirectoryIfMissing True dir
 
-    let provenance = makeProvenance uiSnap
-        snapshot = snapshotFromUi uiSnap name
-        worldForSave = normalizeSaveWorldManifest world
-    now <- getCurrentTime
-    preparedDirs <- either (fail . Text.unpack) pure (preparePluginDataDirs pluginDirs)
-    let pluginDataEntries =
-          [ (pName, archiveDir)
-          | PreparedPluginDataDir pName _sourceDir archiveDir <- preparedDirs
-          ]
-    let manifest = WorldSaveManifest
-          { wsmName       = name
-          , wsmSeed       = uiSeed uiSnap
-          , wsmChunkSize  = uiChunkSize uiSnap
-          , wsmCreatedAt  = now
-          , wsmChunkCount = chunkCount worldForSave
-          , wsmOverlayNames = twOverlayManifest worldForSave
-          , wsmWeatherLayers = weatherLayersForWorld worldForSave
-          , wsmPluginData = pluginDataEntries
-          , wsmExternalDataSources = externalDataSources
-          }
-        extraFiles =
-          [ ("config.json", BSL.toStrict (encode snapshot))
-          , ("meta.json", BSL.toStrict (encode manifest))
-          ]
-        pluginCopyHooks = defaultPluginDataCopyHooks
-          { pdchBeforeEntryOpen = wshBeforePluginDataEntryOpen hooks
-          }
-        bundleHooks = defaultBundleSaveHooks
-          { bshPopulateStaging = \stagingPath ->
-              mapM_ (copyPluginDataDir pluginCopyHooks stagingPath) preparedDirs
-          }
-    topoResult <- saveWorldBundleWithProvenanceAndHooks
-      bundleHooks topoFile provenance extraFiles worldForSave
-    case topoResult of
-      Left err -> fail ("Terrain+overlay save failed: " <> show err)
-      Right () -> pure ()
+        let provenance = makeProvenance uiSnap
+            snapshot = snapshotFromUi uiSnap name
+            worldForSave = normalizeSaveWorldManifest world
+        now <- getCurrentTime
+        preparedDirs <- either (fail . Text.unpack) pure (preparePluginDataDirs pluginDirs)
+        let pluginDataEntries =
+              [ (pName, archiveDir)
+              | PreparedPluginDataDir pName _sourceDir archiveDir <- preparedDirs
+              ]
+        let manifest = WorldSaveManifest
+              { wsmName       = name
+              , wsmSeed       = uiSeed uiSnap
+              , wsmChunkSize  = uiChunkSize uiSnap
+              , wsmCreatedAt  = now
+              , wsmChunkCount = chunkCount worldForSave
+              , wsmOverlayNames = twOverlayManifest worldForSave
+              , wsmWeatherLayers = weatherLayersForWorld worldForSave
+              , wsmPluginData = pluginDataEntries
+              , wsmExternalDataSources = externalDataSources
+              }
+            extraFiles =
+              [ ("config.json", BSL.toStrict (encode snapshot))
+              , ("meta.json", BSL.toStrict (encode manifest))
+              ]
+            pluginCopyHooks = defaultPluginDataCopyHooks
+              { pdchBeforeEntryOpen = wshBeforePluginDataEntryOpen hooks
+              }
+            bundleHooks = defaultBundleSaveHooks
+              { bshPopulateStaging = \stagingPath ->
+                  mapM_ (copyPluginDataDir pluginCopyHooks stagingPath) preparedDirs
+              }
+        topoResult <- saveWorldBundleWithProvenanceAndHooks
+          bundleHooks topoFile provenance extraFiles worldForSave
+        case topoResult of
+          Left err -> fail ("Terrain+overlay save failed: " <> show err)
+          Right () -> pure ()
 
-  pure $ case result of
-    Left err -> Left (Text.pack (show err))
-    Right () -> Right ()
+      pure $ case result of
+        Left err -> Left (Text.pack (show err))
+        Right () -> Right ()
 
 -------------------------------------------------------------------------------
 -- Load
@@ -254,36 +259,38 @@ saveNamedWorldWithPluginsAndExternalDataAndHooks hooks name uiSnap world pluginD
 loadNamedWorld
   :: Text
   -> IO (Either Text (WorldSaveManifest, ConfigSnapshot, TerrainWorld))
-loadNamedWorld name = do
-  dir <- worldDir
-  let nameStr   = Text.unpack name
-      worldPath = dir </> nameStr
-      topoFile  = worldPath </> "world.topo"
-      cfgFile   = worldPath </> "config.json"
-      metaFile  = worldPath </> "meta.json"
+loadNamedWorld name = case validatePersistenceName name of
+  Left err -> pure (Left err)
+  Right () -> do
+    dir <- worldDir
+    let nameStr   = Text.unpack name
+        worldPath = dir </> nameStr
+        topoFile  = worldPath </> "world.topo"
+        cfgFile   = worldPath </> "config.json"
+        metaFile  = worldPath </> "meta.json"
 
-  exists <- doesDirectoryExist worldPath
-  if not exists
-    then pure (Left ("World directory not found: " <> name))
-    else do
-      -- 1. Load manifest
-      metaResult <- loadJsonFile metaFile
-      case metaResult of
-        Left err -> pure (Left ("Failed to load meta.json: " <> err))
-        Right manifest -> do
-          -- 2. Load config snapshot
-          cfgResult <- loadSnapshot cfgFile
-          case cfgResult of
-            Left err -> pure (Left ("Failed to load config.json: " <> err))
-            Right snapshot -> do
-              -- 3. Load terrain
-              topoResult <- loadWorldBundleWithProvenance BestEffort topoFile
-              case topoResult of
-                Left err ->
-                  pure (Left ("Failed to load world bundle: "
-                        <> Text.pack (show err)))
-                Right (_prov, world) ->
-                  pure (Right (manifest, snapshot, world))
+    exists <- doesDirectoryExist worldPath
+    if not exists
+      then pure (Left ("World directory not found: " <> name))
+      else do
+        -- 1. Load manifest
+        metaResult <- loadJsonFile metaFile
+        case metaResult of
+          Left err -> pure (Left ("Failed to load meta.json: " <> err))
+          Right manifest -> do
+            -- 2. Load config snapshot
+            cfgResult <- loadSnapshot cfgFile
+            case cfgResult of
+              Left err -> pure (Left ("Failed to load config.json: " <> err))
+              Right snapshot -> do
+                -- 3. Load terrain
+                topoResult <- loadWorldBundleWithProvenance BestEffort topoFile
+                case topoResult of
+                  Left err ->
+                    pure (Left ("Failed to load world bundle: "
+                          <> Text.pack (show err)))
+                  Right (_prov, world) ->
+                    pure (Right (manifest, snapshot, world))
 
 -- Viewport overlay adoption seam: keep world-level discovery/manifest
 -- validation in 'loadWorldBundleWithProvenance' inside 'loadNamedWorld'.
@@ -300,19 +307,22 @@ loadNamedSparseOverlayChunk
   -> Text  -- ^ Overlay name
   -> Int   -- ^ Chunk id
   -> IO (Either Text OverlayChunk)
-loadNamedSparseOverlayChunk worldName overlayName chunkId = do
-  dir <- worldDir
-  let worldPath = dir </> Text.unpack worldName
-      topoFile = worldPath </> "world.topo"
-      sidecarDir = overlayDirPath topoFile
-  exists <- doesDirectoryExist worldPath
-  if not exists
-    then pure (Left ("World directory not found: " <> worldName))
-    else do
-      chunkResult <- loadOverlayChunk sidecarDir overlayName chunkId
-      pure $ case chunkResult of
-        Left err -> Left (renderOverlayStorageError err)
-        Right chunk -> Right chunk
+loadNamedSparseOverlayChunk worldName overlayName chunkId =
+  case validatePersistenceName worldName of
+    Left err -> pure (Left err)
+    Right () -> do
+      dir <- worldDir
+      let worldPath = dir </> Text.unpack worldName
+          topoFile = worldPath </> "world.topo"
+          sidecarDir = overlayDirPath topoFile
+      exists <- doesDirectoryExist worldPath
+      if not exists
+        then pure (Left ("World directory not found: " <> worldName))
+        else do
+          chunkResult <- loadOverlayChunk sidecarDir overlayName chunkId
+          pure $ case chunkResult of
+            Left err -> Left (renderOverlayStorageError err)
+            Right chunk -> Right chunk
 
 -------------------------------------------------------------------------------
 -- Snapshot conversion
@@ -435,22 +445,31 @@ isAtomicSaveDirectory entry manifest =
   in entry == committedName <> ".saving" || entry == committedName <> ".old"
 
 -------------------------------------------------------------------------------
--- Deletion (stub)
+-- Deletion
 -------------------------------------------------------------------------------
 
--- | Delete a named world directory and all its contents.
+-- | Delete only the named world bundle. External provider-owned data sources
+-- referenced by its manifest are not opened, mutated, or removed.
 deleteNamedWorld :: Text -> IO (Either Text ())
-deleteNamedWorld name = do
-  dir <- worldDir
-  let worldPath = dir </> Text.unpack name
-  exists <- doesDirectoryExist worldPath
-  if not exists
-    then pure (Left ("World not found: " <> name))
-    else do
-      result <- try @IOException (removeDirectoryRecursive worldPath)
-      pure $ case result of
-        Left err -> Left (Text.pack (show err))
-        Right () -> Right ()
+deleteNamedWorld name = case validatePersistenceName name of
+  Left err -> pure (Left err)
+  Right () -> do
+    dir <- worldDir
+    let worldPath = dir </> Text.unpack name
+    exists <- doesDirectoryExist worldPath
+    if not exists
+      then pure (Left ("World not found: " <> name))
+      else do
+        manifestResult <- loadJsonFile (worldPath </> "meta.json")
+        case manifestResult of
+          Right manifest | wsmName manifest == name -> do
+            result <- try @IOException (removeDirectoryRecursive worldPath)
+            pure $ case result of
+              Left err
+                | isDoesNotExistError err -> Left ("World not found: " <> name)
+                | otherwise -> Left ("Failed to delete world: " <> Text.pack (show err))
+              Right () -> Right ()
+          _ -> pure (Left ("World not found: " <> name))
 
 -------------------------------------------------------------------------------
 -- Internal helpers
