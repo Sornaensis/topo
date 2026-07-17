@@ -283,7 +283,6 @@ test-suite topo-seer-test
       Spec.DayNight
       Spec.EditorBrush
       Spec.EditorHistory
-      Spec.FeatureMatrix
       Spec.Headless
       Spec.HeadlessScreenshot
       Spec.HexAlignment
