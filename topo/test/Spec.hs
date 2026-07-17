@@ -56,7 +56,6 @@ import qualified Spec.TerrainFormModifiers
 import qualified Spec.PluginDependency
 import qualified Spec.PluginRPC
 import qualified Spec.PluginStream
-import qualified Spec.PluginDocs
 import qualified Spec.PluginIntegration
 import qualified Spec.DataResource
 import qualified Spec.DataResourceValidation
@@ -127,7 +126,6 @@ main = do
     Spec.PluginDependency.spec
     Spec.PluginRPC.spec
     Spec.PluginStream.spec
-    Spec.PluginDocs.spec
     Spec.PluginIntegration.spec
     Spec.DataResource.spec
     Spec.DataResourceValidation.spec

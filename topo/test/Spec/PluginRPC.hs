@@ -1356,22 +1356,22 @@ spec = describe "Plugin.RPC" $ do
   ------------------------------------
   describe "Manifest v3 schema and golden docs" $ do
     it "matches the committed JSON Schema golden" $ do
-      golden <- readGoldenJSON "docs/plugin-dev/manifest-v3.schema.json"
+      golden <- readGoldenJSON "docs/plugin/manifest-v3.schema.json"
       golden `shouldBe` manifestV3Schema
 
     it "matches the provider example golden" $ do
-      golden <- readGoldenJSON "docs/plugin-dev/examples/manifest-v3-provider.json"
+      golden <- readGoldenJSON "docs/plugin/examples/provider.json"
       golden `shouldBe` manifestV3ProviderExample
 
     it "matches the consumer example golden" $ do
-      golden <- readGoldenJSON "docs/plugin-dev/examples/manifest-v3-consumer.json"
+      golden <- readGoldenJSON "docs/plugin/examples/consumer.json"
       golden `shouldBe` manifestV3ConsumerExample
 
     it "keeps schema and examples backend-neutral" $ do
       bytes <- mconcat <$> traverse readGoldenBytes
-        [ "docs/plugin-dev/manifest-v3.schema.json"
-        , "docs/plugin-dev/examples/manifest-v3-provider.json"
-        , "docs/plugin-dev/examples/manifest-v3-consumer.json"
+        [ "docs/plugin/manifest-v3.schema.json"
+        , "docs/plugin/examples/provider.json"
+        , "docs/plugin/examples/consumer.json"
         ]
       let lowered = map toLower (BLC.unpack bytes)
           schemaText = map toLower (BLC.unpack (encode manifestV3Schema))

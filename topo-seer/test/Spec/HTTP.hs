@@ -1962,7 +1962,7 @@ spec = describe "Seer.HTTP.Server" $ do
   it "matches the published OpenAPI artifact" $ do
     mPath <- publishedOpenApiPath
     case mPath of
-      Nothing -> pendingWith "repository docs/api/openapi.json is not present in this package-only test run"
+      Nothing -> pendingWith "repository docs/operator/openapi.json is not present in this package-only test run"
       Just path -> do
         published <- LBS.readFile path
         published `shouldBe` Aeson.encode (openApiDocument publicHttpRouteSpecs)
@@ -3782,8 +3782,8 @@ publishedOpenApiPath = do
   -- Keep this repository-only check from escaping package-only sdist test runs
   -- under .stack-work and accidentally reading the outer checkout's docs.
   firstExisting
-    [ cwd </> "docs" </> "api" </> "openapi.json"
-    , takeDirectory cwd </> "docs" </> "api" </> "openapi.json"
+    [ cwd </> "docs" </> "operator" </> "openapi.json"
+    , takeDirectory cwd </> "docs" </> "operator" </> "openapi.json"
     ]
   where
     firstExisting [] = pure Nothing
