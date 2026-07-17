@@ -147,18 +147,19 @@ main = hspec $ do
       world <- pure (habitableWorld [0] 8)
       first <- runLegacyGenerator schema world 73 0.3
       second <- runLegacyGenerator schema world 73 0.3
+      differentSeed <- runLegacyGenerator schema world 74 0.3
       gtrOverlay first `shouldBe` gtrOverlay second
+      gtrOverlay first `shouldNotBe` gtrOverlay differentSeed
       overlay <- decodeGeneratedOverlay schema first
       overlayTileCount overlay `shouldSatisfy` (> 0)
       allOverlayFloatsBounded overlay `shouldBe` True
 
     it "responds monotonically to the habitability threshold" $ do
       schema <- loadTestSchema
-      let world = habitableWorld [0] 8
-      low <- runLegacyGenerator schema world 91 0.3 >>= decodeGeneratedOverlay schema
-      high <- runLegacyGenerator schema world 91 0.95 >>= decodeGeneratedOverlay schema
-      overlayTileCount low `shouldSatisfy` (> 0)
-      overlayTileCount high `shouldBe` 0
+      let world = thresholdSensitiveWorld 8
+      mapM_ (assertMonotonicThreshold schema world) [0 .. 20]
+      empty <- runLegacyGenerator schema world 91 0.95 >>= decodeGeneratedOverlay schema
+      overlayTileCount empty `shouldBe` 0
 
     it "limits scoped terrain and overlay output to resolved chunks" $ do
       schema <- loadTestSchema
@@ -254,6 +255,34 @@ habitableWorld chunkIds chunkSize = foldl addChunk base chunkIds
         . setClimateChunk (ChunkId chunkId) climate
         . setTerrainChunk (ChunkId chunkId) terrain
         $ world
+
+thresholdSensitiveWorld :: Int -> TerrainWorld
+thresholdSensitiveWorld chunkSize =
+  setVegetationChunk (ChunkId 0) vegetation
+    . setClimateChunk (ChunkId 0) climate
+    . setTerrainChunk (ChunkId 0) terrain
+    $ emptyWorld config defaultHexGridMeta
+  where
+    config = WorldConfig { wcChunkSize = chunkSize }
+    tileCount = chunkSize * chunkSize
+    isRich tileIdx = tileIdx `mod` 2 == 0
+    terrain = (emptyTerrainChunk config)
+      { tcElevation = U.replicate tileCount 0.7 }
+    climate = (emptyClimateChunk config)
+      { ccTempAvg = U.generate tileCount (\i -> if isRich i then 0.55 else 0)
+      , ccPrecipAvg = U.generate tileCount (\i -> if isRich i then 0.8 else 0)
+      }
+    vegetation = (emptyVegetationChunk config)
+      { vegCover = U.generate tileCount (\i -> if isRich i then 0.8 else 0)
+      , vegDensity = U.generate tileCount (\i -> if isRich i then 0.8 else 0)
+      }
+
+assertMonotonicThreshold :: OverlaySchema -> TerrainWorld -> Word -> IO ()
+assertMonotonicThreshold schema world seed = do
+  low <- runLegacyGenerator schema world seed 0.25 >>= decodeGeneratedOverlay schema
+  high <- runLegacyGenerator schema world seed 0.75 >>= decodeGeneratedOverlay schema
+  overlayTileCount high `shouldSatisfy` (> 0)
+  overlayTileSet high `shouldSatisfy` (`Set.isSubsetOf` overlayTileSet low)
 
 runLegacyGenerator
   :: OverlaySchema -> TerrainWorld -> Word -> Double -> IO GeneratorTickResult
@@ -410,8 +439,14 @@ overlayChunkIds :: Overlay -> [Int]
 overlayChunkIds = map fst . sparseChunks
 
 overlayTileCount :: Overlay -> Int
-overlayTileCount = sum . map (IntMap.size . chunkTiles . snd) . sparseChunks
-  where chunkTiles (OverlayChunk tiles) = tiles
+overlayTileCount = Set.size . overlayTileSet
+
+overlayTileSet :: Overlay -> Set.Set (Int, Int)
+overlayTileSet overlay = Set.fromList
+  [ (chunkId, tileId)
+  | (chunkId, OverlayChunk tiles) <- sparseChunks overlay
+  , tileId <- IntMap.keys tiles
+  ]
 
 allOverlayFloatsBounded :: Overlay -> Bool
 allOverlayFloatsBounded overlay = and

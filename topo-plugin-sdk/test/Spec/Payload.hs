@@ -205,13 +205,17 @@ spec = describe "SDK payload helpers" $ do
         DenseData _ -> expectationFailure "expected sparse overlay"
       Nothing -> expectationFailure "scoped overlay did not decode"
 
-  it "fails closed when scoped owned-overlay output is unavailable" $ do
+  it "fails closed when scoped owned-overlay output is unavailable or mismatched" $ do
     let config = WorldConfig { wcChunkSize = 1 }
         world = emptyWorld config defaultHexGridMeta
-        context = testGeneratorContext
+        unavailable = testGeneratorContext
           scopedGeneratorResultScope { risOwnedOverlayIdentity = Nothing } world
-    generatorResultFromScopedTerrainAndOverlay context world (emptyOverlay testSchema)
-      `shouldSatisfy` either (const True) (const False)
+        mismatched = testGeneratorContext
+          scopedGeneratorResultScope { risOwnedOverlayIdentity = Just "other" } world
+        result context = generatorResultFromScopedTerrainAndOverlay
+          context world (emptyOverlay testSchema)
+    result unavailable `shouldSatisfy` either (const True) (const False)
+    result mismatched `shouldSatisfy` either (const True) (const False)
 
 showsContains :: Show a => a -> String -> Bool
 showsContains actual expected = expected `isInfixOf` show actual

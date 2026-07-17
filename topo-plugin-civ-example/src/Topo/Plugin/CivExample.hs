@@ -398,14 +398,18 @@ seedCivilizationOverlay seed threshold schema world =
       case candidates of
         [] -> Nothing
         _ ->
-          let anchor = fst (foldl1 (lowerHash chunkId) candidates)
+          let anchor = fst (foldl1 (betterAnchor chunkId) candidates)
               selected = filter (isSelected chunkId anchor . fst) candidates
               records = IntMap.fromList
                 [ (tileIdx, seedRecord seed chunkId tileIdx score schema)
                 | (tileIdx, score) <- selected
                 ]
           in Just (OverlayChunk records)
-    lowerHash chunkId left@(leftIdx, _) right@(rightIdx, _)
+    -- Choosing the most habitable tile keeps threshold increases monotonic:
+    -- while a chunk has any candidates, its anchor cannot change.
+    betterAnchor chunkId left@(leftIdx, leftScore) right@(rightIdx, rightScore)
+      | rightScore > leftScore = right
+      | rightScore < leftScore = left
       | tileHash seed chunkId rightIdx < tileHash seed chunkId leftIdx = right
       | otherwise = left
     isSelected chunkId anchor tileIdx =
