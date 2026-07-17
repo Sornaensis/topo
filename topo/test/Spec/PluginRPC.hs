@@ -1438,6 +1438,24 @@ spec = describe "Plugin.RPC" $ do
       resolveInvocationScope 5 Nothing [CapReadTerrain] (scopeTestContext InvocationGenerator)
         `shouldSatisfy` isLeft
 
+    it "allows a scoped generator to seed its owned overlay without reading it" $ do
+      let broad = legacyGeneratorScope scopeTestBudgets
+          declaration = broad
+            { risdOutput = (risdOutput broad)
+                { rsoOwnedOverlay = True, rsoGeneratorMetadata = False }
+            }
+          declarations = RPCInvocationScopes 1 (Just declaration) Nothing
+          context = scopeTestContext InvocationGenerator
+      validateInvocationScopeDeclarations 5 True Nothing True (Just declarations)
+        `shouldBe` []
+      case resolveInvocationScope 5 (Just declaration)
+          [CapReadTerrain, CapWriteOverlay] context of
+        Left err -> expectationFailure (show err)
+        Right scope -> do
+          risOwnOverlayReadChunkIds scope `shouldBe` IntSet.empty
+          risOwnedOverlayIdentity scope `shouldBe` Just "civilization"
+          risOwnOverlayWriteChunkIds scope `shouldBe` ricWorldChunkIds context
+
     it "intersects declarations, capabilities, exact chunks, and budgets deterministically" $ do
       let selector = SelectOverlayIntersection ["weather", "$own"]
           declaration = scopeTestDeclaration selector
@@ -2645,6 +2663,40 @@ spec = describe "Plugin.RPC" $ do
         case result of
           Left (RPCProtocolError err) -> err `shouldSatisfy` Text.isInfixOf "exact host world facts"
           other -> expectationFailure ("expected pre-send scoped direct rejection, got " <> show other)
+
+    it "applies an authorized scoped-v5 generator overlay to the host world" $
+      withConnectedTransports "rpc-generator-scoped-overlay-allowed" $ \host plugin -> do
+        let schema = overlaySchemaNamed "test-plugin"
+            initialOverlay = emptyOverlay schema
+            world = scopedTerrainWorld
+              { twOverlays = insertOverlay initialOverlay (twOverlays scopedTerrainWorld) }
+            manifest = scopedGeneratorManifest
+              { rmOverlay = Just (RPCOverlayDecl "test-plugin.toposchema")
+              , rmCapabilities = [CapReadTerrain, CapWriteOverlay]
+              , rmInvocationScopes = Just (RPCInvocationScopes 1
+                  (Just (scopedGeneratorDeclaration True)) Nothing)
+              }
+            conn = newRPCConnection manifest host Map.empty
+            overlayPayload = overlayPayloadAtChunk 0 41
+        done <- newEmptyMVar
+        _ <- forkIO (runGeneratorStageWithCaps PluginCore.allowAllCapabilities conn world >>= putMVar done)
+        request <- recvEnvelopeFrom plugin
+        case Aeson.fromJSON (envPayload request) of
+          Aeson.Error err -> expectationFailure err
+          Aeson.Success invoke -> case igInvocationScope invoke >>= risbDescriptor of
+            Just scope -> do
+              risOwnedOverlayIdentity scope `shouldBe` Just "test-plugin"
+              risOwnOverlayWriteChunkIds scope `shouldBe` IntSet.fromList [0, 1]
+            Nothing -> expectationFailure "expected scoped generator binding"
+        sendGeneratorResult plugin request GeneratorResult
+          { grTerrain = Null
+          , grOverlay = Just overlayPayload
+          , grMetadata = Nothing
+          }
+        (outcome, worldAfter) <- takeGeneratorStageResult done
+        outcome `shouldBe` Right ()
+        fmap overlayToJSON (lookupOverlay "test-plugin" (twOverlays worldAfter))
+          `shouldBe` Just overlayPayload
 
     it "rejects unauthorized scoped generator output atomically before overlay mutation" $
       withConnectedTransports "rpc-generator-scoped-output-atomic" $ \host plugin -> do

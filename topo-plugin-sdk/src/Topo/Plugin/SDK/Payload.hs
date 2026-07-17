@@ -33,10 +33,12 @@ module Topo.Plugin.SDK.Payload
   , diffTerrainWorldAgainstSnapshot
     -- * Typed result constructors
   , simulationResultFromOverlay
+  , simulationResultFromScopedOverlay
   , simulationResultWithTerrainWrites
   , simulationResultWithTerrainWritesWithLimits
   , generatorResultFromTerrain
   , generatorResultFromScopedTerrain
+  , generatorResultFromScopedTerrainAndOverlay
   , generatorResultFromTerrainWithLimits
   , generatorResultFromTerrainAndOverlay
   , generatorResultFromTerrainAndOverlayWithLimits
@@ -66,9 +68,9 @@ import Topo.Export
   , encodeVegetationChunk
   )
 import Topo.Hex (defaultHexGridMeta)
-import Topo.Overlay (Overlay)
-import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON)
-import Topo.Overlay.Schema (OverlaySchema)
+import Topo.Overlay (Overlay(..))
+import Topo.Overlay.JSON (overlayFromJSON, overlayToJSON, overlayToScopedJSON)
+import Topo.Overlay.Schema (OverlaySchema(..))
 import Topo.Plugin.RPC
   ( RPCPayloadLimits
   , applyGeneratorTerrainValue
@@ -420,6 +422,20 @@ simulationResultFromOverlay overlay =
     { strOverlay = encodeOverlayPayload overlay
     }
 
+-- | Build a simulation result containing only owned-overlay chunks granted by
+-- the resolved scope. Fails closed when owned-overlay output is unavailable or
+-- belongs to another overlay.
+simulationResultFromScopedOverlay
+  :: SimulationContext
+  -> Overlay
+  -> Either Text SimulationTickResult
+simulationResultFromScopedOverlay context overlay = do
+  validateOwnedOverlayOutput (scScope context) overlay
+  Right defaultSimulationTickResult
+    { strOverlay = overlayToScopedJSON
+        (risOwnOverlayWriteChunkIds (scScope context)) overlay
+    }
+
 -- | Build a simulation result from updated overlay and terrain writes.
 simulationResultWithTerrainWrites
   :: Overlay
@@ -467,6 +483,32 @@ generatorResultFromScopedTerrain context world = do
   terrainPayload <- terrainWorldToScopedPayload
     (risTerrainOutputSections scope) (risTerrainOutputChunkIds scope) world
   Right defaultGeneratorTickResult { gtrTerrain = terrainPayload }
+
+-- | Build a scoped generator result from terrain plus the plugin-owned overlay.
+-- Terrain sections and both terrain and overlay chunk IDs are restricted to the
+-- exact resolved output grant.
+generatorResultFromScopedTerrainAndOverlay
+  :: GeneratorContext
+  -> TerrainWorld
+  -> Overlay
+  -> Either Text GeneratorTickResult
+generatorResultFromScopedTerrainAndOverlay context world overlay = do
+  let scope = gcScope context
+  validateOwnedOverlayOutput scope overlay
+  terrainPayload <- terrainWorldToScopedPayload
+    (risTerrainOutputSections scope) (risTerrainOutputChunkIds scope) world
+  Right defaultGeneratorTickResult
+    { gtrTerrain = terrainPayload
+    , gtrOverlay = Just (overlayToScopedJSON
+        (risOwnOverlayWriteChunkIds scope) overlay)
+    }
+
+validateOwnedOverlayOutput :: ResolvedInvocationScope -> Overlay -> Either Text ()
+validateOwnedOverlayOutput scope overlay = case risOwnedOverlayIdentity scope of
+  Nothing -> Left "resolved scope did not grant owned-overlay output"
+  Just identity
+    | identity == osName (ovSchema overlay) -> Right ()
+    | otherwise -> Left ("resolved owned-overlay identity does not match overlay: " <> identity)
 
 -- | Build a generator result using the configured terrain binary budget.
 generatorResultFromTerrainWithLimits

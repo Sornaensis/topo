@@ -541,6 +541,24 @@ spec = describe "SDK runner pipe integration" $ do
       risScopeId scopeSeen `shouldBe` risScopeId emptyGeneratorResolvedScope
       shutdownAndWait host done
 
+  it "accepts scoped generator overlay seeds and rejects out-of-scope chunks" $
+    withTransportPair $ \host plugin -> do
+      done <- startSession (nativeOverlayGeneratorPlugin False) plugin
+      sendEnvelope host (nativeGeneratorInvoke overlayGeneratorResolvedScope)
+      response <- recvEnvelope host
+      envType response `shouldBe` MsgGeneratorResult
+      case Aeson.fromJSON (envPayload response) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success (result :: GeneratorResult) ->
+          grOverlay result `shouldBe` Just scopedGeneratorOverlayPayload
+      shutdownAndWait host done
+      withTransportPair $ \host2 plugin2 -> do
+        done2 <- startSession (nativeOverlayGeneratorPlugin True) plugin2
+        sendEnvelope host2 (nativeGeneratorInvoke overlayGeneratorResolvedScope)
+        rejected <- recvEnvelope host2
+        envType rejected `shouldBe` MsgError
+        shutdownAndWait host2 done2
+
   it "delivers only scoped simulation overlays and rejects out-of-scope overlay writes" $
     withTransportPair $ \host plugin -> do
       seen <- newEmptyMVar
@@ -2110,6 +2128,48 @@ nativeNoTerrainSimulationPlugin = defaultPluginDef
       , ssdTick = \_ -> pure (Right defaultSimulationTickResult)
       }
   }
+
+nativeOverlayGeneratorPlugin :: Bool -> PluginDef
+nativeOverlayGeneratorPlugin emitBadChunk = defaultPluginDef
+  { pdName = "native-overlay-generator"
+  , pdVersion = "1.0"
+  , pdSchemaFile = Just "native.toposchema"
+  , pdGeneratorScope = Just GeneratorScopeDef
+      { gsdInsertAfter = "erosion"
+      , gsdRequires = []
+      , gsdScope = overlayGeneratorScope
+      , gsdRun = \_ -> pure (Right defaultGeneratorTickResult
+          { gtrOverlay = Just (if emitBadChunk
+              then sparseOverlayPayload 2
+              else scopedGeneratorOverlayPayload)
+          })
+      }
+  }
+
+overlayGeneratorScope :: RPCInvocationScopeDecl
+overlayGeneratorScope = emptyGeneratorScope
+  { risdOutput = (risdOutput emptyGeneratorScope) { rsoOwnedOverlay = True }
+  }
+
+overlayGeneratorResolvedScope :: ResolvedInvocationScope
+overlayGeneratorResolvedScope = withScopeDigest emptyGeneratorResolvedScope
+  { risOwnedOverlayIdentity = Just "native-overlay-generator"
+  , risOwnOverlayWriteChunkIds = IntSet.singleton 1
+  }
+
+scopedGeneratorOverlayPayload :: Value
+scopedGeneratorOverlayPayload = sparseOverlayPayload 1
+
+sparseOverlayPayload :: Int -> Value
+sparseOverlayPayload chunkId = object
+  [ "storage" .= ("sparse" :: Text)
+  , "chunks" .=
+      [ object
+          [ "chunk_id" .= chunkId
+          , "tiles" .= ([] :: [Value])
+          ]
+      ]
+  ]
 
 nativeGeneratorPlugin :: MVar (Bool, ResolvedInvocationScope) -> Bool -> PluginDef
 nativeGeneratorPlugin seen emitMetadata = defaultPluginDef

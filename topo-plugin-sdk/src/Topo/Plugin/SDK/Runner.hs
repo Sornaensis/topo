@@ -2634,9 +2634,11 @@ validateGeneratorResult limits scope world result = do
     , grMetadata = gtrMetadata result
     })
   _ <- applyGeneratorTerrainValueScopedWithLimits limits scope world (gtrTerrain result)
-  case gtrOverlay result of
-    Nothing -> Right ()
-    Just _ -> Left "scoped generator result emitted an unavailable owned overlay"
+  case (risOwnedOverlayIdentity scope, gtrOverlay result) of
+    (_, Nothing) -> Right ()
+    (Nothing, Just _) -> Left "scoped generator result emitted an unavailable owned overlay"
+    (Just _, Just overlay) -> validateOverlayPayloadChunks "generator owned-overlay output"
+      (risOwnOverlayWriteChunkIds scope) overlay
   case gtrMetadata result of
     Nothing -> Right ()
     Just _ | risGeneratorMetadataOutput scope -> Right ()

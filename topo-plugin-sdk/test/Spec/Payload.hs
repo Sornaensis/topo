@@ -13,7 +13,10 @@ import qualified Data.Vector.Unboxed as U
 import Test.Hspec
 
 import Topo.Hex (HexGridMeta(..), defaultHexGridMeta)
-import Topo.Overlay (Overlay, emptyOverlay, overlayName)
+import Topo.Overlay
+  ( Overlay(..), OverlayChunk(..), OverlayData(..), defaultRecord, emptyOverlay
+  , overlayName )
+import Topo.Overlay.JSON (overlayFromJSON)
 import Topo.Overlay.Schema
   ( OverlaySchema(..)
   , OverlayStorage(..)
@@ -176,6 +179,40 @@ spec = describe "SDK payload helpers" $ do
         strOverlay result `shouldBe` encodeOverlayPayload overlay
         strTerrainWrites result `shouldSatisfy` maybe False isObject
 
+  it "restricts scoped terrain and owned-overlay generator output" $ do
+    let config = WorldConfig { wcChunkSize = 1 }
+        terrainChunk = emptyTerrainChunk config
+        world = (emptyWorld config defaultHexGridMeta)
+          { twTerrain = IntMap.fromList [(0, terrainChunk), (1, terrainChunk)] }
+        record = defaultRecord testSchema
+        overlay = (emptyOverlay testSchema)
+          { ovData = SparseData (IntMap.fromList
+              [ (0, OverlayChunk (IntMap.singleton 0 record))
+              , (1, OverlayChunk (IntMap.singleton 0 record))
+              ])
+          }
+        context = testGeneratorContext scopedGeneratorResultScope world
+    result <- case generatorResultFromScopedTerrainAndOverlay context world overlay of
+      Left err -> expectationFailure (show err) >> fail "scoped generator result"
+      Right value -> pure value
+    decodedTerrain <- case decodeTerrainPayload (gtrTerrain result) of
+      Left err -> expectationFailure (show err) >> fail "scoped terrain"
+      Right value -> pure value
+    IntMap.keys (twTerrain decodedTerrain) `shouldBe` [0]
+    case gtrOverlay result >>= either (const Nothing) Just . overlayFromJSON testSchema of
+      Just decoded -> case ovData decoded of
+        SparseData chunks -> IntMap.keys chunks `shouldBe` [1]
+        DenseData _ -> expectationFailure "expected sparse overlay"
+      Nothing -> expectationFailure "scoped overlay did not decode"
+
+  it "fails closed when scoped owned-overlay output is unavailable" $ do
+    let config = WorldConfig { wcChunkSize = 1 }
+        world = emptyWorld config defaultHexGridMeta
+        context = testGeneratorContext
+          scopedGeneratorResultScope { risOwnedOverlayIdentity = Nothing } world
+    generatorResultFromScopedTerrainAndOverlay context world (emptyOverlay testSchema)
+      `shouldSatisfy` either (const True) (const False)
+
 showsContains :: Show a => a -> String -> Bool
 showsContains actual expected = expected `isInfixOf` show actual
 
@@ -185,6 +222,35 @@ isObject _ = False
 
 memptyTerrainWrites :: TerrainWrites
 memptyTerrainWrites = emptyTerrainWrites
+
+scopedGeneratorResultScope :: ResolvedInvocationScope
+scopedGeneratorResultScope = ResolvedInvocationScope
+  { risScopeId = "payload-scoped-result"
+  , risKind = InvocationGenerator
+  , risTerrainInputSections = Set.singleton TerrainElevation
+  , risTerrainInputChunkIds = IntSet.fromList [0, 1]
+  , risDependencyOverlayChunkIds = Map.empty
+  , risOwnOverlayReadChunkIds = IntSet.empty
+  , risTerrainOutputSections = Set.singleton TerrainElevation
+  , risTerrainOutputChunkIds = IntSet.singleton 0
+  , risOwnedOverlayIdentity = Just "test_overlay"
+  , risOwnOverlayWriteChunkIds = IntSet.singleton 1
+  , risGeneratorMetadataOutput = False
+  , risDataResource = Nothing
+  , risBudgets = RPCScopeBudgets 100000 100000 100000
+  }
+
+testGeneratorContext :: ResolvedInvocationScope -> TerrainWorld -> GeneratorContext
+testGeneratorContext scope world = GeneratorContext
+  { gcParams = Map.empty
+  , gcTerrain = Just world
+  , gcTerrainPayload = Nothing
+  , gcSeed = 0
+  , gcScope = scope
+  , gcLog = \_ -> pure ()
+  , gcProgress = \_ _ -> pure ()
+  , gcWorldPath = Nothing
+  }
 
 testContext :: PluginContext
 testContext = PluginContext

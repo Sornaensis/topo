@@ -487,7 +487,7 @@ isLegacyGeneratorDeclaration hasOverlay declaration = declaration == expected
       }
 
 validateDeclaration :: Bool -> RPCInvocationKind -> [Text] -> Bool -> Text -> RPCInvocationScopeDecl -> [ScopeError]
-validateDeclaration allowLegacyGeneratorOutputs kind dependencies hasOverlay base declaration = concat
+validateDeclaration allowLegacyGeneratorMetadata kind dependencies hasOverlay base declaration = concat
   [ duplicatesAt (base <> ".input.terrainSections") (map terrainSectionText (rsiTerrainSections input))
   , duplicatesAt (base <> ".input.dependencyOverlays") (rsiDependencyOverlays input)
   , duplicatesAt (base <> ".output.terrainSections") (map terrainSectionText (rsoTerrainSections output))
@@ -509,10 +509,6 @@ validateDeclaration allowLegacyGeneratorOutputs kind dependencies hasOverlay bas
   , [ ScopeError (base <> ".output.ownedOverlay") "owned-overlay output requires an overlay declaration"
     | rsoOwnedOverlay output, not hasOverlay
     ]
-  , [ ScopeError (base <> ".output.ownedOverlay")
-        "scoped generator whole-overlay output is unavailable because generator invocations carry no own-overlay input"
-    | kind == InvocationGenerator, rsoOwnedOverlay output, not allowLegacyGeneratorOutputs
-    ]
   , [ ScopeError (base <> ".input.ownOverlay")
         "simulation scopes must receive the complete plugin-owned overlay"
     | kind == InvocationSimulation, not (rsiOwnOverlay input)
@@ -526,7 +522,7 @@ validateDeclaration allowLegacyGeneratorOutputs kind dependencies hasOverlay bas
     ]
   , [ ScopeError (base <> ".output.generatorMetadata")
         "generator metadata output is unavailable until the host defines a bounded consumer"
-    | kind == InvocationGenerator, rsoGeneratorMetadata output, not allowLegacyGeneratorOutputs
+    | kind == InvocationGenerator, rsoGeneratorMetadata output, not allowLegacyGeneratorMetadata
     ]
   ]
   where
@@ -584,12 +580,6 @@ resolveInvocationScope negotiatedVersion maybeDeclaration capabilities context =
         && rsiOwnOverlay (risdInput declaration)
       then Left (ScopeError "input.ownOverlay"
         "scoped generator own-overlay input is unavailable because generator invocations carry no own-overlay field")
-      else Right ()
-    if maybeDeclaration /= Nothing
-        && kind == InvocationGenerator
-        && rsoOwnedOverlay (risdOutput declaration)
-      then Left (ScopeError "output.ownedOverlay"
-        "scoped generator whole-overlay output is unavailable because generator invocations carry no own-overlay input")
       else Right ()
     if maybeDeclaration /= Nothing && kind == InvocationSimulation
       then if not (rsiOwnOverlay (risdInput declaration))

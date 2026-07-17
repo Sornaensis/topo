@@ -1,7 +1,7 @@
 {
   "name": "civilization",
-  "version": "1.0.0",
-  "description": "Civilization state per hex tile — population, culture, infrastructure",
+  "version": "1.1.0",
+  "description": "Generated civilization state per seeded habitable hex; food and trade are normalized simulation values",
   "storage": "sparse",
   "fields": [
     { "name": "population",      "type": "float", "default": 0.0 },

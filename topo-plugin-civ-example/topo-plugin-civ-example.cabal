@@ -29,6 +29,7 @@ library
     , text
     , topo
     , topo-plugin-sdk
+    , vector
   default-language: Haskell2010
 
 executable topo-plugin-civ-example
@@ -52,6 +53,8 @@ test-suite topo-plugin-civ-example-test
   build-depends:
       aeson
     , base
+    , bytestring
+    , containers
     , directory
     , filepath
     , hspec
@@ -59,4 +62,5 @@ test-suite topo-plugin-civ-example-test
     , topo
     , topo-plugin-civ-example
     , topo-plugin-sdk
+    , vector
   default-language: Haskell2010

@@ -154,10 +154,12 @@ module Topo.Plugin.SDK
   , encodeTerrainWritesPayload
   , encodeTerrainWritesPayloadWithLimits
   , simulationResultFromOverlay
+  , simulationResultFromScopedOverlay
   , simulationResultWithTerrainWrites
   , simulationResultWithTerrainWritesWithLimits
   , generatorResultFromTerrain
   , generatorResultFromScopedTerrain
+  , generatorResultFromScopedTerrainAndOverlay
   , generatorResultFromTerrainWithLimits
   , generatorResultFromTerrainAndOverlay
   , generatorResultFromTerrainAndOverlayWithLimits

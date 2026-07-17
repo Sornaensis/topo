@@ -24,6 +24,8 @@ module Topo.Plugin.SDK.Terrain
     TerrainWorld(..)
     -- * Chunk types
   , TerrainChunk(..)
+  , ClimateChunk(..)
+  , VegetationChunk(..)
   , ChunkId(..)
     -- * World configuration
   , WorldConfig(..)
@@ -39,7 +41,9 @@ module Topo.Plugin.SDK.Terrain
 
 import Topo.Types
   ( ChunkId(..)
+  , ClimateChunk(..)
   , TerrainChunk(..)
+  , VegetationChunk(..)
   , TileCoord(..)
   , TileIndex(..)
   , WorldConfig(..)

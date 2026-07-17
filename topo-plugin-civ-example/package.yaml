@@ -19,6 +19,7 @@ library:
     - text
     - topo
     - topo-plugin-sdk
+    - vector
 
 executables:
   topo-plugin-civ-example:
@@ -35,6 +36,8 @@ tests:
     dependencies:
       - base
       - aeson
+      - bytestring
+      - containers
       - directory
       - filepath
       - hspec
@@ -42,3 +45,4 @@ tests:
       - topo
       - topo-plugin-civ-example
       - topo-plugin-sdk
+      - vector

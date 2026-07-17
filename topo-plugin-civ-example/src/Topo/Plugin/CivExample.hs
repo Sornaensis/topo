@@ -16,12 +16,15 @@ module Topo.Plugin.CivExample
   ) where
 
 import Control.Exception (IOException, try)
+import Data.Bits (shiftR, xor)
 import qualified Data.ByteString as BS
 import Data.Aeson (Value(..))
 import qualified Data.IntMap.Strict as IntMap
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text, pack)
+import Data.Word (Word64)
+import qualified Data.Vector.Unboxed as U
 import Topo.Plugin.SDK
 
 ------------------------------------------------------------------------
@@ -52,8 +55,8 @@ defaultHabitabilityThreshold = 0.3
 civPlugin :: PluginDef
 civPlugin = defaultPluginDef
   { pdName       = "civilization"
-  , pdVersion    = "1.0.0"
-  , pdDescription = Just "Civilization simulation overlay and settlement catalogue"
+  , pdVersion    = "1.1.0"
+  , pdDescription = Just "Generated civilization overlay with an immutable sample catalogue"
   , pdRuntimeTopoMin = Just "1.0"
   , pdSchemaFile = Just "civilization.toposchema"
   , pdDataDirectory = Just "civilization-data"
@@ -108,7 +111,7 @@ civPlugin = defaultPluginDef
           , paramDefault = Bool True
           , paramMin     = Nothing
           , paramMax     = Nothing
-          , paramTooltip = "Enable trade value accumulation between cities"
+          , paramTooltip = "Enable deterministic trade and food bonuses for simulated settlements"
           }
       ]
 
@@ -140,7 +143,7 @@ civPlugin = defaultPluginDef
 civGeneratorScope :: RPCInvocationScopeDecl
 civGeneratorScope = RPCInvocationScopeDecl
   { risdInput = RPCScopeInput allSections SelectAllInvocationChunks [] False
-  , risdOutput = RPCScopeOutput allSections SelectAllInvocationChunks False False
+  , risdOutput = RPCScopeOutput allSections SelectAllInvocationChunks True False
   , risdBudgets = broadScopeBudgets
   }
   where allSections = [TerrainElevation, TerrainClimate, TerrainVegetation]
@@ -161,14 +164,14 @@ broadScopeBudgets = RPCScopeBudgets maxBound maxBound maxBound
 -- Data resources and external data source declarations
 ------------------------------------------------------------------------
 
--- | Settlements data resource — read-only listing of city/village hexes.
+-- | Immutable sample settlements, independent of the generated overlay.
 settlementsResource :: DataResourceDef
 settlementsResource = DataResourceDef
   { drdSchema = DataResourceSchema
       { drsSchemaVersion = currentDataResourceSchemaVersion
       , drsResourceVersion = defaultDataResourceVersion
       , drsName       = "settlements"
-      , drsLabel      = "Settlements"
+      , drsLabel      = "Sample Settlements"
       , drsHexBound   = True
       , drsFields     =
           [ DataFieldDef "name"       DFText  "Name"       False Nothing
@@ -185,14 +188,14 @@ settlementsResource = DataResourceDef
       }
   }
 
--- | Cultures data resource — read-only cultural group listing.
+-- | Immutable sample cultures, independent of the generated overlay.
 culturesResource :: DataResourceDef
 culturesResource = DataResourceDef
   { drdSchema = DataResourceSchema
       { drsSchemaVersion = currentDataResourceSchemaVersion
       , drsResourceVersion = defaultDataResourceVersion
       , drsName       = "cultures"
-      , drsLabel      = "Cultures"
+      , drsLabel      = "Sample Cultures"
       , drsHexBound   = False
       , drsFields     =
           [ DataFieldDef "culture_id" DFText  "Culture ID"  False Nothing
@@ -213,14 +216,14 @@ culturesResource = DataResourceDef
 settlementLedgerSource :: RPCExternalDataSourceDecl
 settlementLedgerSource = RPCExternalDataSourceDecl
   { redsdName = "settlement-ledger"
-  , redsdLabel = "Settlement Ledger"
-  , redsdDescription = "Provider-owned settlement and culture records"
+  , redsdLabel = "Sample Civilization Catalogue"
+  , redsdDescription = "Provider-owned immutable demonstration records, not generated world state"
   , redsdKind = "catalog"
   , redsdCapabilities = [ExternalSourceQuery, ExternalSourceHealth]
   , redsdResources = ["settlements", "cultures"]
   , redsdStatus = defaultRPCExternalDataSourceStatus
       { redssState = ExternalStatusReady
-      , redssMessage = Just "Records are available through the civilization plugin"
+      , redssMessage = Just "Immutable sample records are available through the civilization plugin"
       , redssProviderId = Just "civilization"
       , redssAvailability = Just ExternalAvailabilityAvailable
       , redssHealth = Just ExternalHealthHealthy
@@ -271,15 +274,15 @@ settlementLedgerSource = RPCExternalDataSourceDecl
           }
       ]
   , redsdUiHints = defaultRPCUIHints
-      { ruiDisplayName = Just "Settlement Ledger"
+      { ruiDisplayName = Just "Sample Civilization Catalogue"
       , ruiCategory = Just "External data"
       }
   }
 
--- | Query handler for settlements — returns sample settlement data.
+-- | Query immutable demonstration settlements.
 --
--- Supports 'QueryAll' (list all) and 'QueryByKey' (by name).
--- Returns hardcoded sample data representing the initial world state.
+-- Supports 'QueryAll' (list all) and 'QueryByKey' (by name). These records
+-- deliberately do not reflect or track the generated civilization overlay.
 querySettlements :: PluginContext -> DataQuery -> IO (Either Text QueryResult)
 querySettlements _ctx query = do
   let allSettlements =
@@ -308,9 +311,10 @@ querySettlements _ctx query = do
     _ ->
       pure (Right (QueryResult "settlements" [] (Just 0)))
 
--- | Query handler for cultures — returns sample cultural group data.
+-- | Query immutable demonstration cultures.
 --
--- Supports 'QueryAll' (list all) and 'QueryByKey' (by culture_id).
+-- Supports 'QueryAll' (list all) and 'QueryByKey' (by culture_id). These
+-- records deliberately do not reflect or track generated world state.
 queryCultures :: PluginContext -> DataQuery -> IO (Either Text QueryResult)
 queryCultures _ctx query = do
   let allCultures =
@@ -338,33 +342,123 @@ queryCultures _ctx query = do
 -- Generator: seed initial population
 ------------------------------------------------------------------------
 
--- | Seed initial population on habitable hexes.
---
--- Currently a stub that logs the invocation and parameters.
--- A full implementation would:
---
--- 1. Read terrain biome and elevation data from 'pcWorld'
--- 2. Identify hexes above the habitability threshold
--- 3. Seed an initial population scaled by biome richness
--- 4. Return the seeded overlay data to the host
+-- | Seed a deterministic sparse population from elevation, climate, and
+-- vegetation. Each habitable chunk receives at least one settlement, while a
+-- stable hash selects a small additional set of tiles.
 runCivGenerator :: PluginContext -> IO (Either Text GeneratorTickResult)
 runCivGenerator ctx = do
   pcLog ctx "civilization: generator — seeding initial population"
   reportPluginProgress ctx "civilization: preparing settlement seed data" 0.2
+  let threshold = paramFloat (pcParams ctx) "habitability_threshold"
+        defaultHabitabilityThreshold
   pcLog ctx ("civilization: habitability threshold = "
               <> showParam (pcParams ctx) "habitability_threshold")
   pcLog ctx ("civilization: seed = " <> pack (show (pcSeed ctx)))
-  case decodeTerrainPayload (pcTerrain ctx) of
-    Left decodeErr ->
+  schemaResult <- loadCivilizationSchema
+  case (decodeTerrainPayload (pcTerrain ctx), schemaResult) of
+    (Left decodeErr, _) ->
       pure (Left ("civilization: failed to decode terrain payload: " <> decodeErr))
-    Right terrainWorld ->
-      case generatorResultFromTerrain terrainWorld of
+    (_, Left schemaErr) ->
+      pure (Left ("civilization: failed to load schema: " <> schemaErr))
+    (Right terrainWorld, Right schema) ->
+      case generatorResultFromTerrainAndOverlay terrainWorld
+          (seedCivilizationOverlay (pcSeed ctx) threshold schema terrainWorld) of
         Left encodeErr ->
-          pure (Left ("civilization: failed to encode generator terrain payload: " <> encodeErr))
+          pure (Left ("civilization: failed to encode generator payload: " <> encodeErr))
         Right result -> do
           pcProgress ctx "civilization: generator complete" 0.9
           pcLog ctx "civilization: generator complete"
           pure (Right result)
+
+-- | Build the initial sparse overlay. A tile is habitable only when all three
+-- granted terrain sections are present for its chunk.
+seedCivilizationOverlay
+  :: Word64 -> Double -> OverlaySchema -> TerrainWorld -> Overlay
+seedCivilizationOverlay seed threshold schema world =
+  (emptyOverlay schema) { ovData = SparseData seededChunks }
+  where
+    seededChunks = IntMap.mapMaybeWithKey seedChunk (twTerrain world)
+    seedChunk chunkId terrain = do
+      climate <- IntMap.lookup chunkId (twClimate world)
+      vegetation <- IntMap.lookup chunkId (twVegetation world)
+      let tileCount = minimum
+            [ U.length (tcElevation terrain)
+            , U.length (ccTempAvg climate)
+            , U.length (ccPrecipAvg climate)
+            , U.length (vegCover vegetation)
+            , U.length (vegDensity vegetation)
+            ]
+          candidates =
+            [ (tileIdx, score)
+            | tileIdx <- [0 .. tileCount - 1]
+            , let score = habitabilityAt terrain climate vegetation tileIdx
+            , score > 0
+            , score >= realToFrac (clamp01 threshold)
+            ]
+      case candidates of
+        [] -> Nothing
+        _ ->
+          let anchor = fst (foldl1 (lowerHash chunkId) candidates)
+              selected = filter (isSelected chunkId anchor . fst) candidates
+              records = IntMap.fromList
+                [ (tileIdx, seedRecord seed chunkId tileIdx score schema)
+                | (tileIdx, score) <- selected
+                ]
+          in Just (OverlayChunk records)
+    lowerHash chunkId left@(leftIdx, _) right@(rightIdx, _)
+      | tileHash seed chunkId rightIdx < tileHash seed chunkId leftIdx = right
+      | otherwise = left
+    isSelected chunkId anchor tileIdx =
+      tileIdx == anchor || tileHash seed chunkId tileIdx `mod` 29 == 0
+
+habitabilityAt :: TerrainChunk -> ClimateChunk -> VegetationChunk -> Int -> Float
+habitabilityAt terrain climate vegetation tileIdx
+  | elevation <= 0.25 = 0
+  | otherwise = clamp01Float
+      (0.25 * elevationSuitability
+        + 0.25 * temperatureSuitability
+        + 0.2 * precipitationSuitability
+        + 0.3 * vegetationSuitability)
+  where
+    elevation = tcElevation terrain U.! tileIdx
+    temperature = ccTempAvg climate U.! tileIdx
+    precipitation = ccPrecipAvg climate U.! tileIdx
+    cover = vegCover vegetation U.! tileIdx
+    density = vegDensity vegetation U.! tileIdx
+    elevationSuitability = clamp01Float ((elevation - 0.25) / 0.35)
+    temperatureSuitability = clamp01Float (1 - abs (temperature - 0.55) * 2)
+    precipitationSuitability = clamp01Float (0.25 + precipitation * 0.75)
+    vegetationSuitability = clamp01Float ((cover + density) / 2)
+
+seedRecord :: Word64 -> Int -> Int -> Float -> OverlaySchema -> OverlayRecord
+seedRecord seed chunkId tileIdx score schema =
+  setNamed "is_city" (OVBool False)
+    . setNamed "trade_value" (OVFloat 0)
+    . setNamed "food_supply" (OVFloat (clamp01Float score))
+    . setNamed "infrastructure" (OVFloat (0.05 + 0.15 * clamp01Float score))
+    . setNamed "culture_id" (OVInt cultureId)
+    . setNamed "population" (OVFloat population)
+    $ defaultRecord schema
+  where
+    hash = tileHash seed chunkId tileIdx
+    randomUnit = fromIntegral (hash `mod` 10000) / 9999
+    population = min 1500 (120 + 880 * clamp01Float score + 300 * randomUnit)
+    cultureId = 1 + fromIntegral (hash `mod` 7)
+    setNamed name value record = case fieldIndex schema name of
+      Nothing -> record
+      Just idx -> setRecordField idx value record
+
+-- | Stable, platform-independent mixing for seed/chunk/tile selection.
+tileHash :: Word64 -> Int -> Int -> Word64
+tileHash seed chunkId tileIdx = mix64
+  (seed `xor` (fromIntegral chunkId * 0x9e3779b97f4a7c15)
+    `xor` (fromIntegral tileIdx * 0xbf58476d1ce4e5b9))
+
+mix64 :: Word64 -> Word64
+mix64 input =
+  let z1 = (input `xor` (input `shiftR` 30)) * 0xbf58476d1ce4e5b9
+      z2 = (z1 `xor` (z1 `shiftR` 27)) * 0x94d049bb133111eb
+  in z2 `xor` (z2 `shiftR` 31)
 
 ------------------------------------------------------------------------
 -- Simulation: tick population growth
@@ -373,7 +467,14 @@ runCivGenerator ctx = do
 runScopedCivGenerator :: GeneratorContext -> IO (Either Text GeneratorTickResult)
 runScopedCivGenerator ctx = case gcTerrain ctx of
   Nothing -> pure (Left "civilization: scoped generator terrain was unavailable")
-  Just world -> pure (generatorResultFromScopedTerrain ctx world)
+  Just world -> do
+    schemaResult <- loadCivilizationSchema
+    pure $ case schemaResult of
+      Left schemaErr -> Left schemaErr
+      Right schema -> generatorResultFromScopedTerrainAndOverlay ctx world
+        (seedCivilizationOverlay (gcSeed ctx)
+          (paramFloat (gcParams ctx) "habitability_threshold" defaultHabitabilityThreshold)
+          schema world)
 
 runScopedCivSimTick :: SimulationContext -> IO (Either Text SimulationTickResult)
 runScopedCivSimTick ctx = do
@@ -388,8 +489,9 @@ runScopedCivSimTick ctx = do
               (paramFloat params "growth_rate" defaultGrowthRate)
               (paramFloat params "infra_cost" defaultInfraCost)
               (paramFloat params "city_threshold" defaultCityThreshold)
+              (paramBool params "enable_trade" True)
               schema overlay
-        pure (Right (simulationResultFromOverlay overlay'))
+        pure (simulationResultFromScopedOverlay ctx overlay')
 
 -- | Tick civilization simulation.
 --
@@ -397,8 +499,9 @@ runScopedCivSimTick ctx = do
 --
 -- 1. Grow population by the configured growth rate
 -- 2. Accumulate infrastructure proportional to population
--- 3. Promote hexes above the city threshold to cities
--- 4. Return the updated overlay
+-- 3. Evolve bounded food supply and optional trade value
+-- 4. Promote hexes above the city threshold to cities
+-- 5. Return only the updated overlay (never terrain writes)
 runCivSimTick :: PluginContext -> IO (Either Text SimulationTickResult)
 runCivSimTick ctx = do
   pcLog ctx "civilization: simulation tick"
@@ -407,6 +510,7 @@ runCivSimTick ctx = do
       growthRate = paramFloat params "growth_rate" defaultGrowthRate
       infraCost  = paramFloat params "infra_cost"  defaultInfraCost
       cityThresh = paramFloat params "city_threshold" defaultCityThreshold
+      tradeEnabled = paramBool params "enable_trade" True
   pcLog ctx ("civilization: growth rate = " <> pack (show growthRate))
   schemaResult <- loadCivilizationSchema
   case schemaResult of
@@ -417,49 +521,60 @@ runCivSimTick ctx = do
         Left decodeErr ->
           pure (Left ("civilization: failed to decode own overlay payload: " <> decodeErr))
         Right overlay -> do
-          let overlay' = tickOverlay growthRate infraCost cityThresh schema overlay
+          let overlay' = tickOverlay growthRate infraCost cityThresh tradeEnabled schema overlay
           reportPluginProgress ctx "civilization: tick complete" 0.85
           pcLog ctx "civilization: tick complete"
           pure (Right (simulationResultFromOverlay overlay'))
 
--- | Apply one simulation tick to the civilization overlay.
---
--- Iterates over all populated tiles in all chunks, updating
--- population, infrastructure, and city flag.
-tickOverlay :: Double -> Double -> Double -> OverlaySchema -> Overlay -> Overlay
-tickOverlay growthRate infraCost cityThresh schema overlay =
+-- | Apply one bounded deterministic simulation tick to every settlement.
+tickOverlay :: Double -> Double -> Double -> Bool -> OverlaySchema -> Overlay -> Overlay
+tickOverlay growthRate infraCost cityThresh tradeEnabled schema overlay =
   case ovData overlay of
     SparseData sm ->
-      let sm' = IntMap.map (tickChunk growthRate infraCost cityThresh schema) sm
+      let sm' = IntMap.map
+            (tickChunk growthRate infraCost cityThresh tradeEnabled schema) sm
       in overlay { ovData = SparseData sm' }
-    DenseData _ ->
-      -- Dense storage not used by this overlay; pass through unchanged.
-      overlay
+    DenseData _ -> overlay
 
--- | Apply growth to every populated tile in a sparse chunk.
-tickChunk :: Double -> Double -> Double -> OverlaySchema -> OverlayChunk -> OverlayChunk
-tickChunk growthRate infraCost cityThresh schema (OverlayChunk tileMap) =
-  OverlayChunk (IntMap.map (tickRecord growthRate infraCost cityThresh schema) tileMap)
+-- | Apply growth, provisioning, and trade to every populated sparse tile.
+tickChunk
+  :: Double -> Double -> Double -> Bool -> OverlaySchema -> OverlayChunk -> OverlayChunk
+tickChunk growthRate infraCost cityThresh tradeEnabled schema (OverlayChunk tileMap) =
+  OverlayChunk (IntMap.map
+    (tickRecord growthRate infraCost cityThresh tradeEnabled schema) tileMap)
 
--- | Update a single tile record:
---
--- * population += population * growthRate
--- * infrastructure += population * infraCost (capped at 1.0)
--- * is_city = population >= cityThreshold
-tickRecord :: Double -> Double -> Double -> OverlaySchema -> OverlayRecord -> OverlayRecord
-tickRecord growthRate infraCost cityThresh schema record =
+-- | Update one settlement. Normalised infrastructure, food, and trade values
+-- remain in @[0,1]@; population is capped to avoid runaway numeric growth.
+tickRecord
+  :: Double -> Double -> Double -> Bool -> OverlaySchema -> OverlayRecord -> OverlayRecord
+tickRecord growthRate infraCost cityThresh tradeEnabled schema record =
   let popIdx   = fieldIndexOr schema "population" 0
       infraIdx = fieldIndexOr schema "infrastructure" 2
+      foodIdx  = fieldIndexOr schema "food_supply" 3
+      tradeIdx = fieldIndexOr schema "trade_value" 4
       cityIdx  = fieldIndexOr schema "is_city" 5
-      pop      = readFloat record popIdx
-      infra    = readFloat record infraIdx
-      pop'     = pop + pop * realToFrac growthRate
-      infra'   = min 1.0 (infra + pop * realToFrac infraCost * 0.001)
-      isCity   = pop' >= realToFrac cityThresh
-      r1 = setRecordField popIdx   (OVFloat pop')  record
-      r2 = setRecordField infraIdx (OVFloat infra') r1
-      r3 = setRecordField cityIdx  (OVBool isCity)  r2
-  in r3
+      pop      = max 0 (readFloat record popIdx)
+      infra    = clamp01Float (readFloat record infraIdx)
+      food     = clamp01Float (readFloat record foodIdx)
+      trade    = clamp01Float (readFloat record tradeIdx)
+      growth   = realToFrac (max 0 (min 0.5 growthRate))
+      cost     = realToFrac (max 0 (min 1 infraCost))
+      pop'     = min 1.0e9 (pop * (1 + growth))
+      infra'   = clamp01Float (infra + pop * cost * 0.001)
+      isCity   = pop' >= realToFrac (max 0 cityThresh)
+      trade'   = clamp01Float $ if tradeEnabled
+        then trade + 0.01 + 0.03 * infra' + (if isCity then 0.02 else 0)
+        else trade - 0.03
+      consumption = min 0.04 (pop' / 100000)
+      food' = clamp01Float
+        (food + 0.025 * infra' + (if tradeEnabled then 0.015 * trade' else 0)
+          - consumption)
+      r1 = setRecordField popIdx   (OVFloat pop')    record
+      r2 = setRecordField infraIdx (OVFloat infra')  r1
+      r3 = setRecordField foodIdx  (OVFloat food')   r2
+      r4 = setRecordField tradeIdx (OVFloat trade')  r3
+      r5 = setRecordField cityIdx  (OVBool isCity)   r4
+  in r5
 
 ------------------------------------------------------------------------
 -- Helpers
@@ -470,6 +585,18 @@ paramFloat :: Map Text Value -> Text -> Double -> Double
 paramFloat params key def = case Map.lookup key params of
   Just (Number n) -> realToFrac n
   _               -> def
+
+-- | Extract a boolean parameter with a default fallback.
+paramBool :: Map Text Value -> Text -> Bool -> Bool
+paramBool params key def = case Map.lookup key params of
+  Just (Bool value) -> value
+  _ -> def
+
+clamp01 :: Double -> Double
+clamp01 = max 0 . min 1
+
+clamp01Float :: Float -> Float
+clamp01Float = max 0 . min 1
 
 -- | Read a 'Float' from a record at a given field index, defaulting to 0.
 readFloat :: OverlayRecord -> Int -> Float
