@@ -122,7 +122,7 @@ import qualified Seer.Command.Handlers.Plugin as HPlugin
 import qualified Seer.Command.Handlers.Simulation as HSimulation
 import qualified Seer.Command.Handlers.Sliders as HSliders
 import Seer.Config.SliderId (SliderId(..))
-import Seer.Config.SliderRegistry (SliderDef(..), SliderPart(..), sliderDefsForTab, SliderTab(..))
+import Seer.Config.SliderRegistry (SliderPart(..))
 import Seer.Config.SliderStyle (SliderStyle(..), sliderStyleForId)
 import Seer.Config.Snapshot (PresetCatalogueEntry(..), presetCatalogue, presetCatalogueMatches)
 import Seer.Config.SliderUi (sliderValueForId)
@@ -130,7 +130,7 @@ import Seer.Service.Types (ServiceError(..), ServiceResponse(..), ServiceResult)
 import Seer.World.Persist (listWorlds)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Seer.Command.Types (SeerResponse(..), okResponse, errResponse)
-import Topo.Pipeline.Stage (parseStageId, stageCanonicalName, allBuiltinStageIds)
+import Topo.Pipeline.Stage (parseStageId)
 import qualified Seer.DataBrowser.AppService as DataBrowser
 import Seer.DataBrowser.Model
   ( DataBrowserBeginResult(..)
@@ -1529,163 +1529,6 @@ handleListWidgets ctx reqId _params = do
                       , "log", "simulation", "sliders", "pipeline", "plugins"
                       , "data_browser", "editor", "menu"
                       ]
-        ]
-    ]
-
--- | Historical manual inventory retained temporarily as a compatibility
--- reference; the public handler above is exclusively live-tree-derived.
-legacyHandleListWidgets :: CommandContext -> Int -> Value -> IO SeerResponse
--- | Handle @list_widgets@ — return all widget IDs grouped by category.
---
--- Returns widgets logically available given current UI state.
-legacyHandleListWidgets ctx reqId _params = do
-  uiSnap <- readUiSnapshotRef (ccUiSnapshotRef ctx)
-  let leftOpen   = uiShowLeftPanel uiSnap
-      leftTopo   = leftOpen && uiLeftTab uiSnap == LeftTopo
-      leftView   = leftOpen && uiLeftTab uiSnap == LeftView
-      configOpen = uiShowConfig uiSnap
-      configTab  = uiConfigTab uiSnap
-      dbs        = uiDataBrowser uiSnap
-      editorOn   = editorActive (uiEditor uiSnap)
-
-      -- Static categories
-      navigation = filter snd
-        [ ("WidgetLeftToggle",  True)
-        , ("WidgetLeftTabTopo", leftOpen)
-        , ("WidgetLeftTabView", leftOpen)
-        ]
-      generation = filter snd
-        [ ("WidgetGenerate",   leftTopo)
-        , ("WidgetSeedValue",  leftTopo)
-        , ("WidgetSeedRandom", leftTopo)
-        , ("WidgetChunkMinus", leftTopo)
-        , ("WidgetChunkPlus",  leftTopo)
-        ]
-      config = filter snd
-        [ ("WidgetConfigToggle",      True)
-        , ("WidgetConfigTabTerrain",  configOpen)
-        , ("WidgetConfigTabPlanet",   configOpen)
-        , ("WidgetConfigTabClimate",  configOpen)
-        , ("WidgetConfigTabWeather",  configOpen)
-        , ("WidgetConfigTabBiome",    configOpen)
-        , ("WidgetConfigTabErosion",  configOpen)
-        , ("WidgetConfigTabPipeline", configOpen)
-        , ("WidgetConfigTabData",     configOpen)
-        , ("WidgetConfigPresetSave",  configOpen)
-        , ("WidgetConfigPresetLoad",  configOpen)
-        , ("WidgetConfigReset",       configOpen)
-        , ("WidgetConfigRevert",      configOpen)
-        ]
-      viewModes = filter snd
-        [ ("WidgetViewBaseElevation", leftView)
-        , ("WidgetViewBaseBiome", leftView)
-        , ("WidgetViewBaseMoisture", leftView)
-        , ("WidgetViewBaseVegetation", leftView)
-        , ("WidgetViewBaseTerrainForm", leftView)
-        , ("WidgetViewBasePlateId", leftView)
-        , ("WidgetViewBasePlateBoundary", leftView)
-        , ("WidgetViewBasePlateHardness", leftView)
-        , ("WidgetViewBasePlateCrust", leftView)
-        , ("WidgetViewBasePlateAge", leftView)
-        , ("WidgetViewBasePlateHeight", leftView)
-        , ("WidgetViewBasePlateVelocity", leftView)
-        , ("WidgetViewOverlayNone", leftView)
-        , ("WidgetViewOverlayTemperature", leftView)
-        , ("WidgetViewOverlayPrecipitation", leftView)
-        , ("WidgetViewOverlayCloud", leftView)
-        , ("WidgetViewBasisAverage", leftView)
-        , ("WidgetViewBasisCurrent", leftView)
-        , ("WidgetDayNightToggle",    leftView)
-        , ("WidgetViewOverlayPrev",   leftView)
-        , ("WidgetViewOverlayNext",   leftView)
-        , ("WidgetViewFieldPrev",     leftView)
-        , ("WidgetViewFieldNext",     leftView)
-        , ("WidgetOverlayManager",    leftView)
-        , ("WidgetOverlaySchema",     leftView)
-        , ("WidgetOverlayProvenance", leftView)
-        , ("WidgetOverlayExport",     leftView)
-        , ("WidgetOverlayImportValidate", leftView)
-        ]
-      logWidgets =
-        [ ("WidgetLogDebug",  True)
-        , ("WidgetLogInfo",   True)
-        , ("WidgetLogWarn",   True)
-        , ("WidgetLogError",  True)
-        , ("WidgetLogHeader", True)
-        ]
-      simulation = filter snd
-        [ ("WidgetSimTick",     configOpen && configTab == ConfigPipeline)
-        , ("WidgetSimAutoTick", configOpen && configTab == ConfigPipeline)
-        ]
-      -- Dynamic: sliders for current tab
-      sliderTab' = case configTab of
-        ConfigTerrain  -> Just SliderTabTerrain
-        ConfigPlanet   -> Just SliderTabPlanet
-        ConfigClimate  -> Just SliderTabClimate
-        ConfigWeather  -> Just SliderTabWeather
-        ConfigBiome    -> Just SliderTabBiome
-        ConfigErosion  -> Just SliderTabErosion
-        _              -> Nothing
-      sliderWids = case sliderTab' of
-        Just st | configOpen ->
-          concatMap (\sd ->
-            [ widgetIdToText (WidgetSliderMinus (sliderId sd))
-            , widgetIdToText (WidgetSliderPlus (sliderId sd))
-            ]) (sliderDefsForTab st)
-        _ -> []
-      -- Dynamic: pipeline stages
-      pipelineWids
-        | configOpen && configTab == ConfigPipeline =
-            map (\sid -> widgetIdToText (WidgetPipelineToggle (stageCanonicalName sid)))
-                allBuiltinStageIds
-        | otherwise = []
-      -- Dynamic: plugins
-      pluginWids
-        | configOpen && configTab == ConfigPipeline =
-            concatMap (\name ->
-              [ widgetIdToText (WidgetPluginMoveUp name)
-              , widgetIdToText (WidgetPluginMoveDown name)
-              , widgetIdToText (WidgetPluginToggle name)
-              , widgetIdToText (WidgetPluginExpand name)
-              ]) (uiPluginNames uiSnap)
-        | otherwise = []
-      -- Dynamic: data browser
-      dataBrowserWids
-        | configOpen && configTab == ConfigData = dataBrowserWidgetIds uiSnap
-        | otherwise = []
-      -- Dynamic: editor
-      editorWids
-        | editorOn =
-            [ "WidgetEditorClose" ] ++
-            [ widgetIdToText (WidgetEditorTool i) | i <- [0..5] ] ++
-            [ "WidgetEditorRadiusMinus", "WidgetEditorRadiusPlus"
-            , "WidgetEditorFalloffPrev", "WidgetEditorFalloffNext" ]
-        | otherwise = [ "WidgetEditorReopen" ]
-
-      allWidgets = map fst navigation
-                ++ map fst generation
-                ++ map fst config
-                ++ map fst viewModes
-                ++ map fst logWidgets
-                ++ map fst simulation
-                ++ sliderWids ++ pipelineWids ++ pluginWids ++ dataBrowserWids ++ editorWids
-
-  pure $ okResponse reqId $ object
-    [ "widgets" .= allWidgets
-    , "widget_count" .= length allWidgets
-    , "data_browser_state" .= object (dataBrowserAsyncStateFields dbs)
-    , "categories" .= object
-        [ "navigation" .= map fst navigation
-        , "generation" .= map fst generation
-        , "config" .= map fst config
-        , "view_modes" .= map fst viewModes
-        , "log" .= map fst logWidgets
-        , "simulation" .= map fst simulation
-        , "sliders" .= sliderWids
-        , "pipeline" .= pipelineWids
-        , "plugins" .= pluginWids
-        , "data_browser" .= dataBrowserWids
-        , "editor" .= editorWids
         ]
     ]
 
