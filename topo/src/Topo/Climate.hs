@@ -252,13 +252,12 @@ climatePrecipSeasonality
   -> Int
   -> U.Vector Float
 climatePrecipSeasonality config lm seasonCfg sBase sRange origin coastal elev windDir n =
-  let TileCoord ox oy = origin
+  let TileCoord _ oy = origin
       contFactor = scSeasonalityContinentalityFactor seasonCfg
       rsFactor = scSeasonalityRainShadowBoost seasonCfg
       size = case config of WorldConfig cs -> cs
   in U.generate n $ \i ->
     let TileCoord _lx ly = tileCoordFromIndex config (TileIndex i)
-        gx = ox + (i `mod` size)
         gy = oy + ly
         latRad = clampLat (fromIntegral gy * lmRadPerTile lm + lmBiasRad lm)
         latScale = abs (sin latRad)
@@ -277,7 +276,6 @@ climatePrecipSeasonality config lm seasonCfg sBase sRange origin coastal elev wi
         upElev = elev U.! upIdx
         localElev = elev U.! i
         rsBias = rsFactor * max 0 (upElev - localElev)
-        _ = gx  -- suppress unused warning for gx (kept for clarity)
     in clamp01 (contModulated + rsBias)
 
 tempAt
