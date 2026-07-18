@@ -188,14 +188,5 @@ paramInt params key def = case Map.lookup key params of
   Just (Number n) -> round n
   _               -> def
 
--- | Look up a parameter value and show it, with a fallback.
-showParam :: Map Text Value -> Text -> Text
-showParam params key = case Map.lookup key params of
-  Just (Number n) -> pack (show n)
-  Just (String s) -> s
-  Just (Bool b)   -> pack (show b)
-  Just _          -> "<complex>"
-  Nothing         -> "<not set>"
-
 main :: IO ()
 main = runPluginWithManifestCommand terrainRoughenPlugin
