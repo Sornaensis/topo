@@ -33,10 +33,6 @@ module Topo.Climate.MoistureTransport
     -- * Single-step grid transport
   , moistureStepGrid
   , moistureFlowAtGrid
-    -- * Legacy chunk-local helpers (for testing)
-  , moistureTransport
-  , moistureStep
-  , moistureFlowAt
     -- * Evaporation initialisation
   , evapAt
   , evapAtXY
@@ -52,7 +48,7 @@ import Topo.Grid.HexDirection
   , traceIndexInDirection
   )
 import Topo.Hex (hexOpposite)
-import Topo.Math (clamp01, iterateN, lerp)
+import Topo.Math (clamp01, lerp)
 import Topo.Noise (noise2D)
 import Topo.Planet (LatitudeMapping(..))
 import Topo.Types
@@ -306,37 +302,3 @@ evapAt config seed lm cfg waterLevel origin elev tempVec windSpdVec i =
   in if elev U.! i < waterLevel
      then clamp01 (oceanEvaporation mst t w insol + noise)
      else clamp01 noise
-
--- ---------------------------------------------------------------------------
--- Legacy chunk-local helpers (for testing)
--- ---------------------------------------------------------------------------
-
--- | Chunk-local iterative moisture transport.
-moistureTransport :: WorldConfig -> Word64 -> LatitudeMapping -> ClimateConfig -> Float -> TileCoord -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
-moistureTransport config seed lm cfg waterLevel origin windDir windSpd tempVec elev =
-  let n = U.length elev
-      initial = U.generate n (evapAt config seed lm cfg waterLevel origin elev tempVec windSpd)
-  in iterateN (moistIterations (ccMoisture cfg)) (moistureStep config cfg windDir windSpd elev) initial
-
--- | Legacy chunk-local moisture step retained for tests; uses the same
--- nearest-hex upwind sampling as the global transport path.
-moistureStep :: WorldConfig -> ClimateConfig -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float
-moistureStep config cfg windDir windSpd elev moisture =
-  U.generate (U.length moisture) (moistureFlowAt config cfg windDir windSpd elev moisture)
-
--- | Legacy chunk-local moisture transport retained for tests; samples the
--- upwind moisture and elevation fields along the nearest hex path.
-moistureFlowAt :: WorldConfig -> ClimateConfig -> U.Vector Float -> U.Vector Float -> U.Vector Float -> U.Vector Float -> Int -> Float
-moistureFlowAt config cfg windDir windSpd elev moisture i =
-  let prc = ccPrecipitation cfg
-      mst = ccMoisture cfg
-      size = wcChunkSize config
-      dir = windDir U.! i
-      spd = windSpd U.! i * moistAdvectSpeed mst
-      upwindMoisture = sampleAlongUpwindHexPath size size moisture i dir spd
-      upwindElev = sampleAlongUpwindHexPath size size elev i dir spd
-      h0 = elev U.! i
-      cool = max 0 (upwindElev - h0) * precRainShadowLoss prc
-      adv = upwindMoisture * moistAdvect mst
-      local = moisture U.! i * moistLocal mst
-  in clamp01 (adv + local - cool)
