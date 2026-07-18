@@ -3,7 +3,7 @@
 module Seer.System.Actors
   ( AppActors(..)
   , initialiseAppActors
-  , startCommandServices
+  , startHttpService
   , shutdownAppActors
   ) where
 
@@ -63,17 +63,12 @@ import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles(..), mkActorHandles)
 import Control.Concurrent
   ( MVar
-  , ThreadId
-  , forkIOWithUnmask
-  , killThread
   , modifyMVar_
-  , newEmptyMVar
   , newMVar
   , readMVar
-  , tryPutMVar
   )
-import Control.Exception (finally, mask, onException)
-import Control.Monad (replicateM, void, when)
+import Control.Exception (mask, onException)
+import Control.Monad (replicateM, when)
 import Data.IORef (newIORef)
 import qualified Data.Text as Text
 import Hyperspace.Actor
@@ -86,13 +81,6 @@ import Hyperspace.Actor
   , spawnActor
   )
 import Seer.Command.AppServiceAdapter (commandAppService)
-import Seer.Command.Channel
-  ( CommandChannelControl
-  , CommandChannelEnv(..)
-  , newCommandChannelControl
-  , runCommandChannelWithControl
-  , shutdownCommandChannelControl
-  )
 import Seer.Command.Context (CommandContext(..), commandServiceContext)
 import Seer.Config.Runtime (TopoSeerConfig(..))
 import Seer.DataBrowser.Executor
@@ -154,9 +142,7 @@ data AppActors = AppActors
   , aaAutoTickScheduler :: !AutoTickScheduler
   , aaDataBrowserExecutor :: !DataBrowserExecutor
   , aaOverlayInspectorExecutor :: !OverlayInspectorExecutor
-  , aaCommandChannelControl :: !CommandChannelControl
   , aaHttpServerHandle :: !(MVar (Maybe HttpServerHandle))
-  , aaIngressThreads :: !(MVar [(ThreadId, MVar ())])
   }
 
 initialiseAppActors :: TopoSeerConfig -> IO AppActors
@@ -226,9 +212,7 @@ initialiseAppActors runtimeCfg = do
   actorHandles <- mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
   dataBrowserExecutor <- newDataBrowserExecutor uiHandle
   overlayInspectorExecutor <- newOverlayInspectorExecutor actorHandles
-  commandChannelControl <- newCommandChannelControl
   httpServerHandle <- newMVar Nothing
-  ingressThreads <- newMVar []
   pure AppActors
     { aaSystem = system
     , aaLogHandle = logHandle
@@ -251,53 +235,33 @@ initialiseAppActors runtimeCfg = do
     , aaAutoTickScheduler = autoTickScheduler
     , aaDataBrowserExecutor = dataBrowserExecutor
     , aaOverlayInspectorExecutor = overlayInspectorExecutor
-    , aaCommandChannelControl = commandChannelControl
     , aaHttpServerHandle = httpServerHandle
-    , aaIngressThreads = ingressThreads
     }
 
-startCommandServices :: RuntimeOptions -> AppActors -> IO ()
-startCommandServices opts actors = mask $ \_ -> do
-  let cmdContext = commandContextForActors actors
-      cmdEnv = commandEnvForActors actors
-  commandDone <- newEmptyMVar
-  commandThread <- forkIOWithUnmask $ \unmask ->
-    unmask (runCommandChannelWithControl (aaCommandChannelControl actors) cmdEnv)
-      `finally` void (tryPutMVar commandDone ())
-  retainIngressThread actors commandThread commandDone
-  eventBus <- newDefaultServiceEventBus
-  let httpServiceContext = (commandServiceContext cmdContext) { svcEventBus = Just eventBus }
-  case roHttp opts of
-    Nothing -> pure ()
-    Just httpCfg -> do
-      httpHandle <- startHttpServer httpCfg commandAppService httpServiceContext
-      modifyMVar_ (aaHttpServerHandle actors) (const (pure (Just httpHandle)))
-        `onException` shutdownHttpServer httpHandle
+startHttpService :: RuntimeOptions -> AppActors -> IO ()
+startHttpService opts actors = mask $ \_ -> case roHttp opts of
+  Nothing -> pure ()
+  Just httpCfg -> do
+    eventBus <- newDefaultServiceEventBus
+    let httpServiceContext =
+          (commandServiceContext (commandContextForActors actors))
+            { svcEventBus = Just eventBus }
+    httpHandle <- startHttpServer httpCfg commandAppService httpServiceContext
+    modifyMVar_ (aaHttpServerHandle actors) (const (pure (Just httpHandle)))
+      `onException` shutdownHttpServer httpHandle
 
-retainIngressThread :: AppActors -> ThreadId -> MVar () -> IO ()
-retainIngressThread actors threadId done =
-  modifyMVar_ (aaIngressThreads actors) (pure . ((threadId, done) :))
-    `onException` (killThread threadId >> readMVar done)
-
-stopIngressThreads :: AppActors -> IO ()
-stopIngressThreads actors = mask $ \_ -> do
-  -- Retain ownership until every cleanup step succeeds so an interrupted or
-  -- failed shutdown can be retried without orphaning live ingress.
-  threads <- readMVar (aaIngressThreads actors)
-  mapM_ (killThread . fst) threads
-  mapM_ (readMVar . snd) threads
-  shutdownCommandChannelControl (aaCommandChannelControl actors)
+stopHttpService :: AppActors -> IO ()
+stopHttpService actors = mask $ \_ -> do
   httpHandle <- readMVar (aaHttpServerHandle actors)
   mapM_ shutdownHttpServer httpHandle
-  modifyMVar_ (aaIngressThreads actors) (const (pure []))
   modifyMVar_ (aaHttpServerHandle actors) (const (pure Nothing))
 
 shutdownAppActors :: AppActors -> IO ()
 shutdownAppActors actors = do
   shutdownScreenshotRequestRef (aaScreenshotRef actors)
-  -- No command or HTTP request may acquire new executor ownership once close
-  -- begins. Worker completion still has live plugin and actor dependencies.
-  stopIngressThreads actors
+  -- No HTTP request may acquire new executor ownership once close begins.
+  -- Worker completion still has live plugin and actor dependencies.
+  stopHttpService actors
   shutdownDataBrowserExecutor (aaDataBrowserExecutor actors)
   shutdownOverlayInspectorExecutor (aaOverlayInspectorExecutor actors)
   waitForSimIdle <- beginSimShutdown (ahSimulationHandle (aaActorHandles actors))
@@ -319,15 +283,3 @@ commandContextForActors actors = CommandContext
   , ccOverlayInspectorExecutor = aaOverlayInspectorExecutor actors
   }
 
-commandEnvForActors :: AppActors -> CommandChannelEnv
-commandEnvForActors actors = CommandChannelEnv
-  { cceAppService = commandAppService
-  , cceActorHandles = aaActorHandles actors
-  , cceUiSnapshotRef = aaUiSnapshotRef actors
-  , cceUiActionsHandle = aaUiActionsHandle actors
-  , cceScreenshotRef = aaScreenshotRef actors
-  , cceScreenshotStoragePolicy = aaScreenshotStoragePolicy actors
-  , cceLogSnapshotRef = Just (aaLogSnapshotRef actors)
-  , cceDataBrowserExecutor = aaDataBrowserExecutor actors
-  , cceOverlayInspectorExecutor = aaOverlayInspectorExecutor actors
-  }

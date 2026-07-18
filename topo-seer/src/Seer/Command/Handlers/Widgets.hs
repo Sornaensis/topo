@@ -3,7 +3,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | IPC handlers for generic widget interaction:
+-- | Command handlers for generic widget interaction:
 -- @click_widget@, @list_widgets@, @get_widget_state@.
 module Seer.Command.Handlers.Widgets
   ( handleClickWidget
@@ -696,11 +696,10 @@ executeWidgetClick runService ctx uiSnap invocation = do
 
     -- ----- Seed -----
     WidgetSeedRandom -> do
-      -- Cannot generate random seed without System.Random in scope;
-      -- use set_seed IPC command instead.
-      pure $ Left "use 'set_seed' IPC command for seed changes"
+      -- Seed changes require a value-bearing operation rather than a click.
+      pure $ Left "use the 'set_seed' operation for seed changes"
     WidgetSeedValue -> do
-      pure $ Left "use 'set_seed' IPC command for seed editing"
+      pure $ Left "use the 'set_seed' operation for seed editing"
 
     -- ----- Chunk buttons -----
     WidgetChunkMinus -> do

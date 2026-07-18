@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | IPC handlers for the data browser: listing plugins, resources,
+-- | Command handlers for the data browser: listing plugins, resources,
 -- records, and performing CRUD operations on plugin data.
 --
 -- @data_list_plugins@, @data_list_resources@, @data_list_records@,

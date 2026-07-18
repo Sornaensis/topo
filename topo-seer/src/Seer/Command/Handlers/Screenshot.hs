@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Compatibility handler for the @take_screenshot@ IPC command.
+-- | Command-envelope handler for @take_screenshot@.
 --
 -- Screenshot behavior lives at the AppService boundary; this adapter only
 -- translates the shared structured result into the legacy command envelope.

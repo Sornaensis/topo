@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
 
--- | Internal command IPC compatibility adapter for the AppService boundary.
+-- | In-process command-envelope adapter for the AppService boundary.
 --
 -- This module hosts the transitional AppService implementation backed by the
 -- existing command handlers. The command dispatcher itself stays thin: it

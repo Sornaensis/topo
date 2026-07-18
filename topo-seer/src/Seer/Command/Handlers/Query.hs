@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | IPC handlers for terrain queries and data export:
+-- | Command handlers for terrain queries and data export:
 -- @find_hexes@, @export_terrain_data@.
 module Seer.Command.Handlers.Query
   ( handleFindHexes

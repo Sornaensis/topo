@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | IPC handlers for UI panel visibility and tab controls:
+-- | Command handlers for UI panel visibility and tab controls:
 -- @set_left_panel@, @set_left_tab@, @toggle_config_panel@,
 -- @set_log_collapsed@, @set_log_level@, @get_ui_panels@.
 module Seer.Command.Handlers.Panels

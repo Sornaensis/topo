@@ -4,8 +4,8 @@
 
 -- | Shared service-layer interface types.
 --
--- The service layer is the stable behaviour boundary used by internal command
--- IPC compatibility, HTTP routes, UI mutations, and direct service tests. This
+-- The service layer is the stable behaviour boundary used by in-process command
+-- adapters, HTTP routes, UI mutations, and direct service tests. This
 -- module is intentionally independent of the old command response envelope so
 -- callers can translate structured service errors into command, HTTP, or UI
 -- responses.
@@ -126,7 +126,7 @@ serviceHandlerMethod = serviceOperationMethod . serviceHandlerSpec
 --
 -- The initial AppService surface still carries JSON payloads because existing
 -- command handlers are JSON-oriented.  Keeping the payload behind a service
--- request type prevents command IPC's parameter shape from becoming the public
+-- request type prevents the command envelope's parameter shape from becoming the public
 -- service contract and leaves room for typed request records in follow-up M2
 -- extraction work.
 data ServiceRequest = ServiceRequest
@@ -176,7 +176,7 @@ data AsyncStatusSnapshot = AsyncStatusSnapshot
 
 type ServiceEventPublishHook = ServiceEventPublishRequest -> IO (Either ServiceError ServiceEventPublishResponse)
 
--- | Reusable service errors that are not tied to command IPC envelopes.
+-- | Reusable service errors that are not tied to command envelopes.
 data ServiceError
   = ServiceInvalidRequest !Text
   | ServiceValidationError !Text ![ServiceErrorDetail]
@@ -537,7 +537,7 @@ data ServiceOperationSpec = ServiceOperationSpec
   { serviceOperationName :: !Text
     -- ^ Stable typed operation name used in service tests and diagnostics.
   , serviceOperationMethod :: !Text
-    -- ^ Current command/IPC method or internal hook name bridged by this operation.
+    -- ^ Current command method or internal hook name bridged by this operation.
   , serviceOperationDescription :: !Text
     -- ^ Short human-readable summary.
   } deriving (Eq, Show)

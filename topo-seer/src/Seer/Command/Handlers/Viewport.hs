@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | IPC handlers for viewport interaction: @viewport_scroll@,
+-- | Command handlers for viewport interaction: @viewport_scroll@,
 -- @viewport_click@, @viewport_drag@, @viewport_hover@.
 --
 -- These simulate the same mouse interactions that a user performs on

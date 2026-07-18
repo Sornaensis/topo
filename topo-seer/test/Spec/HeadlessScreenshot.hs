@@ -31,7 +31,6 @@ import System.Timeout (timeout)
 import Test.Hspec
 
 import Seer.Command.AppServiceAdapter (dispatchAppServiceCommand)
-import Seer.Command.Channel (CommandChannelEnv(..), dispatchCommandChannel)
 import Seer.Command.Dispatch (CommandContext(..))
 import Seer.Config.Runtime (TopoSeerConfig(..))
 import Seer.Headless
@@ -80,7 +79,7 @@ import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 
 spec :: Spec
 spec = describe "headless screenshot service parity" $ do
-  it "uses one deterministic service across HTTP, direct, legacy, and channel surfaces" $
+  it "uses one deterministic service across HTTP, direct, and command surfaces" $
     withFreshTempDir "surface-matrix" $ \base -> do
       let root = base </> "screenshots"
           cfg = enabledHeadlessConfig root
@@ -214,8 +213,6 @@ spec = describe "headless screenshot service parity" $ do
           ctx (ServiceRequest (Just Null))
       assertUntouched $ expectCommandBody $
         dispatchAppServiceCommand headlessAppService commandCtx command
-      assertUntouched $ expectCommandBody $
-        dispatchCommandChannel (channelEnv headlessAppService commandCtx) command
       responses <- runHttpSurfacesAllowBusyProbe headlessAppService ctx Nothing
       forM_ responses $ \response -> do
         hresStatusCode response `shouldBe` 200
@@ -273,10 +270,10 @@ spec = describe "headless screenshot service parity" $ do
             lookupField "image_base64" guiBody `shouldNotBe` lookupField "image_base64" headlessBody
           _ -> expectationFailure "expected successful GUI and headless screenshot results"
 
-  it "wires hcStartCommandChannel to the headless dispatcher and preserves request ids" $
-    withHeadlessApp defaultHeadlessConfig { hcStartCommandChannel = True } $ \runtime -> do
+  it "dispatches command envelopes in-process and preserves request ids" $
+    withHeadlessApp defaultHeadlessConfig $ \runtime -> do
       let command = SeerCommand 417 "take_screenshot" Null
-      response <- guarded "optional command channel" (headlessDispatchCommand runtime command)
+      response <- guarded "in-process command dispatch" (headlessDispatchCommand runtime command)
       srId response `shouldBe` 417
       srSuccess response `shouldBe` True
       lookupField "source" (srResult response) `shouldBe` Just (String "headless")
@@ -343,10 +340,8 @@ assertCrossSurfaceParity app ctx commandCtx directPayload httpBody = do
   handler `shouldBe` direct
 
   let command = SeerCommand 417 "take_screenshot" directPayload
-  legacy <- checked $ dispatchAppServiceCommand app commandCtx command
-  assertLegacyParity direct legacy
-  channel <- checked $ dispatchCommandChannel (channelEnv app commandCtx) command
-  channel `shouldBe` legacy
+  commandResponse <- checked $ dispatchAppServiceCommand app commandCtx command
+  assertCommandParity direct commandResponse
 
   httpResponses <- runHttpSurfaces app ctx httpBody
   forM_ httpResponses (assertHttpParity direct)
@@ -384,8 +379,8 @@ runHttpSurfacesAllowBusyProbe app ctx body = mapM requestFor
       , hreqBody = body
       }
 
-assertLegacyParity :: ServiceResult -> SeerResponse -> Expectation
-assertLegacyParity result response = do
+assertCommandParity :: ServiceResult -> SeerResponse -> Expectation
+assertCommandParity result response = do
   srId response `shouldBe` 417
   case result of
     Right (ServiceResponse body) -> do
@@ -393,11 +388,11 @@ assertLegacyParity result response = do
       srResult response `shouldBe` body
       srError response `shouldBe` Nothing
     Left err -> case literalErrorContract err of
-      Nothing -> expectationFailure ("missing literal legacy contract for " <> show err)
+      Nothing -> expectationFailure ("missing literal command contract for " <> show err)
       Just contract -> do
         srSuccess response `shouldBe` False
         srResult response `shouldBe` Null
-        srError response `shouldBe` Just (ecLegacyText contract)
+        srError response `shouldBe` Just (ecCommandText contract)
 
 assertHttpParity :: ServiceResult -> HttpResponse -> Expectation
 assertHttpParity result response = do
@@ -417,7 +412,7 @@ data ErrorContract = ErrorContract
   , ecCode :: !Text
   , ecMessage :: !Text
   , ecDetails :: ![ServiceErrorDetail]
-  , ecLegacyText :: !Text
+  , ecCommandText :: !Text
   }
 
 literalErrorContract :: ServiceError -> Maybe ErrorContract
@@ -427,7 +422,7 @@ literalErrorContract err
       , ecCode = "validation_failed"
       , ecMessage = "validation failed"
       , ecDetails = [screenshotPathDetail]
-      , ecLegacyText =
+      , ecCommandText =
           "validation failed: invalid field 'path' (expected a nonempty safe relative .png path)"
       }
   | err == ServiceUnavailable "screenshot persistence is disabled" = Just (ErrorContract
@@ -461,19 +456,6 @@ serviceErrorEnvelope requestId contract = object
       , "request_id" .= requestId
       ]
   ]
-
-channelEnv :: AppService -> CommandContext -> CommandChannelEnv
-channelEnv app ctx = CommandChannelEnv
-  { cceAppService = app
-  , cceActorHandles = ccActorHandles ctx
-  , cceUiSnapshotRef = ccUiSnapshotRef ctx
-  , cceUiActionsHandle = ccUiActionsHandle ctx
-  , cceScreenshotRef = ccScreenshotRef ctx
-  , cceScreenshotStoragePolicy = ccScreenshotStoragePolicy ctx
-  , cceLogSnapshotRef = ccLogSnapshotRef ctx
-  , cceDataBrowserExecutor = ccDataBrowserExecutor ctx
-  , cceOverlayInspectorExecutor = ccOverlayInspectorExecutor ctx
-  }
 
 assertBrokerIdle :: ServiceContext -> Expectation
 assertBrokerIdle ctx = do

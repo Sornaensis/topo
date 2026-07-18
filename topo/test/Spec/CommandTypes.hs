@@ -138,18 +138,3 @@ spec = describe "Topo.Command.Types" $ do
       srSuccess rsp `shouldBe` False
       srResult rsp `shouldBe` Null
       srError rsp `shouldBe` Just "fail"
-
-  describe "commandPipeName" $ do
-
-    it "returns a non-empty string" $
-      commandPipeName `shouldSatisfy` (not . null)
-
-    it "contains topo-seer-cmd" $
-      commandPipeName `shouldSatisfy` \p -> "topo-seer-cmd" `isInfixOf` p
-  where
-    isInfixOf needle haystack = any (isPrefixOf needle) (tails haystack)
-    isPrefixOf [] _ = True
-    isPrefixOf _ [] = False
-    isPrefixOf (a:as) (b:bs) = a == b && isPrefixOf as bs
-    tails [] = [[]]
-    tails xs@(_:xs') = xs : tails xs'

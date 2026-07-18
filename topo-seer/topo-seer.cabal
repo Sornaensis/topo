@@ -69,7 +69,6 @@ library
       Seer.Input.Events
       Seer.Input.Intent
       Seer.Command.AppServiceAdapter
-      Seer.Command.Channel
       Seer.Command.Dispatch
       Seer.Command.Handlers.Widgets
       Seer.DataBrowser.AppService
@@ -230,7 +229,6 @@ library
     , http-types
     , hyperspace
     , linear
-    , network
     , process
     , random
     , scientific
@@ -247,9 +245,6 @@ library
   if os(windows)
     c-sources:
         cbits/windows_process.c
-  if !os(windows)
-    build-depends:
-        unix
 
 executable topo-seer
   main-is: Main.hs

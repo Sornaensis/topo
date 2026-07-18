@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | IPC handlers for dialog and text input interaction:
+-- | Command handlers for dialog and text input interaction:
 -- @get_dialog_state@, @set_dialog_text@, @dialog_confirm@,
 -- @dialog_cancel@, @send_key@.
 --

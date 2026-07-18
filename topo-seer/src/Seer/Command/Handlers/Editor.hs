@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | Handlers for terrain editor state and stroke commands exposed over IPC.
+-- | Handlers for terrain editor state and stroke commands.
 module Seer.Command.Handlers.Editor
   ( handleEditorToggle
   , handleEditorSetTool

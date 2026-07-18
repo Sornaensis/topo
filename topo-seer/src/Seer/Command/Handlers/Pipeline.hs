@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | IPC handlers for pipeline stage control and diagnostics:
+-- | Command handlers for pipeline stage control and diagnostics:
 -- @get_pipeline@, @set_stage_enabled@.
 module Seer.Command.Handlers.Pipeline
   ( handleGetPipeline

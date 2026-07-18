@@ -6,8 +6,8 @@
 --
 -- 'AppService' composes focused service groups that cover the existing command
 -- dispatch categories.  Follow-up extraction work can provide concrete
--- implementations for these interfaces and make internal command IPC
--- compatibility, UI actions, and HTTP call through the same behaviour boundary.
+-- implementations for these interfaces and make command adapters, UI actions,
+-- and HTTP call through the same behaviour boundary.
 module Seer.Service.AppService
   ( AppService(..)
   , AppServiceOperation(..)

@@ -29,7 +29,7 @@ import Seer.System.Actors
   ( AppActors(..)
   , initialiseAppActors
   , shutdownAppActors
-  , startCommandServices
+  , startHttpService
   )
 import Seer.Screenshot.Request
   ( ScreenshotRequestRef
@@ -84,7 +84,7 @@ runSdlApp opts = do
   pinMainThreadToCore0
   runtimeCfg <- loadConfig
   bracket (initialiseAppActors runtimeCfg) shutdownAppActors $ \actors -> do
-    startCommandServices opts actors
+    startHttpService opts actors
     bracket initialiseSdlResources shutdownSdlResources $ \sdl -> do
       finalState <- runRendererWithScreenshotBroker (aaScreenshotRef actors)
         (runMainLoop runtimeCfg actors sdl)

@@ -343,7 +343,7 @@ handleEvent inputContext event = do
     submitEditorBrushStroke hex =
       -- Local drag strokes stay on the shared UiActions stroke stream so
       -- ToolFlatten keeps one reference height for the whole drag gesture;
-      -- discrete API/IPC strokes enter through editor_brush_stroke.
+      -- discrete service strokes enter through editor_brush_stroke.
       submitAction inputEnv (UiActionBrushStroke hex)
 
     clearEditorStrokeSession =

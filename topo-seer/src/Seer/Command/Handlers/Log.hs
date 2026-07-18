@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | IPC handler for log access: @get_logs@.
+-- | Command handler for log access: @get_logs@.
 --
 -- Returns recent log entries from the shared 'LogSnapshotRef',
 -- with optional level filtering and pagination.

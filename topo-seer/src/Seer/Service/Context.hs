@@ -3,8 +3,8 @@
 
 -- | Runtime context shared by service-layer operations.
 --
--- This context is owned by the service boundary rather than internal command
--- IPC compatibility. The command layer can adapt its existing
+-- This context is owned by the service boundary rather than the in-process
+-- command adapter. The command layer can adapt its existing
 -- 'Seer.Command.Context.CommandContext' into this shape while HTTP, UI, and
 -- direct tests can construct it without depending on the command dispatcher.
 module Seer.Service.Context

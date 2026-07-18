@@ -19,9 +19,6 @@ library:
     - condition: os(windows)
       c-sources:
         - cbits/windows_process.c
-    - condition: '!os(windows)'
-      dependencies:
-        - unix
   exposed-modules:
     - Actor.Data
     - Actor.Log
@@ -73,7 +70,6 @@ library:
     - Seer.Input.Events
     - Seer.Input.Intent
     - Seer.Command.AppServiceAdapter
-    - Seer.Command.Channel
     - Seer.Command.Dispatch
     - Seer.Command.Handlers.Widgets
     - Seer.DataBrowser.AppService
@@ -236,7 +232,6 @@ library:
     - time
     - random
     - process
-    - network
     - sdl2
     - scientific
     - wai

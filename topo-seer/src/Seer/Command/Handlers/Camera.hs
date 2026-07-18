@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | IPC handlers for camera controls: @set_camera@, @get_camera@,
+-- | Command handlers for camera controls: @set_camera@, @get_camera@,
 -- @zoom_to_chunk@.
 --
 -- Camera state lives in 'UiState' as @uiPanOffset :: (Float, Float)@

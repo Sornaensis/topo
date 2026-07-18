@@ -78,17 +78,8 @@ import Actor.UI
   )
 import Actor.UiActions (UiActions)
 import Actor.UiActions.Handles (ActorHandles, mkActorHandles)
-import Control.Concurrent
-  ( MVar
-  , ThreadId
-  , forkIOWithUnmask
-  , killThread
-  , newEmptyMVar
-  , readMVar
-  , tryPutMVar
-  )
-import Control.Exception (bracket, finally, onException)
-import Control.Monad (replicateM, unless, void, when)
+import Control.Exception (bracket, onException)
+import Control.Monad (replicateM, unless, when)
 import Data.IORef (IORef, newIORef)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -101,14 +92,7 @@ import Hyperspace.Actor
   , shutdownActorSystem
   , spawnActor
   )
-import Seer.Command.Channel
-  ( CommandChannelControl
-  , CommandChannelEnv(..)
-  , dispatchCommandChannel
-  , newCommandChannelControl
-  , runCommandChannelWithControl
-  , shutdownCommandChannelControl
-  )
+import Seer.Command.AppServiceAdapter (dispatchAppServiceCommand)
 import Seer.Command.Context (CommandContext(..), commandServiceContext)
 import Seer.Config.Runtime (TopoSeerConfig(..), defaultConfig)
 import Seer.DataBrowser.Executor
@@ -157,23 +141,18 @@ data HeadlessConfig = HeadlessConfig
   , hcDiscoverPlugins :: !Bool
     -- ^ Whether to scan the user's plugin directory on startup. Disabled by
     -- default so CI tests do not depend on local plugin state.
-  , hcStartCommandChannel :: !Bool
-    -- ^ Whether to start the internal/test compatibility command IPC channel.
-    -- Most tests can dispatch directly through 'headlessCommandContext' and
-    -- should leave this off.
   , hcUseLogFile :: !Bool
     -- ^ Whether to create @~/.topo/LOG.txt@ and attach it to the log actor.
     -- Disabled by default to keep headless tests filesystem-light.
   } deriving (Eq, Show)
 
--- | Default headless runtime: deterministic, no SDL, no plugin discovery, no
--- command IPC, and no log file writes.
+-- | Default headless runtime: deterministic, no SDL, no plugin discovery, and
+-- no log file writes.
 defaultHeadlessConfig :: HeadlessConfig
 defaultHeadlessConfig = HeadlessConfig
   { hcRuntimeConfig = defaultConfig
   , hcSeed = 0
   , hcDiscoverPlugins = False
-  , hcStartCommandChannel = False
   , hcUseLogFile = False
   }
 
@@ -207,9 +186,6 @@ data HeadlessApp = HeadlessApp
   , haEventBus :: !ServiceEventBus
   , haActorHandles :: !ActorHandles
   , haCommandContext :: !CommandContext
-  , haCommandChannelEnv :: !CommandChannelEnv
-  , haCommandChannelControl :: !CommandChannelControl
-  , haCommandChannelThread :: !(Maybe (ThreadId, MVar ()))
   , haAutoTickScheduler :: !AutoTickScheduler
   , haDataBrowserExecutor :: !DataBrowserExecutor
   , haOverlayInspectorExecutor :: !OverlayInspectorExecutor
@@ -227,10 +203,10 @@ headlessServiceContext app = (commandServiceContext (haCommandContext app))
   { svcEventBus = Just (haEventBus app)
   }
 
--- | Dispatch a legacy envelope through the same service selected by the
--- optional headless command channel.
+-- | Dispatch a command envelope directly through the headless app service.
 headlessDispatchCommand :: HeadlessApp -> SeerCommand -> IO SeerResponse
-headlessDispatchCommand app = dispatchCommandChannel (haCommandChannelEnv app)
+headlessDispatchCommand app =
+  dispatchAppServiceCommand headlessAppService (haCommandContext app)
 
 -- | Runtime configuration used to construct this headless runtime.
 headlessRuntimeConfig :: HeadlessApp -> TopoSeerConfig
@@ -331,27 +307,6 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
         , ccDataBrowserExecutor = dataBrowserExecutor
         , ccOverlayInspectorExecutor = overlayInspectorExecutor
         }
-      commandEnv = CommandChannelEnv
-        { cceAppService = headlessAppService
-        , cceActorHandles = actorHandles
-        , cceUiSnapshotRef = uiSnapshotRef
-        , cceUiActionsHandle = uiActionsHandle
-        , cceScreenshotRef = screenshotRef
-        , cceScreenshotStoragePolicy = screenshotStoragePolicy
-        , cceLogSnapshotRef = Just logSnapshotRef
-        , cceDataBrowserExecutor = dataBrowserExecutor
-        , cceOverlayInspectorExecutor = overlayInspectorExecutor
-        }
-  commandControl <- newCommandChannelControl
-  commandThread <- if hcStartCommandChannel cfg
-    then do
-      done <- newEmptyMVar
-      threadId <- forkIOWithUnmask $ \unmask ->
-        unmask (runCommandChannelWithControl commandControl commandEnv)
-          `finally` void (tryPutMVar done ())
-      pure (Just (threadId, done))
-    else pure Nothing
-
   pure HeadlessApp
     { haActorSystem = system
     , haRuntimeConfig = runtimeCfg
@@ -381,9 +336,6 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
     , haEventBus = eventBus
     , haActorHandles = actorHandles
     , haCommandContext = commandContext
-    , haCommandChannelEnv = commandEnv
-    , haCommandChannelControl = commandControl
-    , haCommandChannelThread = commandThread
     , haAutoTickScheduler = autoTickScheduler
     , haDataBrowserExecutor = dataBrowserExecutor
     , haOverlayInspectorExecutor = overlayInspectorExecutor
@@ -393,9 +345,6 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
 stopHeadlessApp :: HeadlessApp -> IO ()
 stopHeadlessApp app = do
   shutdownScreenshotRequestRef (haScreenshotRef app)
-  mapM_ (killThread . fst) (haCommandChannelThread app)
-  mapM_ (readMVar . snd) (haCommandChannelThread app)
-  shutdownCommandChannelControl (haCommandChannelControl app)
   shutdownDataBrowserExecutor (haDataBrowserExecutor app)
   shutdownOverlayInspectorExecutor (haOverlayInspectorExecutor app)
   waitForSimIdle <- beginSimShutdown (haSimulationHandle app)

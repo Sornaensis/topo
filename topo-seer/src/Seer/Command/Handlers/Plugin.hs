@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | IPC handlers for plugin management: @list_plugins@,
+-- | Command handlers for plugin management: @list_plugins@,
 -- @set_plugin_enabled@, @set_plugin_param@.
 module Seer.Command.Handlers.Plugin
   ( handleListPlugins

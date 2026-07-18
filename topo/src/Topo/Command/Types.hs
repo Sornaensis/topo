@@ -1,16 +1,10 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
--- | Shared command/response types for legacy topo-seer command IPC.
+-- | Shared command/response envelopes used by in-process topo-seer dispatch.
 --
--- These types are retained for topo-seer internal/test command IPC
--- compatibility over a named pipe (Windows) or Unix domain socket. They are not
--- a public 1.0 automation contract; external automation should use the
--- topo-seer HTTP/OpenAPI surface.
---
--- They use the same length-prefixed JSON framing as
--- 'Topo.Plugin.RPC.Transport'.
+-- These types are not a public 1.0 automation contract; external automation
+-- should use the topo-seer HTTP/OpenAPI surface.
 module Topo.Command.Types
   ( -- * Command envelope
     SeerCommand(..)
@@ -19,8 +13,6 @@ module Topo.Command.Types
     -- * Helpers
   , okResponse
   , errResponse
-    -- * Pipe name
-  , commandPipeName
   ) where
 
 import Data.Aeson
@@ -98,14 +90,3 @@ errResponse reqId msg = SeerResponse
   , srError   = Just msg
   }
 
--- | The default pipe/socket name for the topo-seer command IPC listener.
---
--- On Windows: @\\\\.\\pipe\\topo-seer-cmd@
--- On Unix: @\/tmp\/topo-seer-cmd.sock@
-commandPipeName :: FilePath
-commandPipeName =
-#if defined(mingw32_HOST_OS)
-  "\\\\.\\pipe\\topo-seer-cmd"
-#else
-  "/tmp/topo-seer-cmd.sock"
-#endif

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | IPC handlers for simulation control: @get_sim_state@,
+-- | Command handlers for simulation control: @get_sim_state@,
 -- @set_sim_auto_tick@, @sim_tick@, and @get_sim_dag@.
 module Seer.Command.Handlers.Simulation
   ( handleGetSimState
