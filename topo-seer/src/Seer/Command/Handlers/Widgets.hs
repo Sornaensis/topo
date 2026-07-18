@@ -36,7 +36,6 @@ import Data.Text (Text)
 import Data.String (IsString(..))
 import Linear (V2(..))
 import qualified Data.Text as Text
-import qualified Data.Text.Read as Text
 
 import Actor.Data (TerrainSnapshot(..))
 import Actor.Log (LogLevel(..), LogSnapshot(..), getLogSnapshot, setLogCollapsed, setLogMinLevel)
@@ -59,12 +58,10 @@ import Actor.UI.State
   , SkyOverlayMode(..)
   , UiState(..)
   , UiMenuMode(..)
-  , ViewMode(..)
   , WeatherBasis(..)
   , dataBrowserScopedError
   , effectiveViewSelection
   , getUiSnapshot
-  , layeredViewStateToViewMode
   , readUiSnapshotRef
   )
 import Actor.UI.Setters
@@ -168,324 +165,6 @@ import UI.WidgetTree
   , buildDataBrowserWidgets
   , buildDataDetailWidgetsForState
   )
-
--- ---------------------------------------------------------------------------
--- Widget ID serialisation
--- ---------------------------------------------------------------------------
-
--- | Convert a 'WidgetId' to a colon-separated text representation.
-legacyWidgetIdToText :: WidgetId -> Text
-legacyWidgetIdToText wid = case wid of
-  -- Nullary constructors
-  WidgetGenerate               -> "WidgetGenerate"
-  WidgetLeftToggle             -> "WidgetLeftToggle"
-  WidgetLeftTabTopo            -> "WidgetLeftTabTopo"
-  WidgetLeftTabView            -> "WidgetLeftTabView"
-  WidgetSeedValue              -> "WidgetSeedValue"
-  WidgetSeedRandom             -> "WidgetSeedRandom"
-  WidgetChunkMinus             -> "WidgetChunkMinus"
-  WidgetChunkPlus              -> "WidgetChunkPlus"
-  WidgetConfigToggle           -> "WidgetConfigToggle"
-  WidgetConfigTabTerrain       -> "WidgetConfigTabTerrain"
-  WidgetConfigTabPlanet        -> "WidgetConfigTabPlanet"
-  WidgetConfigTabClimate       -> "WidgetConfigTabClimate"
-  WidgetConfigTabWeather       -> "WidgetConfigTabWeather"
-  WidgetConfigTabBiome         -> "WidgetConfigTabBiome"
-  WidgetConfigTabErosion       -> "WidgetConfigTabErosion"
-  WidgetConfigTabPipeline      -> "WidgetConfigTabPipeline"
-  WidgetConfigPresetSave       -> "WidgetConfigPresetSave"
-  WidgetConfigPresetLoad       -> "WidgetConfigPresetLoad"
-  WidgetConfigReset            -> "WidgetConfigReset"
-  WidgetConfigRevert           -> "WidgetConfigRevert"
-  WidgetViewBaseElevation      -> "WidgetViewBaseElevation"
-  WidgetViewBaseBiome          -> "WidgetViewBaseBiome"
-  WidgetViewBaseMoisture       -> "WidgetViewBaseMoisture"
-  WidgetViewBaseVegetation     -> "WidgetViewBaseVegetation"
-  WidgetViewBaseTerrainForm    -> "WidgetViewBaseTerrainForm"
-  WidgetViewBasePlateId        -> "WidgetViewBasePlateId"
-  WidgetViewBasePlateBoundary  -> "WidgetViewBasePlateBoundary"
-  WidgetViewBasePlateHardness  -> "WidgetViewBasePlateHardness"
-  WidgetViewBasePlateCrust     -> "WidgetViewBasePlateCrust"
-  WidgetViewBasePlateAge       -> "WidgetViewBasePlateAge"
-  WidgetViewBasePlateHeight    -> "WidgetViewBasePlateHeight"
-  WidgetViewBasePlateVelocity  -> "WidgetViewBasePlateVelocity"
-  WidgetViewOverlayNone        -> "WidgetViewOverlayNone"
-  WidgetViewOverlayTemperature -> "WidgetViewOverlayTemperature"
-  WidgetViewOverlayPrecipitation -> "WidgetViewOverlayPrecipitation"
-  WidgetViewOverlayCloud       -> "WidgetViewOverlayCloud"
-  WidgetViewBasisAverage       -> "WidgetViewBasisAverage"
-  WidgetViewBasisCurrent       -> "WidgetViewBasisCurrent"
-  WidgetViewElevation          -> "WidgetViewElevation"
-  WidgetViewBiome              -> "WidgetViewBiome"
-  WidgetViewClimate            -> "WidgetViewClimate"
-  WidgetViewWeather            -> "WidgetViewWeather"
-  WidgetViewMoisture           -> "WidgetViewMoisture"
-  WidgetViewPrecip             -> "WidgetViewPrecip"
-  WidgetViewPrecipCurrent      -> "WidgetViewPrecipCurrent"
-  WidgetViewVegetation         -> "WidgetViewVegetation"
-  WidgetViewTerrainForm        -> "WidgetViewTerrainForm"
-  WidgetViewPlateId            -> "WidgetViewPlateId"
-  WidgetViewPlateBoundary      -> "WidgetViewPlateBoundary"
-  WidgetViewPlateHardness      -> "WidgetViewPlateHardness"
-  WidgetViewPlateCrust         -> "WidgetViewPlateCrust"
-  WidgetViewPlateAge           -> "WidgetViewPlateAge"
-  WidgetViewPlateHeight        -> "WidgetViewPlateHeight"
-  WidgetViewPlateVelocity      -> "WidgetViewPlateVelocity"
-  WidgetViewCloud               -> "WidgetViewCloud"
-  WidgetViewCloudTypical        -> "WidgetViewCloudTypical"
-  WidgetDayNightToggle           -> "WidgetDayNightToggle"
-  WidgetViewOverlayPrev        -> "WidgetViewOverlayPrev"
-  WidgetViewOverlayNext        -> "WidgetViewOverlayNext"
-  WidgetViewFieldPrev          -> "WidgetViewFieldPrev"
-  WidgetViewFieldNext          -> "WidgetViewFieldNext"
-  WidgetOverlayManager         -> "WidgetOverlayManager"
-  WidgetOverlaySchema          -> "WidgetOverlaySchema"
-  WidgetOverlayProvenance      -> "WidgetOverlayProvenance"
-  WidgetOverlayExport          -> "WidgetOverlayExport"
-  WidgetOverlayImportValidate  -> "WidgetOverlayImportValidate"
-  WidgetLogDebug               -> "WidgetLogDebug"
-  WidgetLogInfo                -> "WidgetLogInfo"
-  WidgetLogWarn                -> "WidgetLogWarn"
-  WidgetLogError               -> "WidgetLogError"
-  WidgetLogHeader              -> "WidgetLogHeader"
-  WidgetMenuSave               -> "WidgetMenuSave"
-  WidgetMenuLoad               -> "WidgetMenuLoad"
-  WidgetMenuExit               -> "WidgetMenuExit"
-  WidgetPresetSaveOk           -> "WidgetPresetSaveOk"
-  WidgetPresetSaveCancel       -> "WidgetPresetSaveCancel"
-  WidgetPresetLoadOk           -> "WidgetPresetLoadOk"
-  WidgetPresetLoadCancel       -> "WidgetPresetLoadCancel"
-  WidgetPresetLoadItem         -> "WidgetPresetLoadItem"
-  WidgetWorldSaveOk            -> "WidgetWorldSaveOk"
-  WidgetWorldSaveCancel        -> "WidgetWorldSaveCancel"
-  WidgetWorldLoadOk            -> "WidgetWorldLoadOk"
-  WidgetWorldLoadCancel        -> "WidgetWorldLoadCancel"
-  WidgetWorldLoadItem          -> "WidgetWorldLoadItem"
-  WidgetWorldDelete            -> "WidgetWorldDelete"
-  WidgetWorldDeleteConfirm     -> "WidgetWorldDeleteConfirm"
-  WidgetWorldDeleteCancel      -> "WidgetWorldDeleteCancel"
-  WidgetSimTick                -> "WidgetSimTick"
-  WidgetSimAutoTick            -> "WidgetSimAutoTick"
-  WidgetConfigTabData          -> "WidgetConfigTabData"
-  WidgetDataDetailDismiss      -> "WidgetDataDetailDismiss"
-  WidgetDataEditToggle         -> "WidgetDataEditToggle"
-  WidgetDataEditSave           -> "WidgetDataEditSave"
-  WidgetDataEditCancel         -> "WidgetDataEditCancel"
-  WidgetDataCreateNew          -> "WidgetDataCreateNew"
-  WidgetDataDeleteBtn          -> "WidgetDataDeleteBtn"
-  WidgetDataDeleteConfirm      -> "WidgetDataDeleteConfirm"
-  WidgetDataDeleteCancel       -> "WidgetDataDeleteCancel"
-  WidgetEditorRadiusMinus      -> "WidgetEditorRadiusMinus"
-  WidgetEditorRadiusPlus       -> "WidgetEditorRadiusPlus"
-  WidgetEditorClose            -> "WidgetEditorClose"
-  WidgetEditorReopen           -> "WidgetEditorReopen"
-  WidgetEditorFalloffPrev      -> "WidgetEditorFalloffPrev"
-  WidgetEditorFalloffNext      -> "WidgetEditorFalloffNext"
-  -- Parameterized constructors: colon-separated
-  WidgetSliderMinus sid        -> "WidgetSliderMinus:" <> Text.pack (show sid)
-  WidgetSliderPlus sid         -> "WidgetSliderPlus:" <> Text.pack (show sid)
-  WidgetPipelineToggle name    -> "WidgetPipelineToggle:" <> name
-  WidgetPluginMoveUp name      -> "WidgetPluginMoveUp:" <> name
-  WidgetPluginMoveDown name    -> "WidgetPluginMoveDown:" <> name
-  WidgetPluginToggle name      -> "WidgetPluginToggle:" <> name
-  WidgetPluginExpand name      -> "WidgetPluginExpand:" <> name
-  WidgetPluginParamSlider a b  -> "WidgetPluginParamSlider:" <> a <> ":" <> b
-  WidgetPluginParamCheck a b   -> "WidgetPluginParamCheck:" <> a <> ":" <> b
-  WidgetDataPluginSelect n     -> "WidgetDataPluginSelect:" <> n
-  WidgetDataResourceSelect a b -> "WidgetDataResourceSelect:" <> a <> ":" <> b
-  WidgetDataPagePrev a b       -> "WidgetDataPagePrev:" <> a <> ":" <> b
-  WidgetDataPageNext a b       -> "WidgetDataPageNext:" <> a <> ":" <> b
-  WidgetDataRecordSelect i     -> "WidgetDataRecordSelect:" <> Text.pack (show i)
-  WidgetDataFieldToggle p      -> "WidgetDataFieldToggle:" <> p
-  WidgetDataFieldTextClick p   -> "WidgetDataFieldTextClick:" <> p
-  WidgetDataFieldStepMinus p   -> "WidgetDataFieldStepMinus:" <> p
-  WidgetDataFieldStepPlus p    -> "WidgetDataFieldStepPlus:" <> p
-  WidgetDataFieldBoolToggle p  -> "WidgetDataFieldBoolToggle:" <> p
-  WidgetDataFieldEnumPrev p    -> "WidgetDataFieldEnumPrev:" <> p
-  WidgetDataFieldEnumNext p    -> "WidgetDataFieldEnumNext:" <> p
-  WidgetEditorTool i           -> "WidgetEditorTool:" <> Text.pack (show i)
-  WidgetEditorParamMinus i     -> "WidgetEditorParamMinus:" <> Text.pack (show i)
-  WidgetEditorParamPlus i      -> "WidgetEditorParamPlus:" <> Text.pack (show i)
-  WidgetEditorCyclePrev i      -> "WidgetEditorCyclePrev:" <> Text.pack (show i)
-  WidgetEditorCycleNext i      -> "WidgetEditorCycleNext:" <> Text.pack (show i)
-
--- | Parse a colon-separated text representation back to 'WidgetId'.
-legacyParseWidgetId :: Text -> Maybe WidgetId
-legacyParseWidgetId t
-  | Just wid <- Map.lookup t nullaryWidgetMap = Just wid
-  -- SliderId params
-  | Just rest <- Text.stripPrefix "WidgetSliderMinus:" t
-  , Just sid <- lookupSliderId rest = Just (WidgetSliderMinus sid)
-  | Just rest <- Text.stripPrefix "WidgetSliderPlus:" t
-  , Just sid <- lookupSliderId rest = Just (WidgetSliderPlus sid)
-  -- Single Text params
-  | Just rest <- Text.stripPrefix "WidgetPipelineToggle:" t = Just (WidgetPipelineToggle rest)
-  | Just rest <- Text.stripPrefix "WidgetPluginMoveUp:" t = Just (WidgetPluginMoveUp rest)
-  | Just rest <- Text.stripPrefix "WidgetPluginMoveDown:" t = Just (WidgetPluginMoveDown rest)
-  | Just rest <- Text.stripPrefix "WidgetPluginToggle:" t = Just (WidgetPluginToggle rest)
-  | Just rest <- Text.stripPrefix "WidgetPluginExpand:" t = Just (WidgetPluginExpand rest)
-  | Just rest <- Text.stripPrefix "WidgetDataPluginSelect:" t = Just (WidgetDataPluginSelect rest)
-  | Just rest <- Text.stripPrefix "WidgetDataFieldToggle:" t = Just (WidgetDataFieldToggle rest)
-  | Just rest <- Text.stripPrefix "WidgetDataFieldTextClick:" t = Just (WidgetDataFieldTextClick rest)
-  | Just rest <- Text.stripPrefix "WidgetDataFieldStepMinus:" t = Just (WidgetDataFieldStepMinus rest)
-  | Just rest <- Text.stripPrefix "WidgetDataFieldStepPlus:" t = Just (WidgetDataFieldStepPlus rest)
-  | Just rest <- Text.stripPrefix "WidgetDataFieldBoolToggle:" t = Just (WidgetDataFieldBoolToggle rest)
-  | Just rest <- Text.stripPrefix "WidgetDataFieldEnumPrev:" t = Just (WidgetDataFieldEnumPrev rest)
-  | Just rest <- Text.stripPrefix "WidgetDataFieldEnumNext:" t = Just (WidgetDataFieldEnumNext rest)
-  -- Two Text params (split on first colon in the rest)
-  | Just rest <- Text.stripPrefix "WidgetPluginParamSlider:" t
-  , Just (a, b) <- splitColon rest = Just (WidgetPluginParamSlider a b)
-  | Just rest <- Text.stripPrefix "WidgetPluginParamCheck:" t
-  , Just (a, b) <- splitColon rest = Just (WidgetPluginParamCheck a b)
-  | Just rest <- Text.stripPrefix "WidgetDataResourceSelect:" t
-  , Just (a, b) <- splitColon rest = Just (WidgetDataResourceSelect a b)
-  | Just rest <- Text.stripPrefix "WidgetDataPagePrev:" t
-  , Just (a, b) <- splitColon rest = Just (WidgetDataPagePrev a b)
-  | Just rest <- Text.stripPrefix "WidgetDataPageNext:" t
-  , Just (a, b) <- splitColon rest = Just (WidgetDataPageNext a b)
-  -- Int params
-  | Just rest <- Text.stripPrefix "WidgetDataRecordSelect:" t
-  , Just i <- readInt rest = Just (WidgetDataRecordSelect i)
-  | Just rest <- Text.stripPrefix "WidgetEditorTool:" t
-  , Just i <- readInt rest = Just (WidgetEditorTool i)
-  | Just rest <- Text.stripPrefix "WidgetEditorParamMinus:" t
-  , Just i <- readInt rest = Just (WidgetEditorParamMinus i)
-  | Just rest <- Text.stripPrefix "WidgetEditorParamPlus:" t
-  , Just i <- readInt rest = Just (WidgetEditorParamPlus i)
-  | Just rest <- Text.stripPrefix "WidgetEditorCyclePrev:" t
-  , Just i <- readInt rest = Just (WidgetEditorCyclePrev i)
-  | Just rest <- Text.stripPrefix "WidgetEditorCycleNext:" t
-  , Just i <- readInt rest = Just (WidgetEditorCycleNext i)
-  | otherwise = Nothing
-
--- | Split on the first colon.
-splitColon :: Text -> Maybe (Text, Text)
-splitColon t = case Text.breakOn ":" t of
-  (a, rest)
-    | Text.null rest -> Nothing
-    | otherwise      -> Just (a, Text.drop 1 rest)
-
-readInt :: Text -> Maybe Int
-readInt t = case Text.decimal t of
-  Right (i, remainder) | Text.null remainder -> Just i
-  _ -> Nothing
-
--- | Lookup map for nullary WidgetId constructors.
-nullaryWidgetMap :: Map Text WidgetId
-nullaryWidgetMap = Map.fromList
-  [ ("WidgetGenerate",          WidgetGenerate)
-  , ("WidgetLeftToggle",        WidgetLeftToggle)
-  , ("WidgetLeftTabTopo",       WidgetLeftTabTopo)
-  , ("WidgetLeftTabView",       WidgetLeftTabView)
-  , ("WidgetSeedValue",         WidgetSeedValue)
-  , ("WidgetSeedRandom",        WidgetSeedRandom)
-  , ("WidgetChunkMinus",        WidgetChunkMinus)
-  , ("WidgetChunkPlus",         WidgetChunkPlus)
-  , ("WidgetConfigToggle",      WidgetConfigToggle)
-  , ("WidgetConfigTabTerrain",  WidgetConfigTabTerrain)
-  , ("WidgetConfigTabPlanet",   WidgetConfigTabPlanet)
-  , ("WidgetConfigTabClimate",  WidgetConfigTabClimate)
-  , ("WidgetConfigTabWeather",  WidgetConfigTabWeather)
-  , ("WidgetConfigTabBiome",    WidgetConfigTabBiome)
-  , ("WidgetConfigTabErosion",  WidgetConfigTabErosion)
-  , ("WidgetConfigTabPipeline", WidgetConfigTabPipeline)
-  , ("WidgetConfigPresetSave",  WidgetConfigPresetSave)
-  , ("WidgetConfigPresetLoad",  WidgetConfigPresetLoad)
-  , ("WidgetConfigReset",       WidgetConfigReset)
-  , ("WidgetConfigRevert",      WidgetConfigRevert)
-  , ("WidgetViewBaseElevation", WidgetViewBaseElevation)
-  , ("WidgetViewBaseBiome", WidgetViewBaseBiome)
-  , ("WidgetViewBaseMoisture", WidgetViewBaseMoisture)
-  , ("WidgetViewBaseVegetation", WidgetViewBaseVegetation)
-  , ("WidgetViewBaseTerrainForm", WidgetViewBaseTerrainForm)
-  , ("WidgetViewBasePlateId", WidgetViewBasePlateId)
-  , ("WidgetViewBasePlateBoundary", WidgetViewBasePlateBoundary)
-  , ("WidgetViewBasePlateHardness", WidgetViewBasePlateHardness)
-  , ("WidgetViewBasePlateCrust", WidgetViewBasePlateCrust)
-  , ("WidgetViewBasePlateAge", WidgetViewBasePlateAge)
-  , ("WidgetViewBasePlateHeight", WidgetViewBasePlateHeight)
-  , ("WidgetViewBasePlateVelocity", WidgetViewBasePlateVelocity)
-  , ("WidgetViewOverlayNone", WidgetViewOverlayNone)
-  , ("WidgetViewOverlayTemperature", WidgetViewOverlayTemperature)
-  , ("WidgetViewOverlayPrecipitation", WidgetViewOverlayPrecipitation)
-  , ("WidgetViewOverlayCloud", WidgetViewOverlayCloud)
-  , ("WidgetViewBasisAverage", WidgetViewBasisAverage)
-  , ("WidgetViewBasisCurrent", WidgetViewBasisCurrent)
-  , ("WidgetViewElevation",     WidgetViewElevation)
-  , ("WidgetViewBiome",         WidgetViewBiome)
-  , ("WidgetViewClimate",       WidgetViewClimate)
-  , ("WidgetViewWeather",       WidgetViewWeather)
-  , ("WidgetViewMoisture",      WidgetViewMoisture)
-  , ("WidgetViewPrecip",        WidgetViewPrecip)
-  , ("WidgetViewPrecipCurrent", WidgetViewPrecipCurrent)
-  , ("WidgetViewVegetation",    WidgetViewVegetation)
-  , ("WidgetViewTerrainForm",   WidgetViewTerrainForm)
-  , ("WidgetViewPlateId",       WidgetViewPlateId)
-  , ("WidgetViewPlateBoundary", WidgetViewPlateBoundary)
-  , ("WidgetViewPlateHardness", WidgetViewPlateHardness)
-  , ("WidgetViewPlateCrust",    WidgetViewPlateCrust)
-  , ("WidgetViewPlateAge",      WidgetViewPlateAge)
-  , ("WidgetViewPlateHeight",   WidgetViewPlateHeight)
-  , ("WidgetViewPlateVelocity", WidgetViewPlateVelocity)
-  , ("WidgetViewCloud",         WidgetViewCloud)
-  , ("WidgetViewCloudTypical",  WidgetViewCloudTypical)
-  , ("WidgetDayNightToggle",    WidgetDayNightToggle)
-  , ("WidgetViewOverlayPrev",   WidgetViewOverlayPrev)
-  , ("WidgetViewOverlayNext",   WidgetViewOverlayNext)
-  , ("WidgetViewFieldPrev",     WidgetViewFieldPrev)
-  , ("WidgetViewFieldNext",     WidgetViewFieldNext)
-  , ("WidgetOverlayManager",    WidgetOverlayManager)
-  , ("WidgetOverlaySchema",     WidgetOverlaySchema)
-  , ("WidgetOverlayProvenance", WidgetOverlayProvenance)
-  , ("WidgetOverlayExport",     WidgetOverlayExport)
-  , ("WidgetOverlayImportValidate", WidgetOverlayImportValidate)
-  , ("WidgetLogDebug",          WidgetLogDebug)
-  , ("WidgetLogInfo",           WidgetLogInfo)
-  , ("WidgetLogWarn",           WidgetLogWarn)
-  , ("WidgetLogError",          WidgetLogError)
-  , ("WidgetLogHeader",         WidgetLogHeader)
-  , ("WidgetMenuSave",          WidgetMenuSave)
-  , ("WidgetMenuLoad",          WidgetMenuLoad)
-  , ("WidgetMenuExit",          WidgetMenuExit)
-  , ("WidgetPresetSaveOk",      WidgetPresetSaveOk)
-  , ("WidgetPresetSaveCancel",  WidgetPresetSaveCancel)
-  , ("WidgetPresetLoadOk",      WidgetPresetLoadOk)
-  , ("WidgetPresetLoadCancel",  WidgetPresetLoadCancel)
-  , ("WidgetPresetLoadItem",    WidgetPresetLoadItem)
-  , ("WidgetWorldSaveOk",       WidgetWorldSaveOk)
-  , ("WidgetWorldSaveCancel",   WidgetWorldSaveCancel)
-  , ("WidgetWorldLoadOk",       WidgetWorldLoadOk)
-  , ("WidgetWorldLoadCancel",   WidgetWorldLoadCancel)
-  , ("WidgetWorldLoadItem",     WidgetWorldLoadItem)
-  , ("WidgetWorldDelete",       WidgetWorldDelete)
-  , ("WidgetWorldDeleteConfirm", WidgetWorldDeleteConfirm)
-  , ("WidgetWorldDeleteCancel", WidgetWorldDeleteCancel)
-  , ("WidgetSimTick",           WidgetSimTick)
-  , ("WidgetSimAutoTick",       WidgetSimAutoTick)
-  , ("WidgetConfigTabData",     WidgetConfigTabData)
-  , ("WidgetDataDetailDismiss", WidgetDataDetailDismiss)
-  , ("WidgetDataEditToggle",    WidgetDataEditToggle)
-  , ("WidgetDataEditSave",      WidgetDataEditSave)
-  , ("WidgetDataEditCancel",    WidgetDataEditCancel)
-  , ("WidgetDataCreateNew",     WidgetDataCreateNew)
-  , ("WidgetDataDeleteBtn",     WidgetDataDeleteBtn)
-  , ("WidgetDataDeleteConfirm", WidgetDataDeleteConfirm)
-  , ("WidgetDataDeleteCancel",  WidgetDataDeleteCancel)
-  , ("WidgetEditorRadiusMinus", WidgetEditorRadiusMinus)
-  , ("WidgetEditorRadiusPlus",  WidgetEditorRadiusPlus)
-  , ("WidgetEditorClose",       WidgetEditorClose)
-  , ("WidgetEditorReopen",      WidgetEditorReopen)
-  , ("WidgetEditorFalloffPrev", WidgetEditorFalloffPrev)
-  , ("WidgetEditorFalloffNext", WidgetEditorFalloffNext)
-  ]
-
--- | SliderId lookup map.
-sliderIdMap :: Map Text SliderId
-sliderIdMap = Map.fromList
-  [ (Text.pack (show sid), sid) | sid <- [minBound..maxBound] ]
-
-lookupSliderId :: Text -> Maybe SliderId
-lookupSliderId = flip Map.lookup sliderIdMap
 
 -- ---------------------------------------------------------------------------
 -- click_widget
@@ -633,11 +312,7 @@ localInvocationGate capability wid
   | otherwise = Right ()
 
 invocationGate :: UiState -> WidgetCapability -> WidgetInvocation -> Either Text ()
-invocationGate uiSnap capability invocation
-  | wcSupport capability == WidgetCompatibilityOnly
-  , uiMenuMode uiSnap == MenuNone = Right ()
-  | wcSupport capability == WidgetCompatibilityOnly =
-      Left "widget is not available while a modal dialog is active"
+invocationGate _uiSnap capability invocation
   | not (wcVisible capability) = Left ("widget is not visible: " <> widgetIdToText (wiWidgetId invocation))
   | not (wcEnabled capability) = Left ("widget rejected: " <> Text.intercalate "; " (wcPreconditions capability))
   | wcSupport capability == WidgetLocalOnly = unsupported "local-only"
@@ -714,9 +389,6 @@ executeWidgetClick runService ctx uiSnap invocation = do
             submitAction ctx (UiActionSetWeatherBasis basis)
             pure $ Right "weather basis set"
           else pure $ Left "weather basis requires an active builtin weather overlay"
-      setLegacyView mode = do
-        submitAction ctx (UiActionSetViewMode mode)
-        pure $ Right "view mode set"
   case wid of
     -- ----- Left panel & tabs -----
     WidgetLeftToggle -> do
@@ -797,26 +469,6 @@ executeWidgetClick runService ctx uiSnap invocation = do
     WidgetViewOverlayCloud -> setOverlay (Just SkyOverlayCloud)
     WidgetViewBasisAverage -> setBasis WeatherBasisAverage
     WidgetViewBasisCurrent -> setBasis WeatherBasisCurrent
-
-    -- Legacy single-mode widget IDs are still accepted by click_widget.
-    WidgetViewElevation     -> setLegacyView ViewElevation
-    WidgetViewBiome         -> setLegacyView ViewBiome
-    WidgetViewClimate       -> setLegacyView ViewClimate
-    WidgetViewWeather       -> setLegacyView ViewWeather
-    WidgetViewMoisture      -> setLegacyView ViewMoisture
-    WidgetViewPrecip        -> setLegacyView ViewPrecip
-    WidgetViewPrecipCurrent -> setLegacyView ViewPrecipCurrent
-    WidgetViewVegetation    -> setLegacyView ViewVegetation
-    WidgetViewTerrainForm   -> setLegacyView ViewTerrainForm
-    WidgetViewPlateId       -> setLegacyView ViewPlateId
-    WidgetViewPlateBoundary -> setLegacyView ViewPlateBoundary
-    WidgetViewPlateHardness -> setLegacyView ViewPlateHardness
-    WidgetViewPlateCrust    -> setLegacyView ViewPlateCrust
-    WidgetViewPlateAge      -> setLegacyView ViewPlateAge
-    WidgetViewPlateHeight   -> setLegacyView ViewPlateHeight
-    WidgetViewPlateVelocity -> setLegacyView ViewPlateVelocity
-    WidgetViewCloud          -> setLegacyView ViewCloud
-    WidgetViewCloudTypical   -> setLegacyView ViewCloudTypical
 
     -- ----- Day/night toggle -----
     WidgetDayNightToggle -> do
@@ -1445,7 +1097,6 @@ data WidgetClickSupport
   | WidgetArgumentRequired
   | WidgetLocalOnly
   | WidgetNonClickable
-  | WidgetCompatibilityOnly
   deriving (Eq, Show)
 
 data WidgetCapability = WidgetCapability
@@ -1492,24 +1143,6 @@ widgetCapability uiSnap wid = WidgetCapability
 
 widgetSupport :: WidgetId -> (WidgetClickSupport, Maybe Value, Maybe Text)
 widgetSupport wid = case wid of
-  WidgetViewElevation -> compatibility
-  WidgetViewBiome -> compatibility
-  WidgetViewClimate -> compatibility
-  WidgetViewWeather -> compatibility
-  WidgetViewMoisture -> compatibility
-  WidgetViewPrecip -> compatibility
-  WidgetViewPrecipCurrent -> compatibility
-  WidgetViewVegetation -> compatibility
-  WidgetViewTerrainForm -> compatibility
-  WidgetViewPlateId -> compatibility
-  WidgetViewPlateBoundary -> compatibility
-  WidgetViewPlateHardness -> compatibility
-  WidgetViewPlateCrust -> compatibility
-  WidgetViewPlateAge -> compatibility
-  WidgetViewPlateHeight -> compatibility
-  WidgetViewPlateVelocity -> compatibility
-  WidgetViewCloud -> compatibility
-  WidgetViewCloudTypical -> compatibility
   WidgetPresetLoadItem -> required "item_index" "zero-based filtered preset index"
   WidgetWorldLoadItem -> required "item_index" "zero-based filtered world index"
   WidgetPluginParamSlider _ _ -> normalizedPosition
@@ -1523,7 +1156,6 @@ widgetSupport wid = case wid of
   WidgetOverlayImportValidate -> clickable
   _ -> clickable
   where
-    compatibility = (WidgetCompatibilityOnly, Nothing, Just "set_view_mode")
     localOnly operation = (WidgetLocalOnly, Nothing, Just operation)
     clickable = (WidgetClickable, Nothing, Nothing)
     normalizedPosition =
@@ -1727,24 +1359,6 @@ widgetActive uiSnap wid = case wid of
   WidgetDataFieldToggle path -> Just (Set.member path (dbsExpandedFields dbs))
   WidgetDataEditToggle -> Just (dbsEditMode dbs)
   WidgetEditorTool index -> Just (index == fromEnum (editorTool (uiEditor uiSnap)))
-  WidgetViewElevation -> legacyActive ViewElevation
-  WidgetViewBiome -> legacyActive ViewBiome
-  WidgetViewClimate -> legacyActive ViewClimate
-  WidgetViewWeather -> legacyActive ViewWeather
-  WidgetViewMoisture -> legacyActive ViewMoisture
-  WidgetViewPrecip -> legacyActive ViewPrecip
-  WidgetViewPrecipCurrent -> legacyActive ViewPrecipCurrent
-  WidgetViewVegetation -> legacyActive ViewVegetation
-  WidgetViewTerrainForm -> legacyActive ViewTerrainForm
-  WidgetViewPlateId -> legacyActive ViewPlateId
-  WidgetViewPlateBoundary -> legacyActive ViewPlateBoundary
-  WidgetViewPlateHardness -> legacyActive ViewPlateHardness
-  WidgetViewPlateCrust -> legacyActive ViewPlateCrust
-  WidgetViewPlateAge -> legacyActive ViewPlateAge
-  WidgetViewPlateHeight -> legacyActive ViewPlateHeight
-  WidgetViewPlateVelocity -> legacyActive ViewPlateVelocity
-  WidgetViewCloud -> legacyActive ViewCloud
-  WidgetViewCloudTypical -> legacyActive ViewCloudTypical
   _ -> Nothing
   where
     dbs = uiDataBrowser uiSnap
@@ -1754,7 +1368,6 @@ widgetActive uiSnap wid = case wid of
     overlayActive mode = Just (lvsSkyOverlay selection == mode)
     basisActive basis = Just
       (weatherBasisEnabled uiSnap && lvsWeatherBasis selection == basis)
-    legacyActive mode = Just (layeredViewStateToViewMode selection == Just mode)
     pluginBoolValue pluginName paramName = case
         Map.lookup pluginName (uiPluginParams uiSnap) >>= Map.lookup paramName of
       Just (Bool current) -> current
@@ -1879,7 +1492,6 @@ widgetSupportText support = case support of
   WidgetArgumentRequired -> "argument_required"
   WidgetLocalOnly -> "local_only"
   WidgetNonClickable -> "non_clickable"
-  WidgetCompatibilityOnly -> "compatibility_only"
 
 widgetCapabilityValue :: WidgetCapability -> Value
 widgetCapabilityValue capability = object $

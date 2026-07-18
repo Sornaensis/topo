@@ -110,24 +110,6 @@ componentForWidget wid = case wid of
   WidgetViewOverlayCloud -> componentViewPanel
   WidgetViewBasisAverage -> componentViewPanel
   WidgetViewBasisCurrent -> componentViewPanel
-  WidgetViewElevation -> componentViewPanel
-  WidgetViewBiome -> componentViewPanel
-  WidgetViewClimate -> componentViewPanel
-  WidgetViewWeather -> componentViewPanel
-  WidgetViewMoisture -> componentViewPanel
-  WidgetViewPrecip -> componentViewPanel
-  WidgetViewPrecipCurrent -> componentViewPanel
-  WidgetViewVegetation -> componentViewPanel
-  WidgetViewTerrainForm -> componentViewPanel
-  WidgetViewPlateId -> componentViewPanel
-  WidgetViewPlateBoundary -> componentViewPanel
-  WidgetViewPlateHardness -> componentViewPanel
-  WidgetViewPlateCrust -> componentViewPanel
-  WidgetViewPlateAge -> componentViewPanel
-  WidgetViewPlateHeight -> componentViewPanel
-  WidgetViewPlateVelocity -> componentViewPanel
-  WidgetViewCloud -> componentViewPanel
-  WidgetViewCloudTypical -> componentViewPanel
   WidgetDayNightToggle -> componentViewPanel
   WidgetViewOverlayPrev -> componentViewPanel
   WidgetViewOverlayNext -> componentViewPanel

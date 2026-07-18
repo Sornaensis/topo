@@ -7,26 +7,32 @@ import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Vector.Unboxed as U
 import Test.Tasty.Bench
 
-import Actor.UI.State (ViewMode(..))
+import Actor.UI.State
+  ( BaseViewMode(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , WeatherBasis(..)
+  , defaultLayeredViewState
+  )
 import Fixtures
 import Topo (TerrainChunk)
 import UI.OverlayExtract (extractOverlayField)
-import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
+import UI.TerrainRender (ChunkGeometry, buildChunkGeometryForSelection)
 
 benchmarks :: Benchmark
 benchmarks = bgroup "TerrainGeometry"
   [ bgroup "buildChunkGeometry"
-    [ bench "ViewElevation"  $ nf (buildGeo ViewElevation)  benchTerrainChunk
-    , bench "ViewBiome"      $ nf (buildGeo ViewBiome)      benchTerrainChunk
-    , bench "ViewMoisture"   $ nf (buildGeo ViewMoisture)   benchTerrainChunk
-    , bench "ViewClimate"    $ nf (buildGeo ViewClimate)    benchTerrainChunk
-    , bench "ViewWeather"    $ nf (buildGeo ViewWeather)    benchTerrainChunk
-    , bench "ViewTerrainForm"$ nf (buildGeo ViewTerrainForm) benchTerrainChunk
-    , bench "ViewPlateId"    $ nf (buildGeo ViewPlateId)    benchTerrainChunk
+    [ bench "BaseElevation"  $ nf (buildGeo defaultLayeredViewState) benchTerrainChunk
+    , bench "BaseBiome"      $ nf (buildGeo (baseSelection BaseViewBiome)) benchTerrainChunk
+    , bench "BaseMoisture"   $ nf (buildGeo (baseSelection BaseViewMoisture)) benchTerrainChunk
+    , bench "AverageTemperature" $ nf (buildGeo (weatherSelection WeatherBasisAverage)) benchTerrainChunk
+    , bench "CurrentTemperature" $ nf (buildGeo (weatherSelection WeatherBasisCurrent)) benchTerrainChunk
+    , bench "BaseTerrainForm" $ nf (buildGeo (baseSelection BaseViewTerrainForm)) benchTerrainChunk
+    , bench "BasePlateId"    $ nf (buildGeo (baseSelection BaseViewPlateId)) benchTerrainChunk
     ]
   , bgroup "buildChunkGeometry/dayNight"
-    [ bench "ViewElevation" $ nf (buildGeoDayNight ViewElevation) benchTerrainChunk
-    , bench "ViewBiome"     $ nf (buildGeoDayNight ViewBiome)     benchTerrainChunk
+    [ bench "BaseElevation" $ nf (buildGeoDayNight defaultLayeredViewState) benchTerrainChunk
+    , bench "BaseBiome"     $ nf (buildGeoDayNight (baseSelection BaseViewBiome)) benchTerrainChunk
     ]
   , bgroup "buildChunkGeometry/overlay"
     [ bench "ViewOverlay/dense"  $ nf (buildGeoOverlay denseOverlayVec)  benchTerrainChunk
@@ -34,11 +40,11 @@ benchmarks = bgroup "TerrainGeometry"
     ]
   ]
 
-buildGeo :: ViewMode -> TerrainChunk -> ChunkGeometry
-buildGeo vm = buildChunkGeometry
+buildGeo :: LayeredViewState -> TerrainChunk -> ChunkGeometry
+buildGeo selection = buildChunkGeometryForSelection
   6                              -- hex radius
   benchWorldConfig
-  vm
+  selection
   0.3                            -- water level
   (IntMap.singleton 0 benchClimateChunk)
   (IntMap.singleton 0 benchWeatherChunk)
@@ -47,11 +53,11 @@ buildGeo vm = buildChunkGeometry
   Nothing                        -- no overlay data
   0                              -- chunk id
 
-buildGeoDayNight :: ViewMode -> TerrainChunk -> ChunkGeometry
-buildGeoDayNight vm = buildChunkGeometry
+buildGeoDayNight :: LayeredViewState -> TerrainChunk -> ChunkGeometry
+buildGeoDayNight selection = buildChunkGeometryForSelection
   6
   benchWorldConfig
-  vm
+  selection
   0.3
   (IntMap.singleton 0 benchClimateChunk)
   (IntMap.singleton 0 benchWeatherChunk)
@@ -74,10 +80,10 @@ sparseOverlayVec =
     Nothing -> Nothing
 
 buildGeoOverlay :: Maybe (U.Vector Float) -> TerrainChunk -> ChunkGeometry
-buildGeoOverlay mOvl = buildChunkGeometry
+buildGeoOverlay mOvl = buildChunkGeometryForSelection
   6
   benchWorldConfig
-  (ViewOverlay "bench_overlay" 0)
+  pluginSelection
   0.3
   (IntMap.singleton 0 benchClimateChunk)
   (IntMap.singleton 0 benchWeatherChunk)
@@ -85,3 +91,16 @@ buildGeoOverlay mOvl = buildChunkGeometry
   (IntMap.singleton 0 benchVegetationChunk)
   mOvl
   0
+
+baseSelection :: BaseViewMode -> LayeredViewState
+baseSelection base = defaultLayeredViewState { lvsBaseView = base }
+
+weatherSelection :: WeatherBasis -> LayeredViewState
+weatherSelection basis = defaultLayeredViewState
+  { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+  , lvsWeatherBasis = basis
+  }
+
+pluginSelection :: LayeredViewState
+pluginSelection = defaultLayeredViewState
+  { lvsSkyOverlay = Just (SkyOverlayPlugin "bench_overlay" 0) }

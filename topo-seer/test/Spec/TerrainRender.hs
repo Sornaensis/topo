@@ -12,10 +12,11 @@ import qualified SDL.Raw.Types as Raw
 import Topo (ClimateChunk(..), WorldConfig(..), TerrainChunk(..), VegetationChunk(..), WeatherChunk(..), zeroDirSlope)
 import Topo.Types (pattern BiomeDesert, pattern FormFlat, pattern PlateBoundaryNone)
 import Topo.Weather (WeatherNormalsChunk(..))
-import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), ViewMode(..), WeatherBasis(..), baseViewModeToViewMode, defaultLayeredViewState)
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), WeatherBasis(..), defaultLayeredViewState)
 import UI.DayNight (dayNightMinBrightness)
 import UI.HexGeometry (hexCenterF, renderHexRadiusPx)
-import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry, buildChunkGeometryForSelection, buildChunkSkyOverlayGeometryForSelection, buildDayNightGeometry)
+import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometryForSelection, buildChunkSkyOverlayGeometryForSelection, buildDayNightGeometry)
+import Spec.Support.LayeredView (baseSelection, cloudSelection, elevationSelection, precipitationSelection, weatherSelection)
 import UI.Widgets (Rect(..))
 
 spec :: Spec
@@ -24,7 +25,7 @@ spec = describe "Terrain render geometry" $ do
     let size = 2
         config = WorldConfig { wcChunkSize = size }
         chunk = emptyTerrainChunk size
-        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
+        geometry = buildChunkGeometryForSelection renderHexRadiusPx config elevationSelection 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
         tileCount = size * size
     SV.length (cgVertices geometry) `shouldBe` tileCount * 7
     SV.length (cgIndices geometry) `shouldBe` tileCount * 18
@@ -33,7 +34,7 @@ spec = describe "Terrain render geometry" $ do
     let size = 3
         config = WorldConfig { wcChunkSize = size }
         chunk = emptyTerrainChunk size
-        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
+        geometry = buildChunkGeometryForSelection renderHexRadiusPx config elevationSelection 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
         Rect (V2 _ _ , V2 w h) = cgBounds geometry
     w `shouldSatisfy` (> 0)
     h `shouldSatisfy` (> 0)
@@ -42,7 +43,7 @@ spec = describe "Terrain render geometry" $ do
     let size = 1
         config = WorldConfig { wcChunkSize = size }
         chunk = emptyTerrainChunk size
-        geometry = buildChunkGeometry renderHexRadiusPx config ViewElevation 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
+        geometry = buildChunkGeometryForSelection renderHexRadiusPx config elevationSelection 0 IntMap.empty IntMap.empty IntMap.empty IntMap.empty Nothing 0 chunk
         Rect (V2 bx by, _) = cgBounds geometry
         Raw.Vertex (Raw.FPoint localX localY) _ _ = cgVertices geometry SV.! 0
         (centerX, centerY) = hexCenterF renderHexRadiusPx 0 0
@@ -63,17 +64,15 @@ spec = describe "Terrain render geometry" $ do
           IntMap.empty weather IntMap.empty IntMap.empty Nothing 0 chunk
     geometry 0.2 `shouldBe` geometry 0.9
 
-  it "matches legacy base colors for base-only layered selections" $ do
+  it "renders every canonical base-only selection as opaque" $ do
     let veg = Just (testVegetationChunk 1 0.7)
         check baseMode = do
-          let legacyMode = baseViewModeToViewMode baseMode
-              selection = defaultLayeredViewState
+          let selection = defaultLayeredViewState
                 { lvsBaseView = baseMode
                 , lvsSkyOverlay = Nothing
                 }
-              layered = selectionColor selection Nothing Nothing Nothing veg
-              legacy = viewColorWithData legacyMode Nothing Nothing Nothing veg
-          layered `shouldBe` legacy
+          vertexAlphaTuple (selectionColor selection Nothing Nothing Nothing veg)
+            `shouldBe` 255
     mapM_ check
       [ BaseViewElevation
       , BaseViewBiome
@@ -94,26 +93,25 @@ spec = describe "Terrain render geometry" $ do
         climate = testClimateChunk 1 0.2 0.75 0.4 0.3
         baseOnly = selectionColor defaultLayeredViewState
           (Just climate) (Just weather) Nothing Nothing
-        check mode selection = do
-          selectionColor (selection { lvsOverlayOpacity = 1 })
-            (Just climate) (Just weather) Nothing Nothing
-            `shouldBe` viewColorWithData mode (Just climate) (Just weather) Nothing Nothing
+        check selection = do
+          vertexAlphaTuple (selectionColor (selection { lvsOverlayOpacity = 1 })
+            (Just climate) (Just weather) Nothing Nothing) `shouldBe` 255
           selectionColor (selection { lvsOverlayOpacity = 0 })
             (Just climate) (Just weather) Nothing Nothing
             `shouldBe` baseOnly
-    check ViewWeather defaultLayeredViewState
+    check defaultLayeredViewState
       { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
       , lvsWeatherBasis = WeatherBasisCurrent
       }
-    check ViewClimate defaultLayeredViewState
+    check defaultLayeredViewState
       { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
       , lvsWeatherBasis = WeatherBasisAverage
       }
-    check ViewPrecipCurrent defaultLayeredViewState
+    check defaultLayeredViewState
       { lvsSkyOverlay = Just SkyOverlayPrecipitation
       , lvsWeatherBasis = WeatherBasisCurrent
       }
-    check ViewCloud defaultLayeredViewState
+    check defaultLayeredViewState
       { lvsSkyOverlay = Just SkyOverlayCloud
       , lvsWeatherBasis = WeatherBasisCurrent
       }
@@ -121,18 +119,17 @@ spec = describe "Terrain render geometry" $ do
   it "alpha-composites current temperature over elevation, biome, and plate boundary bases" $ do
     let weather = testWeatherChunk 1 0.9 0.00 0.00 0.00
         check baseMode = do
-          let legacyMode = baseViewModeToViewMode baseMode
-              selection = defaultLayeredViewState
+          let selection = defaultLayeredViewState
                 { lvsBaseView = baseMode
                 , lvsSkyOverlay = Just SkyOverlayWeatherTemperature
                 , lvsWeatherBasis = WeatherBasisCurrent
                 , lvsOverlayOpacity = 0.5
                 }
               blended = selectionColor selection Nothing (Just weather) Nothing Nothing
-              baseOnly = viewColorWithData legacyMode Nothing (Just weather) Nothing Nothing
-              legacyWeather = viewColorWithData ViewWeather Nothing (Just weather) Nothing Nothing
+              baseOnly = selectionColor (baseSelection baseMode) Nothing (Just weather) Nothing Nothing
+              fullOverlay = selectionColor (weatherSelection WeatherBasisCurrent) Nothing (Just weather) Nothing Nothing
           blended `shouldNotBe` baseOnly
-          blended `shouldNotBe` legacyWeather
+          blended `shouldNotBe` fullOverlay
           vertexAlphaTuple blended `shouldBe` 255
     mapM_ check [BaseViewElevation, BaseViewBiome, BaseViewPlateBoundary]
 
@@ -184,16 +181,16 @@ spec = describe "Terrain render geometry" $ do
   it "keeps legacy scalar climate and weather modes opaque" $ do
     let climate = testClimateChunk 1 0.2 0.75 0.4 0.3
         weather = testWeatherChunk 1 0.85 0.00 0.00 0.65
-        legacy mode = viewColorWithData mode (Just climate) (Just weather) Nothing Nothing
-    legacy ViewClimate `shouldBe` heatTuple 0.2
-    legacy ViewWeather `shouldBe` heatTuple 0.85
-    legacy ViewPrecip `shouldBe` moistureTuple 0.75
-    legacy ViewPrecipCurrent `shouldBe` moistureTuple 0.65
+        color selection = selectionColor selection (Just climate) (Just weather) Nothing Nothing
+    color (weatherSelection WeatherBasisAverage) `shouldBe` heatTuple 0.2
+    color (weatherSelection WeatherBasisCurrent) `shouldBe` heatTuple 0.85
+    color (precipitationSelection WeatherBasisAverage) `shouldBe` moistureTuple 0.75
+    color (precipitationSelection WeatherBasisCurrent) `shouldBe` moistureTuple 0.65
 
   it "maps clear, cloudy, and storm fixtures to ordered ViewCloud colours" $ do
-    let clear = viewColor ViewCloud (testWeatherChunk 1 0.45 0.00 0.00 0.00)
-        cloudy = viewColor ViewCloud (testWeatherChunk 1 0.45 0.60 0.25 0.00)
-        storm = viewColor ViewCloud (testWeatherChunk 1 0.45 0.95 1.00 0.80)
+    let clear = viewColor (cloudSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.00 0.00 0.00)
+        cloudy = viewColor (cloudSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.60 0.25 0.00)
+        storm = viewColor (cloudSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.95 1.00 0.80)
     clear `shouldNotBe` cloudy
     cloudy `shouldNotBe` storm
     channelSum cloudy `shouldSatisfy` (> channelSum clear + 250)
@@ -203,10 +200,10 @@ spec = describe "Terrain render geometry" $ do
     vertexAlphaTuple storm `shouldBe` 255
 
   it "changes ViewCloud geometry colours for cover, water, and precipitation deltas" $ do
-    let base = viewColor ViewCloud (testWeatherChunk 1 0.45 0.55 0.20 0.00)
-        moreCover = viewColor ViewCloud (testWeatherChunk 1 0.45 0.80 0.20 0.00)
-        moreWater = viewColor ViewCloud (testWeatherChunk 1 0.45 0.55 0.70 0.00)
-        morePrecip = viewColor ViewCloud (testWeatherChunk 1 0.45 0.55 0.70 0.70)
+    let base = viewColor (cloudSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.55 0.20 0.00)
+        moreCover = viewColor (cloudSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.80 0.20 0.00)
+        moreWater = viewColor (cloudSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.55 0.70 0.00)
+        morePrecip = viewColor (cloudSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.55 0.70 0.70)
     moreCover `shouldNotBe` base
     moreWater `shouldNotBe` base
     morePrecip `shouldNotBe` moreWater
@@ -215,22 +212,22 @@ spec = describe "Terrain render geometry" $ do
     blueDominance morePrecip `shouldSatisfy` (> blueDominance moreWater + 20)
 
   it "keeps ViewWeather geometry temperature-only when cloud fields change" $ do
-    let clear = viewColor ViewWeather (testWeatherChunk 1 0.45 0.00 0.00 0.00)
-        storm = viewColor ViewWeather (testWeatherChunk 1 0.45 0.95 1.00 0.90)
+    let clear = viewColor (weatherSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.00 0.00 0.00)
+        storm = viewColor (weatherSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.95 1.00 0.90)
     storm `shouldBe` clear
 
   it "renders current precipitation from WeatherChunk precipitation" $ do
-    let dry = viewColor ViewPrecipCurrent (testWeatherChunk 1 0.45 0.00 0.00 0.00)
-        storm = viewColor ViewPrecipCurrent (testWeatherChunk 1 0.45 0.00 0.00 0.90)
+    let dry = viewColor (precipitationSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.00 0.00 0.00)
+        storm = viewColor (precipitationSelection WeatherBasisCurrent) (testWeatherChunk 1 0.45 0.00 0.00 0.90)
     storm `shouldNotBe` dry
     channelSum storm `shouldSatisfy` (> channelSum dry)
 
   it "renders typical cloud normals from weather_normals and never falls back to current clouds" $ do
     let currentStorm = testWeatherChunk 1 0.45 0.95 1.00 0.90
         typicalClear = testWeatherNormalsChunk 1 0.05 0.05 0.00
-        currentColor = viewColor ViewCloud currentStorm
-        typicalColor = viewColorWithNormals ViewCloudTypical (Just currentStorm) (Just typicalClear)
-        missingColor = viewColorWithNormals ViewCloudTypical (Just currentStorm) Nothing
+        currentColor = viewColor (cloudSelection WeatherBasisCurrent) currentStorm
+        typicalColor = viewColorWithNormals (cloudSelection WeatherBasisAverage) (Just currentStorm) (Just typicalClear)
+        missingColor = viewColorWithNormals (cloudSelection WeatherBasisAverage) (Just currentStorm) Nothing
     typicalColor `shouldNotBe` currentColor
     missingColor `shouldNotBe` currentColor
     typicalColor `shouldNotBe` missingColor
@@ -289,25 +286,13 @@ vertexColor (Raw.Vertex _ (Raw.Color r g b a) _) = (r, g, b, a)
 vertexAlpha :: Raw.Vertex -> Word8
 vertexAlpha (Raw.Vertex _ (Raw.Color _ _ _ a) _) = a
 
-viewColor :: ViewMode -> WeatherChunk -> (Word8, Word8, Word8, Word8)
-viewColor mode weather =
-  viewColorWithData mode Nothing (Just weather) Nothing Nothing
+viewColor :: LayeredViewState -> WeatherChunk -> (Word8, Word8, Word8, Word8)
+viewColor selection weather =
+  selectionColor selection Nothing (Just weather) Nothing Nothing
 
-viewColorWithNormals :: ViewMode -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> (Word8, Word8, Word8, Word8)
-viewColorWithNormals mode mWeather mNormals =
-  viewColorWithData mode Nothing mWeather mNormals Nothing
-
-viewColorWithData :: ViewMode -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> (Word8, Word8, Word8, Word8)
-viewColorWithData mode mClimate mWeather mNormals mVeg =
-  let size = 1
-      config = WorldConfig { wcChunkSize = size }
-      chunk = emptyTerrainChunk size
-      climateMap = maybe IntMap.empty (IntMap.singleton 0) mClimate
-      weatherMap = maybe IntMap.empty (IntMap.singleton 0) mWeather
-      normalMap = maybe IntMap.empty (IntMap.singleton 0) mNormals
-      vegMap = maybe IntMap.empty (IntMap.singleton 0) mVeg
-      geometry = buildChunkGeometry renderHexRadiusPx config mode 0 climateMap weatherMap normalMap vegMap Nothing 0 chunk
-  in vertexColor (cgVertices geometry SV.! 0)
+viewColorWithNormals :: LayeredViewState -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> (Word8, Word8, Word8, Word8)
+viewColorWithNormals selection mWeather mNormals =
+  selectionColor selection Nothing mWeather mNormals Nothing
 
 selectionColor :: LayeredViewState -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> (Word8, Word8, Word8, Word8)
 selectionColor selection mClimate mWeather mNormals mVeg =

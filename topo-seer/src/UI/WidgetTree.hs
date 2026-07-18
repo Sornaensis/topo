@@ -792,7 +792,7 @@ hitTest widgets point =
     [] -> Nothing
 
 -- | Returns 'True' for widgets that live in the left View tab
--- (view-mode buttons and overlay selector buttons), which are
+-- (layer and basis buttons plus overlay controls), which are
 -- subject to left-view scroll offset.
 isLeftViewWidget :: WidgetId -> Bool
 isLeftViewWidget wid = case wid of
@@ -814,24 +814,6 @@ isLeftViewWidget wid = case wid of
   WidgetViewOverlayCloud -> True
   WidgetViewBasisAverage -> True
   WidgetViewBasisCurrent -> True
-  WidgetViewElevation     -> True
-  WidgetViewBiome         -> True
-  WidgetViewClimate       -> True
-  WidgetViewWeather       -> True
-  WidgetViewMoisture      -> True
-  WidgetViewPrecip        -> True
-  WidgetViewPrecipCurrent -> True
-  WidgetViewVegetation    -> True
-  WidgetViewTerrainForm   -> True
-  WidgetViewPlateId       -> True
-  WidgetViewPlateBoundary -> True
-  WidgetViewPlateHardness -> True
-  WidgetViewPlateCrust    -> True
-  WidgetViewPlateAge      -> True
-  WidgetViewPlateHeight   -> True
-  WidgetViewPlateVelocity -> True
-  WidgetViewCloud         -> True
-  WidgetViewCloudTypical  -> True
   WidgetDayNightToggle    -> True
   WidgetViewOverlayPrev   -> True
   WidgetViewOverlayNext   -> True

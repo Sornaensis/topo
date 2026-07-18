@@ -5,7 +5,8 @@ module Spec.TerrainInspector (spec) where
 
 import Control.Monad (forM_)
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
-import Actor.UI (UiState(..), ViewMode(..), emptyUiState, legacyViewModeToLayeredViewState)
+import Actor.UI (LayeredViewState, UiState(..), ViewMode(..), emptyUiState)
+import Spec.Support.LayeredView (layeredSelectionForMode)
 import Actor.UI.State (allBuiltinViewModes)
 import Data.Aeson (Value(..))
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -71,7 +72,7 @@ import Topo.Types
   )
 
 uiForMode :: ViewMode -> UiState
-uiForMode mode = emptyUiState { uiViewSelection = legacyViewModeToLayeredViewState mode }
+uiForMode mode = emptyUiState { uiViewSelection = layeredSelectionForMode mode }
 
 spec :: Spec
 spec = describe "terrain inspector view model" $ do

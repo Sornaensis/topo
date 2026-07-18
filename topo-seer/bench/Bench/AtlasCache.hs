@@ -15,7 +15,13 @@ import qualified SDL
 import Test.Tasty (withResource)
 import Test.Tasty.Bench
 
-import Actor.UI.State (ViewMode(..))
+import Actor.UI.State
+  ( BaseViewMode(..)
+  , LayeredViewState(..)
+  , SkyOverlayMode(..)
+  , WeatherBasis(..)
+  , defaultLayeredViewState
+  )
 import Fixtures
 import Seer.Render.Atlas (drawAtlas)
 import Topo (TerrainChunk)
@@ -31,7 +37,7 @@ import UI.TerrainAtlas
   , attachRiverOverlay
   , renderAtlasTileTextures
   )
-import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
+import UI.TerrainRender (ChunkGeometry, buildChunkGeometryForSelection)
 import UI.TexturePool (TexturePool, newTexturePool, releaseTexture)
 
 ------------------------------------------------------------------------
@@ -75,7 +81,7 @@ cleanupSDLEnv env = do
 
 geoMap16 :: IntMap.IntMap ChunkGeometry
 geoMap16 = IntMap.mapWithKey (\k tc ->
-  buildChunkGeometry 6 benchWorldConfig ViewElevation 0.3
+  buildChunkGeometryForSelection 6 benchWorldConfig defaultLayeredViewState 0.3
     climateMap16 weatherMap16 IntMap.empty vegMap16
     Nothing k tc) terrainMap16
 
@@ -87,7 +93,7 @@ riverGeoMap = IntMap.mapMaybeWithKey (\k _ ->
 
 sampleTileGeometry :: [AtlasTileGeometry]
 sampleTileGeometry =
-  buildAtlasTileGeometry ViewElevation 0.3
+  buildAtlasTileGeometry defaultLayeredViewState 0.3
     terrainMap16 climateMap16 weatherMap16 vegMap16
     emptyOverlayStore benchWorldConfig
     6   -- hexRadiusPx
@@ -99,14 +105,14 @@ dayNightFn = mkDayNightFn benchTerrainSnapshot
 
 sampleTileGeometryDayNight :: [AtlasTileGeometry]
 sampleTileGeometryDayNight =
-  buildAtlasTileGeometry ViewElevation 0.3
+  buildAtlasTileGeometry defaultLayeredViewState 0.3
     terrainMap16 climateMap16 weatherMap16 vegMap16
     emptyOverlayStore benchWorldConfig
     6 1
 
 sampleTileGeometryOverlay :: [AtlasTileGeometry]
 sampleTileGeometryOverlay =
-  buildAtlasTileGeometry (ViewOverlay "bench_overlay" 0) 0.3
+  buildAtlasTileGeometry pluginSelection 0.3
     terrainMap16 climateMap16 weatherMap16 vegMap16
     benchOverlayStoreDense benchWorldConfig
     6 1
@@ -114,7 +120,7 @@ sampleTileGeometryOverlay =
 -- | 64-chunk tile geometry for high-tile-count benchmarks.
 sampleTileGeometry64 :: [AtlasTileGeometry]
 sampleTileGeometry64 =
-  buildAtlasTileGeometry ViewElevation 0.3
+  buildAtlasTileGeometry defaultLayeredViewState 0.3
     terrainMap64 climateMap64 weatherMap64 vegMap64
     emptyOverlayStore benchWorldConfig
     6 1
@@ -122,7 +128,7 @@ sampleTileGeometry64 =
 -- | 64-chunk geometry map for composeTilesFromGeometry.
 geoMap64 :: IntMap.IntMap ChunkGeometry
 geoMap64 = IntMap.mapWithKey (\k tc ->
-  buildChunkGeometry 6 benchWorldConfig ViewElevation 0.3
+  buildChunkGeometryForSelection 6 benchWorldConfig defaultLayeredViewState 0.3
     climateMap64 weatherMap64 IntMap.empty vegMap64
     Nothing k tc) terrainMap64
 
@@ -133,11 +139,11 @@ geoMap64 = IntMap.mapWithKey (\k tc ->
 benchmarks :: Benchmark
 benchmarks = bgroup "AtlasCache"
   [ bgroup "buildAtlasTileGeometry"
-    [ bench "ViewElevation/16chunks" $ nf (buildAtlasGeo ViewElevation) terrainMap16
-    , bench "ViewBiome/16chunks"     $ nf (buildAtlasGeo ViewBiome)     terrainMap16
-    , bench "ViewClimate/16chunks"   $ nf (buildAtlasGeo ViewClimate)   terrainMap16
-    , bench "ViewOverlay/dense/16chunks" $
-        nf (buildAtlasGeoOverlay (ViewOverlay "bench_overlay" 0) benchOverlayStoreDense) terrainMap16
+    [ bench "BaseElevation/16chunks" $ nf (buildAtlasGeo defaultLayeredViewState) terrainMap16
+    , bench "BaseBiome/16chunks"     $ nf (buildAtlasGeo biomeSelection) terrainMap16
+    , bench "AverageTemperature/16chunks" $ nf (buildAtlasGeo climateSelection) terrainMap16
+    , bench "PluginOverlay/dense/16chunks" $
+        nf (buildAtlasGeoOverlay pluginSelection benchOverlayStoreDense) terrainMap16
     ]
   , bgroup "composeTilesFromGeometry"
     [ bench "16chunks/scale1" $ nf (composeTilesFromGeometry geoMap16 6) 1
@@ -177,17 +183,30 @@ benchmarks = bgroup "AtlasCache"
         ]
   ]
 
-buildAtlasGeo :: ViewMode -> IntMap.IntMap TerrainChunk -> [AtlasTileGeometry]
-buildAtlasGeo vm tm =
-  buildAtlasTileGeometry vm 0.3
+buildAtlasGeo :: LayeredViewState -> IntMap.IntMap TerrainChunk -> [AtlasTileGeometry]
+buildAtlasGeo selection tm =
+  buildAtlasTileGeometry selection 0.3
     tm climateMap16 weatherMap16 vegMap16
     emptyOverlayStore benchWorldConfig
     6   -- hexRadiusPx
     1   -- atlasScale
 
-buildAtlasGeoOverlay :: ViewMode -> OverlayStore -> IntMap.IntMap TerrainChunk -> [AtlasTileGeometry]
-buildAtlasGeoOverlay vm store tm =
-  buildAtlasTileGeometry vm 0.3
+buildAtlasGeoOverlay :: LayeredViewState -> OverlayStore -> IntMap.IntMap TerrainChunk -> [AtlasTileGeometry]
+buildAtlasGeoOverlay selection store tm =
+  buildAtlasTileGeometry selection 0.3
     tm climateMap16 weatherMap16 vegMap16
     store benchWorldConfig
     6 1
+
+biomeSelection :: LayeredViewState
+biomeSelection = defaultLayeredViewState { lvsBaseView = BaseViewBiome }
+
+climateSelection :: LayeredViewState
+climateSelection = defaultLayeredViewState
+  { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
+  , lvsWeatherBasis = WeatherBasisAverage
+  }
+
+pluginSelection :: LayeredViewState
+pluginSelection = defaultLayeredViewState
+  { lvsSkyOverlay = Just (SkyOverlayPlugin "bench_overlay" 0) }

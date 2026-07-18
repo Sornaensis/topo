@@ -98,14 +98,14 @@ spec = describe "UI.WidgetTree" $ do
       `shouldBe` Just (WidgetPluginExpand "@1foo")
     widgetIdFromText "WidgetPluginExpand:@11#a"
       `shouldBe` Just (WidgetPluginExpand "@11#a")
-    widgetIdFromText "WidgetViewElevation" `shouldBe` Just WidgetViewElevation
+    widgetIdFromText "WidgetViewElevation" `shouldBe` Nothing
 
   it "derives a unique, codec-round-trippable active inventory" $ do
     let widgets = buildActiveWidgets emptyUiState wideWidgetLayout
         ids = map widgetId widgets
     length ids `shouldBe` length (nub ids)
     map (widgetIdFromText . widgetIdToText) ids `shouldBe` map Just ids
-    ids `shouldNotContain` [WidgetViewElevation]
+    map widgetIdToText ids `shouldNotContain` ["WidgetViewElevation"]
 
   it "advertises exactly the live slider controls for all six slider tabs" $ do
     let tabs =
@@ -252,7 +252,6 @@ spec = describe "UI.WidgetTree" $ do
         lastDown = widgetCapability pluginUi (WidgetPluginMoveDown "last")
         pluginSlider = widgetCapability pluginUi (WidgetPluginParamSlider "first" "density")
         pluginCheck = widgetCapability pluginUi (WidgetPluginParamCheck "first" "enabled")
-        legacyView = widgetCapability emptyUiState WidgetViewElevation
         simTick = widgetCapability pluginUi WidgetSimTick
         smoothEditor = (uiEditor emptyUiState)
           { editorActive = True, editorTool = ToolSmooth, editorSmoothPasses = 1 }
@@ -274,8 +273,6 @@ spec = describe "UI.WidgetTree" $ do
     wcSupport pluginSlider `shouldBe` WidgetArgumentRequired
     wcAlternative pluginSlider `shouldBe` Just "set_plugin_param"
     wcActive pluginCheck `shouldBe` Just True
-    wcVisible legacyView `shouldBe` False
-    wcSupport legacyView `shouldBe` WidgetCompatibilityOnly
     wcEnabled simTick `shouldBe` False
     wcEnabled smoothMinus `shouldBe` False
     wcPreconditions smoothMinus `shouldContain` ["editor parameter is at its minimum"]
@@ -389,14 +386,12 @@ spec = describe "UI.WidgetTree" $ do
     containsPoint (leftViewContentClipRect layout) screenPoint `shouldBe` True
     hitTest viewWidgets contentPoint `shouldBe` Just WidgetOverlayImportValidate
 
-  it "keeps legacy View widget ids classified with the View tab" $ do
+  it "classifies canonical layered View widget ids with the View tab" $ do
     let ids =
-          [ WidgetViewElevation, WidgetViewBiome, WidgetViewClimate, WidgetViewWeather
-          , WidgetViewMoisture, WidgetViewPrecip, WidgetViewPrecipCurrent
-          , WidgetViewVegetation, WidgetViewTerrainForm, WidgetViewPlateId
-          , WidgetViewPlateBoundary, WidgetViewPlateHardness, WidgetViewPlateCrust
-          , WidgetViewPlateAge, WidgetViewPlateHeight, WidgetViewPlateVelocity
-          , WidgetViewCloud, WidgetViewCloudTypical
+          [ WidgetViewBaseElevation, WidgetViewBaseBiome, WidgetViewBaseMoisture
+          , WidgetViewOverlayNone, WidgetViewOverlayTemperature
+          , WidgetViewOverlayPrecipitation, WidgetViewOverlayCloud
+          , WidgetViewBasisAverage, WidgetViewBasisCurrent
           ]
     map isLeftViewWidget ids `shouldBe` replicate (length ids) True
 

@@ -15,6 +15,7 @@ import qualified Data.Text as Text
 import Hyperspace.Actor (ActorHandle, ActorSystem, Protocol, get, newActorSystem, shutdownActorSystem)
 import System.Timeout (timeout)
 import Test.Hspec
+import Spec.Support.LayeredView (layeredSelectionForMode)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
@@ -59,7 +60,7 @@ import Actor.UI
   , setUiDayNightEnabled
   , setUiSimAutoTick
   , setUiSimTickRate
-  , setUiViewMode
+  , setUiViewSelection
   , setUiZoom
   , uiRenderWaterLevel
   , uiSimTickCount
@@ -322,6 +323,8 @@ waitPastAutoWeatherPublishInterval =
 emptyTerrainSnapshotForTests :: TerrainSnapshot
 emptyTerrainSnapshotForTests =
   TerrainSnapshot 0 0 0 0 0 0 mempty mempty mempty mempty mempty mempty mempty mempty mempty emptyOverlayStore defaultTerrainGeoContext
+
+setUiViewMode handle = setUiViewSelection handle . layeredSelectionForMode
 
 spec :: Spec
 spec = describe "Simulation actor" $ do

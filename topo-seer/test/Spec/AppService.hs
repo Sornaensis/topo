@@ -87,8 +87,6 @@ import Seer.Service.AppService
   , StateHexCoord(..)
   , StateLayeredViewSnapshot(..)
   , StateSummaryResponse(..)
-  , StateViewModeSummary(..)
-  , StateViewModesResponse(..)
   , StateViewChoice(..)
   , StateViewsResponse(..)
   , StateWeatherBasisSummary(..)
@@ -103,8 +101,6 @@ import Seer.Service.AppService
   , UiPanelTabState(..)
   , UiPanelsResponse(..)
   , UiOverlayFieldSummary(..)
-  , UiSetViewModeRequest(..)
-  , UiSetViewModeResponse(..)
   , UiSetViewRequest(..)
   , UiSetViewResponse(..)
   , UiViewportClickResponse(..)
@@ -154,7 +150,6 @@ import Seer.Service.AppService
   , simulationTickOperation
   , stateGetStateOperation
   , stateGetUiStateOperation
-  , stateGetViewModesOperation
   , stateGetViewsOperation
   , terrainExportDataOperation
   , terrainExportMeshOperation
@@ -183,7 +178,6 @@ import Seer.Service.AppService
   , uiSetLogLevelOperation
   , uiSetOverlayOperation
   , uiSetSeedOperation
-  , uiSetViewModeOperation
   , uiSetViewOperation
   , uiToggleConfigPanelOperation
   , uiViewportClickOperation
@@ -281,7 +275,6 @@ spec = describe "AppService surface" $ do
   it "defines typed operation contracts for M2 service groups" $
     typedOperationMethods `shouldBe`
       [ "get_state"
-      , "get_view_modes"
       , "get_views"
       , "get_ui_state"
       , "get_sliders"
@@ -346,7 +339,6 @@ spec = describe "AppService surface" $ do
       , "get_logs"
       , "take_screenshot"
       , "set_seed"
-      , "set_view_mode"
       , "set_view"
       , "set_config_tab"
       , "select_hex"
@@ -480,10 +472,8 @@ spec = describe "AppService surface" $ do
     serviceEventPublishAccepted eventPublishResponseContract `shouldBe` True
 
   it "keeps state, config, panel, and camera contracts typed" $ do
-    stateSummaryViewMode stateSummaryContract `shouldBe` "elevation"
     stateLayeredBaseMode (stateSummaryView stateSummaryContract) `shouldBe` "elevation"
     stateSummaryContextHex stateSummaryContract `shouldBe` Just (StateHexCoord 1 2)
-    map stateViewModeName (stateViewModes stateViewModesContract) `shouldBe` ["elevation", "biome"]
     stateLayeredOverlayMode (stateViewsCurrent stateViewsContract) `shouldBe` Just "cloud"
     map stateViewChoiceName (stateViewsBaseModes stateViewsContract) `shouldBe` ["elevation"]
     configSliderSummaryId configSliderContract `shouldBe` "SliderWaterLevel"
@@ -498,18 +488,12 @@ spec = describe "AppService surface" $ do
     uiLogPanelLevel (uiPanelsLogPanel uiPanelsContract) `shouldBe` "info"
 
   it "keeps layered view command contracts typed" $ do
-    uiSetViewModeRequestName uiSetViewModeRequestContract `shouldBe` "cloud"
-    uiSetViewModeRequestBasis uiSetViewModeRequestContract `shouldBe` Just "typical_normal"
-    uiSetViewModeRequestFieldIndex uiSetViewModeRequestContract `shouldBe` Nothing
-    uiSetViewModeResponseName uiSetViewModeResponseContract `shouldBe` "cloud_typical"
-    uiSetViewModeResponseView uiSetViewModeResponseContract `shouldBe` layeredViewValueContract
     uiSetViewRequestBaseMode uiSetViewRequestContract `shouldBe` Just "biome"
     uiSetViewRequestOverlayMode uiSetViewRequestContract `shouldBe` Just "cloud"
     uiSetViewRequestPluginOverlay uiSetViewRequestContract `shouldBe` Nothing
     uiSetViewRequestWeatherBasis uiSetViewRequestContract `shouldBe` Just "average"
     uiSetViewRequestOverlayOpacity uiSetViewRequestContract `shouldBe` Just 0.5
     uiSetViewRequestFieldIndex uiSetViewRequestContract `shouldBe` Nothing
-    uiSetViewResponseViewMode uiSetViewResponseContract `shouldBe` Just "cloud_typical"
     uiSetViewResponseView uiSetViewResponseContract `shouldBe` layeredViewValueContract
 
   it "keeps the simulation DAG contract typed and command-backed" $ do
@@ -520,7 +504,6 @@ spec = describe "AppService surface" $ do
 typedOperationMethods :: [Text]
 typedOperationMethods =
   [ typedOperationMethod stateGetStateOperation
-  , typedOperationMethod stateGetViewModesOperation
   , typedOperationMethod stateGetViewsOperation
   , typedOperationMethod stateGetUiStateOperation
   , typedOperationMethod configGetSlidersOperation
@@ -585,7 +568,6 @@ typedOperationMethods =
   , typedOperationMethod logGetOperation
   , typedOperationMethod screenshotTakeOperation
   , typedOperationMethod uiSetSeedOperation
-  , typedOperationMethod uiSetViewModeOperation
   , typedOperationMethod uiSetViewOperation
   , typedOperationMethod uiSetConfigTabOperation
   , typedOperationMethod uiSelectHexOperation
@@ -787,7 +769,6 @@ eventPublishResponseContract = ServiceEventPublishResponse
 stateSummaryContract :: StateSummaryResponse
 stateSummaryContract = StateSummaryResponse
   { stateSummarySeed = 42
-  , stateSummaryViewMode = "elevation"
   , stateSummaryView = layeredViewContract
   , stateSummaryConfigTab = "terrain"
   , stateSummaryGenerating = False
@@ -805,47 +786,8 @@ layeredViewContract = StateLayeredViewSnapshot
   , stateLayeredOverlayField = Nothing
   , stateLayeredWeatherBasis = "current"
   , stateLayeredOverlayOpacity = 0.75
-  , stateLayeredLegacyViewMode = Just "cloud"
   , stateLayeredTemporalBasis = Just "instantaneous_current"
   , stateLayeredSourceKind = Just "weather_snapshot"
-  }
-
-stateViewModesContract :: StateViewModesResponse
-stateViewModesContract = StateViewModesResponse
-  { stateViewModes =
-      [ StateViewModeSummary
-          { stateViewModeName = "elevation"
-          , stateViewModeActive = True
-          , stateViewModeLabel = "Elevation"
-          , stateViewModeDescription = "Hypsometric elevation relative to the configured water level."
-          , stateViewModeKind = "scalar"
-          , stateViewModeTemporalBasis = Nothing
-          , stateViewModeSourceKind = Nothing
-          , stateViewModeUnit = Just "m"
-          , stateViewModeColorScale = "elevation-blue-green"
-          , stateViewModeLegend = Null
-          , stateViewModeTooltipFields = ["elevation_m"]
-          , stateViewModeInspectorFields = ["hypsometry.elevation_m"]
-          , stateViewModeExportFields = ["elevation"]
-          , stateViewModeHttp = ["GET /state/view-modes"]
-          }
-      , StateViewModeSummary
-          { stateViewModeName = "biome"
-          , stateViewModeActive = False
-          , stateViewModeLabel = "Biome"
-          , stateViewModeDescription = "Biome classification."
-          , stateViewModeKind = "categorical"
-          , stateViewModeTemporalBasis = Nothing
-          , stateViewModeSourceKind = Nothing
-          , stateViewModeUnit = Nothing
-          , stateViewModeColorScale = "biome-palette"
-          , stateViewModeLegend = Null
-          , stateViewModeTooltipFields = ["biome"]
-          , stateViewModeInspectorFields = ["terrain.biome"]
-          , stateViewModeExportFields = ["biome", "biome_code"]
-          , stateViewModeHttp = ["GET /state/view-modes"]
-          }
-      ]
   }
 
 stateViewsContract :: StateViewsResponse
@@ -856,7 +798,6 @@ stateViewsContract = StateViewsResponse
           { stateViewChoiceName = "elevation"
           , stateViewChoiceActive = True
           , stateViewChoiceLabel = "Elevation"
-          , stateViewChoiceLegacyViewMode = Just "elevation"
           , stateViewChoicePluginOverlay = Nothing
           , stateViewChoiceFieldIndex = Nothing
           , stateViewChoiceMetadata = Null
@@ -867,7 +808,6 @@ stateViewsContract = StateViewsResponse
           { stateViewChoiceName = "cloud"
           , stateViewChoiceActive = True
           , stateViewChoiceLabel = "Cloud / Storm"
-          , stateViewChoiceLegacyViewMode = Just "cloud"
           , stateViewChoicePluginOverlay = Nothing
           , stateViewChoiceFieldIndex = Nothing
           , stateViewChoiceMetadata = Null
@@ -882,7 +822,6 @@ stateViewsContract = StateViewsResponse
           }
       ]
   , stateViewsOverlayNames = ["roads"]
-  , stateViewsLegacyModes = stateViewModes stateViewModesContract
   }
 
 layeredViewValueContract :: Value
@@ -891,21 +830,7 @@ layeredViewValueContract = object
   , "overlay_mode" .= ("cloud" :: Text)
   , "weather_basis" .= ("average" :: Text)
   , "overlay_opacity" .= (0.5 :: Double)
-  , "legacy_view_mode" .= ("cloud_typical" :: Text)
   ]
-
-uiSetViewModeRequestContract :: UiSetViewModeRequest
-uiSetViewModeRequestContract = UiSetViewModeRequest
-  { uiSetViewModeRequestName = "cloud"
-  , uiSetViewModeRequestBasis = Just "typical_normal"
-  , uiSetViewModeRequestFieldIndex = Nothing
-  }
-
-uiSetViewModeResponseContract :: UiSetViewModeResponse
-uiSetViewModeResponseContract = UiSetViewModeResponse
-  { uiSetViewModeResponseName = "cloud_typical"
-  , uiSetViewModeResponseView = layeredViewValueContract
-  }
 
 uiSetViewRequestContract :: UiSetViewRequest
 uiSetViewRequestContract = UiSetViewRequest
@@ -919,8 +844,7 @@ uiSetViewRequestContract = UiSetViewRequest
 
 uiSetViewResponseContract :: UiSetViewResponse
 uiSetViewResponseContract = UiSetViewResponse
-  { uiSetViewResponseViewMode = Just "cloud_typical"
-  , uiSetViewResponseView = layeredViewValueContract
+  { uiSetViewResponseView = layeredViewValueContract
   }
 
 configSliderContract :: ConfigSliderSummary
@@ -1246,7 +1170,6 @@ expectedServiceGroups :: [(Text, [Text])]
 expectedServiceGroups =
   [ ( "state"
     , [ "get_state"
-      , "get_view_modes"
       , "get_views"
       , "get_ui_state"
       ]
@@ -1344,7 +1267,6 @@ expectedServiceGroups =
     )
   , ( "ui"
     , [ "set_seed"
-      , "set_view_mode"
       , "set_view"
       , "set_config_tab"
       , "select_hex"

@@ -36,7 +36,8 @@ import Actor.AtlasResult (AtlasBuildTarget(..))
 import Actor.AtlasScheduler (AtlasFreshness(..), atlasKeyIsCurrent, atlasTargetBuildIsFresh, newAtlasFreshnessRef, writeAtlasFreshnessCurrentKeys)
 import Actor.Data (TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState, legacyViewModeToLayeredViewState)
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState)
+import Spec.Support.LayeredView (layeredSelectionForMode)
 import Hyperspace.Actor
   ( ActorSystem
   , get
@@ -119,6 +120,9 @@ targetFor job = AtlasBuildTarget
 
 waitForManagerCasts :: IO ()
 waitForManagerCasts = threadDelay 10000
+
+legacyViewModeToLayeredViewState :: ViewMode -> LayeredViewState
+legacyViewModeToLayeredViewState = layeredSelectionForMode
 
 spec :: Spec
 spec = describe "AtlasManager" $ do

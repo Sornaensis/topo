@@ -301,32 +301,29 @@ spec = describe "Seer.HTTP.Server" $ do
         objectHasKey "image_base64" (hresBody response) `shouldBe` False
         listDirectory root `shouldReturn` []
 
-  it "serves layered view state and legacy view aliases in headless mode" $
+  it "serves only canonical layered view APIs in headless mode" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       state0 <- request app (mkRequest "GET" ["state"])
       hresStatusCode state0 `shouldBe` 200
       lookupNestedText ["view", "base_mode"] (hresBody state0) `shouldBe` Just "elevation"
       lookupNestedValue ["view", "overlay_mode"] (hresBody state0) `shouldBe` Just Null
 
-      viewModes <- request app (mkRequest "GET" ["state", "view-modes"])
-      hresStatusCode viewModes `shouldBe` 200
-      objectHasKey "view_modes" (hresBody viewModes) `shouldBe` True
-      lookupNestedText ["view", "weather_basis"] (hresBody viewModes) `shouldBe` Just "current"
+      removedViewModes <- request app (mkRequest "GET" ["state", "view-modes"])
+      hresStatusCode removedViewModes `shouldBe` 404
+      isRouteMiss removedViewModes `shouldBe` True
 
       views0 <- request app (mkRequest "GET" ["state", "views"])
       hresStatusCode views0 `shouldBe` 200
       map (`objectHasKey` hresBody views0)
-        [ "view", "base_modes", "overlay_modes", "weather_bases", "overlay_names", "legacy_modes" ]
-        `shouldBe` replicate 6 True
-      lookupText "legacy_view_mode" (hresBody views0) `shouldBe` Just "elevation"
+        [ "view", "base_modes", "overlay_modes", "weather_bases", "overlay_names" ]
+        `shouldBe` replicate 5 True
+      objectHasKey "legacy_modes" (hresBody views0) `shouldBe` False
+      objectHasKey "legacy_view_mode" (hresBody views0) `shouldBe` False
 
-      legacy <- request app (mkRequest "POST" ["ui", "view-mode"])
+      removedViewMode <- request app (mkRequest "POST" ["ui", "view-mode"])
         { hreqBody = Just (object ["mode" .= ("cloud" :: Text), "basis" .= ("typical" :: Text)]) }
-      hresStatusCode legacy `shouldBe` 200
-      lookupText "view_mode" (hresBody legacy) `shouldBe` Just "cloud_typical"
-      lookupNestedText ["view", "overlay_mode"] (hresBody legacy) `shouldBe` Just "cloud"
-      lookupNestedText ["view", "weather_basis"] (hresBody legacy) `shouldBe` Just "average"
-      lookupNestedText ["view", "temporal_basis"] (hresBody legacy) `shouldBe` Just "typical_normal"
+      hresStatusCode removedViewMode `shouldBe` 404
+      isRouteMiss removedViewMode `shouldBe` True
 
       layered <- request app (mkRequest "POST" ["ui", "view"])
         { hreqBody = Just (object
@@ -336,7 +333,7 @@ spec = describe "Seer.HTTP.Server" $ do
             , "overlay_opacity" .= (0.25 :: Double)
             ]) }
       hresStatusCode layered `shouldBe` 200
-      lookupText "view_mode" (hresBody layered) `shouldBe` Just "cloud"
+      objectHasKey "view_mode" (hresBody layered) `shouldBe` False
       lookupNestedText ["view", "base_mode"] (hresBody layered) `shouldBe` Just "biome"
       lookupNestedText ["view", "overlay_mode"] (hresBody layered) `shouldBe` Just "cloud"
       lookupNestedText ["view", "weather_basis"] (hresBody layered) `shouldBe` Just "current"
@@ -348,16 +345,20 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupNestedText ["view", "selection", "base_mode"] (hresBody uiState) `shouldBe` Just "biome"
       lookupNestedText ["view", "overlay_mode"] (hresBody uiState) `shouldBe` Just "cloud"
       lookupNestedValue ["view", "overlay_opacity"] (hresBody uiState) `shouldBe` Just (Number 0.25)
+      lookupNestedValue ["view", "mode"] (hresBody uiState) `shouldBe` Nothing
 
       state1 <- request app (mkRequest "GET" ["state"])
       hresStatusCode state1 `shouldBe` 200
-      lookupText "view_mode" (hresBody state1) `shouldBe` Just "cloud"
+      objectHasKey "view_mode" (hresBody state1) `shouldBe` False
       lookupNestedText ["view", "base_mode"] (hresBody state1) `shouldBe` Just "biome"
 
-      clear <- request app (mkRequest "POST" ["ui", "view-mode"])
-        { hreqBody = Just (object ["mode" .= ("elevation" :: Text)]) }
+      clear <- request app (mkRequest "POST" ["ui", "view"])
+        { hreqBody = Just (object
+            [ "base_mode" .= ("elevation" :: Text)
+            , "overlay_mode" .= Null
+            ]) }
       hresStatusCode clear `shouldBe` 200
-      lookupText "view_mode" (hresBody clear) `shouldBe` Just "elevation"
+      objectHasKey "view_mode" (hresBody clear) `shouldBe` False
       lookupNestedText ["view", "base_mode"] (hresBody clear) `shouldBe` Just "elevation"
       lookupNestedValue ["view", "overlay_mode"] (hresBody clear) `shouldBe` Just Null
 
@@ -764,17 +765,18 @@ spec = describe "Seer.HTTP.Server" $ do
         lookupValue "support" (hresBody schema) `shouldBe` Just (String "clickable")
         lookupValue "enabled" (hresBody schema) `shouldBe` Just (Bool False)
         hresStatusCode <$> request app (mkRequest "GET" ["overlays"]) `shouldReturn` 200
+        closed <- clickWidgetHttp app "WidgetOverlayInspectorClose" Nothing Nothing
+        hresStatusCode closed `shouldBe` 200
 
         _ <- clickWidgetHttp app "WidgetLeftTabTopo" Nothing Nothing
         localOnly <- clickWidgetHttp app "WidgetSeedValue" Nothing Nothing
         assertWidgetError 400 "invalid_request" localOnly
         randomLocal <- clickWidgetHttp app "WidgetSeedRandom" Nothing Nothing
         assertWidgetError 400 "invalid_request" randomLocal
-        compatibility <- getWidgetStateHttp app "WidgetViewElevation"
-        lookupValue "support" (hresBody compatibility)
-          `shouldBe` Just (String "compatibility_only")
-        compatibilityClick <- clickWidgetHttp app "WidgetViewElevation" Nothing Nothing
-        hresStatusCode compatibilityClick `shouldBe` 200
+        removedViewWidget <- getWidgetStateHttp app "WidgetViewElevation"
+        assertWidgetError 404 "not_found" removedViewWidget
+        removedViewWidgetClick <- clickWidgetHttp app "WidgetViewElevation" Nothing Nothing
+        assertWidgetError 404 "not_found" removedViewWidgetClick
         seed <- request app $ withBody "POST" ["ui", "seed"] (object ["seed" .= (9 :: Int)])
         hresStatusCode seed `shouldBe` 200
 
@@ -1887,7 +1889,6 @@ spec = describe "Seer.HTTP.Server" $ do
     let doc = openApiDocument publicHttpRouteSpecs
         responseRefs =
           [ ("/state", "get", "AppStateResponse")
-          , ("/state/view-modes", "get", "StateViewModesResponse")
           , ("/state/views", "get", "StateViewsResponse")
           , ("/ui/state", "get", "UiStateResponse")
           , ("/presets", "get", "PresetsListResponse")
@@ -1913,7 +1914,6 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/simulation/tick", "post", "SimulationTickResponse")
           , ("/logs", "get", "LogGetResponse")
           , ("/screenshots", "post", "ScreenshotTakeResponse")
-          , ("/ui/view-mode", "post", "UiViewModeSetResponse")
           , ("/ui/view", "post", "UiViewSetResponse")
           , ("/overlays/current", "put", "UiOverlaySetResponse")
           , ("/ui/widgets", "get", "WidgetListResponse")
@@ -1935,7 +1935,6 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/simulation/auto-tick", "post", "SimulationAutoTickRequest")
           , ("/simulation/tick", "post", "SimulationTickRequest")
           , ("/screenshots", "post", "ScreenshotTakeRequest")
-          , ("/ui/view-mode", "post", "UiViewModeSetRequest")
           , ("/ui/view", "post", "UiViewSetRequest")
           , ("/overlays/current", "put", "UiOverlaySetRequest")
           , ("/ui/widgets/click", "post", "WidgetClickRequest")
@@ -1991,9 +1990,7 @@ spec = describe "Seer.HTTP.Server" $ do
         ])
     componentPropertyEnum doc "WidgetStateResponse" "support"
       `shouldBe` Just
-        [ "clickable", "argument_required", "local_only"
-        , "non_clickable", "compatibility_only"
-        ]
+        [ "clickable", "argument_required", "local_only", "non_clickable" ]
     (inlinePropertyNames =<< componentProperty doc "WidgetStateResponse" "required_argument")
       `shouldBe` Just ["description", "maximum", "minimum", "name", "type"]
     (inlinePropertyNames =<< componentProperty doc "WidgetStateResponse" "pending")
@@ -2001,15 +1998,18 @@ spec = describe "Seer.HTTP.Server" $ do
     (inlinePropertyNames =<< componentProperty doc "WidgetStateResponse" "async_error")
       `shouldBe` Just ["message", "operation", "request_id", "target"]
     componentPropertyNames doc "StateViewsResponse"
-      `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["view", "base_modes", "overlay_modes", "weather_bases", "overlay_names", "legacy_modes"])
+      `shouldBe` Just ["base_modes", "overlay_modes", "overlay_names", "view", "weather_bases"]
     let layeredViewProps = inlinePropertyNames =<< componentProperty doc "StateViewsResponse" "view"
         uiStateViewProps = inlinePropertyNames =<< componentProperty doc "UiStateResponse" "view"
-    layeredViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["base", "base_mode", "overlay", "overlay_mode", "plugin_overlay", "overlay_field", "weather_basis", "temporal_basis", "source_kind", "overlay_opacity", "legacy_view_mode"])
-    uiStateViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["mode", "base_mode", "overlay_mode", "plugin_overlay", "weather_basis", "overlay_opacity", "legacy_view_mode", "temporal_basis", "source_kind", "selection", "overlay_names"])
+    layeredViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["base", "base_mode", "overlay", "overlay_mode", "plugin_overlay", "overlay_field", "weather_basis", "temporal_basis", "source_kind", "overlay_opacity"])
+    layeredViewProps `shouldSatisfy` maybe False (notElem "legacy_view_mode")
+    uiStateViewProps `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["base_mode", "overlay_mode", "plugin_overlay", "weather_basis", "overlay_opacity", "temporal_basis", "source_kind", "selection", "overlay_names"])
+    uiStateViewProps `shouldSatisfy` maybe False (\actual -> all (`notElem` actual) ["mode", "legacy_view_mode"])
     componentPropertyNames doc "UiViewSetRequest"
       `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["base_mode", "base", "overlay_mode", "overlay", "plugin_overlay", "weather_basis", "basis", "temporal_basis", "overlay_opacity", "field_index", "overlay_field"])
     componentPropertyNames doc "UiViewSetResponse"
-      `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["view", "view_mode", "base_mode", "overlay_mode", "plugin_overlay", "overlay_field", "weather_basis", "overlay_opacity", "legacy_view_mode"])
+      `shouldSatisfy` maybe False (\actual -> all (`elem` actual) ["view", "base_mode", "overlay_mode", "plugin_overlay", "overlay_field", "weather_basis", "overlay_opacity"])
+    componentPropertyNames doc "UiViewSetResponse" `shouldSatisfy` maybe False (\actual -> all (`notElem` actual) ["view_mode", "legacy_view_mode"])
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("soil" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("ocean_currents" `elem`)
     componentRequiredFields doc "TerrainHexResponse" `shouldSatisfy` maybe False ("weather_snapshot" `elem`)
@@ -2134,7 +2134,7 @@ spec = describe "Seer.HTTP.Server" $ do
   it "maps retired MCP tools/list and tools/call coverage to HTTP, service, and OpenAPI routes" $ do
     let doc = openApiDocument publicHttpRouteSpecs
         toolNames = map ptLegacyName retiredMcpToolTargets
-    length retiredMcpToolTargets `shouldBe` 86
+    length retiredMcpToolTargets `shouldBe` 84
     toolNames `shouldBe` nub toolNames
     forM_ retiredMcpToolTargets $ \target -> do
       assertFriendlyRouteTarget target
@@ -2169,8 +2169,11 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupNestedText ["error", "code"] (hresBody deleteRecord) `shouldNotBe` Just "validation_failed"
       isRouteMiss deleteRecord `shouldBe` False
 
-      setWeatherView <- request app (mkRequest "POST" ["ui", "view-mode"])
-        { hreqBody = Just (object ["mode" .= ("weather" :: Text)]) }
+      setWeatherView <- request app (mkRequest "POST" ["ui", "view"])
+        { hreqBody = Just (object
+            [ "overlay_mode" .= ("weather" :: Text)
+            , "weather_basis" .= ("current" :: Text)
+            ]) }
       hresStatusCode setWeatherView `shouldBe` 200
 
       hexRsp <- request app (mkRequest "GET" ["terrain", "hex"])
@@ -2313,8 +2316,8 @@ spec = describe "Seer.HTTP.Server" $ do
         resourceNames = map ptLegacyName retiredMcpResourceTargets
         templateResources = filter (Text.isInfixOf "{" . ptLegacyName) retiredMcpResourceTargets
         staticResources = filter (not . Text.isInfixOf "{" . ptLegacyName) retiredMcpResourceTargets
-    length retiredMcpResourceTargets `shouldBe` 16
-    length staticResources `shouldBe` 11
+    length retiredMcpResourceTargets `shouldBe` 15
+    length staticResources `shouldBe` 10
     length templateResources `shouldBe` 5
     resourceNames `shouldBe` nub resourceNames
     forM_ retiredMcpResourceTargets $ \target -> do
@@ -3134,9 +3137,7 @@ retiredMcpToolTargets =
   , target "get_slider" "POST" ["config", "sliders", "get"] "config.sliders.get" "get_slider"
   , target "set_slider" "POST" ["config", "sliders"] "config.sliders.set" "set_slider"
   , target "set_seed" "POST" ["ui", "seed"] "ui.seed.set" "set_seed"
-  , target "set_view_mode" "POST" ["ui", "view-mode"] "ui.viewMode.set" "set_view_mode"
   , target "set_config_tab" "POST" ["ui", "config-tab"] "ui.configTab.set" "set_config_tab"
-  , target "get_view_modes" "GET" ["state", "view-modes"] "state.viewModes" "get_view_modes"
   , target "generate" "POST" ["world", "generate"] "world.generate" "generate"
   , target "editor_toggle" "POST" ["editor", "toggle"] "editor.toggle" "editor_toggle"
   , target "editor_set_tool" "POST" ["editor", "tool"] "editor.tool.set" "editor_set_tool"
@@ -3221,7 +3222,6 @@ retiredMcpResourceTargets :: [ParityTarget]
 retiredMcpResourceTargets =
   [ target "topo://state" "GET" ["state"] "state.get" "get_state"
   , target "topo://sliders" "GET" ["config", "sliders"] "config.sliders.list" "get_sliders"
-  , target "topo://view-modes" "GET" ["state", "view-modes"] "state.viewModes" "get_view_modes"
   , target "topo://editor/state" "GET" ["editor"] "editor.state" "editor_get_state"
   , target "topo://world" "GET" ["world"] "world.meta" "get_world_meta"
   , target "topo://generation-status" "GET" ["world", "generation-status"] "world.generationStatus" "get_generation_status"
@@ -3249,12 +3249,11 @@ retiredMcpResourceReadCases =
   , resourceReadCase (retiredMcpResourceTargets !! 7) [] Nothing
   , resourceReadCase (retiredMcpResourceTargets !! 8) [] Nothing
   , resourceReadCase (retiredMcpResourceTargets !! 9) [] Nothing
-  , resourceReadCase (retiredMcpResourceTargets !! 10) [] Nothing
-  , resourceReadCase (retiredMcpResourceTargets !! 11) [("tab", Just "terrain")] Nothing
-  , resourceReadCase (retiredMcpResourceTargets !! 12) [] (Just (object ["name" .= ("SliderGenScale" :: Text)]))
-  , resourceReadCase (retiredMcpResourceTargets !! 13) [("q", Just "0"), ("r", Just "0")] Nothing
-  , resourceReadCase (retiredMcpResourceTargets !! 14) [("chunk", Just "0")] Nothing
-  , resourceReadCase (retiredMcpResourceTargets !! 15) [("type", Just "biome")] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 10) [("tab", Just "terrain")] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 11) [] (Just (object ["name" .= ("SliderGenScale" :: Text)]))
+  , resourceReadCase (retiredMcpResourceTargets !! 12) [("q", Just "0"), ("r", Just "0")] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 13) [("chunk", Just "0")] Nothing
+  , resourceReadCase (retiredMcpResourceTargets !! 14) [("type", Just "biome")] Nothing
   ]
 
 withHttpPluginDir :: IO a -> IO a

@@ -1,6 +1,5 @@
 module UI.TerrainColor
-  ( terrainColor
-  , terrainColorForSelection
+  ( terrainColorForSelection
   , terrainBaseColor
   , terrainSkyOverlayColor
   , WeatherOverlayVariable(..)
@@ -25,10 +24,8 @@ import Actor.UI
   ( BaseViewMode(..)
   , LayeredViewState(..)
   , SkyOverlayMode(..)
-  , ViewMode(..)
   , WeatherBasis(..)
   , layeredViewStateIsLegacyEquivalent
-  , legacyViewModeToLayeredViewState
   )
 
 -- | Weather/climate variables that can be rendered as composable RGBA
@@ -50,23 +47,10 @@ data OverlayRenderPolicy = OverlayRenderPolicy
   , orpLegacyOpaque :: !Bool
   }
 
--- | Compute the display color for a single hex tile in a legacy 'ViewMode'.
---
--- Legacy weather/climate view modes are adapted to the composable layer path
--- with an opaque overlay policy so the old full-view visuals are preserved.
-terrainColor :: ViewMode -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
-terrainColor mode =
-  terrainColorWithPolicy legacyPolicy (legacyViewModeToLayeredViewState mode)
-  where
-    legacyPolicy = OverlayRenderPolicy
-      { orpOpacity = 1
-      , orpLegacyOpaque = True
-      }
-
 -- | Compute a tile color from an explicit base-plus-overlay selection.
 --
--- Unlike 'terrainColor', this uses the overlay alpha carried by the overlay
--- color and multiplies it by the selection opacity, allowing weather layers to
+-- This uses the overlay alpha carried by the overlay color and multiplies it
+-- by the selection opacity, allowing weather layers to
 -- sit over any physical base view.
 terrainColorForSelection :: LayeredViewState -> Float -> TerrainChunk -> Maybe ClimateChunk -> Maybe WeatherChunk -> Maybe WeatherNormalsChunk -> Maybe VegetationChunk -> Maybe Float -> Int -> V4 Word8
 terrainColorForSelection selection =

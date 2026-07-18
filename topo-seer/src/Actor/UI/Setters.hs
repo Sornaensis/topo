@@ -7,7 +7,6 @@
 module Actor.UI.Setters
   ( setUiSeed
   , setUiGenerating
-  , setUiViewMode
   , setUiViewSelection
   , setUiBaseViewMode
   , setUiSkyOverlayMode
@@ -312,7 +311,6 @@ import Actor.UI.State
   , Ui
   , UiMenuMode
   , UiUpdate(..)
-  , ViewMode
   , WeatherBasis
   )
 
@@ -336,9 +334,6 @@ sendSlider sliderIdValue handle value =
 
 setUiSeed = sendUnary SetSeed
 setUiGenerating = sendUnary SetGenerating
-
-setUiViewMode :: UiHandle -> ViewMode -> IO ()
-setUiViewMode = sendUnary SetViewMode
 
 setUiViewSelection :: UiHandle -> LayeredViewState -> IO ()
 setUiViewSelection = sendUnary SetViewSelection

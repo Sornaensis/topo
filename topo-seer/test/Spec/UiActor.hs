@@ -10,16 +10,17 @@ import Test.Hspec
 import Actor.UI
 import Seer.Config.SliderSpec (SliderId(..))
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
+import Spec.Support.LayeredView (biomeSelection)
 
 withSystem :: (ActorSystem -> IO a) -> IO a
 withSystem = bracket newActorSystem shutdownActorSystem
 
 spec :: Spec
 spec = describe "UiActor" $ do
-  it "updates seed and view mode" $ withSystem $ \system -> do
+  it "updates seed and layered view selection" $ withSystem $ \system -> do
     handle <- get @Ui system
     setUiSeed handle 99
-    setUiViewMode handle ViewBiome
+    setUiViewSelection handle biomeSelection
     setUiChunkSize handle 96
     setUiShowConfig handle True
     setUiConfigTab handle ConfigClimate
@@ -40,8 +41,7 @@ spec = describe "UiActor" $ do
     setUiHoverHex handle (Just (3, -2))
     snapshot <- getUiSnapshot handle
     uiSeed snapshot `shouldBe` 99
-    uiViewMode snapshot `shouldBe` ViewBiome
-    uiViewSelection snapshot `shouldBe` viewModeToLayeredViewState ViewBiome
+    uiViewSelection snapshot `shouldBe` biomeSelection
     uiChunkSize snapshot `shouldBe` 96
     uiShowConfig snapshot `shouldBe` True
     uiConfigTab snapshot `shouldBe` ConfigClimate
@@ -61,14 +61,13 @@ spec = describe "UiActor" $ do
     uiGenWarpStrength snapshot `shouldBe` 0.5
     uiHoverHex snapshot `shouldBe` Just (3, -2)
 
-  it "updates layered view fields and compatibility view mode" $ withSystem $ \system -> do
+  it "updates canonical layered view fields" $ withSystem $ \system -> do
     handle <- get @Ui system
     setUiBaseViewMode handle BaseViewBiome
     setUiSkyOverlayMode handle (Just SkyOverlayCloud)
     setUiWeatherBasis handle WeatherBasisCurrent
     setUiOverlayOpacity handle 1.4
     snapshot <- getUiSnapshot handle
-    uiViewMode snapshot `shouldBe` ViewCloud
     uiViewSelection snapshot `shouldBe` defaultLayeredViewState
       { lvsBaseView = BaseViewBiome
       , lvsSkyOverlay = Just SkyOverlayCloud
@@ -77,7 +76,6 @@ spec = describe "UiActor" $ do
       }
     setUiSkyOverlayMode handle Nothing
     snapshotNoOverlay <- getUiSnapshot handle
-    uiViewMode snapshotNoOverlay `shouldBe` ViewBiome
     uiViewSelection snapshotNoOverlay `shouldBe` defaultLayeredViewState
       { lvsBaseView = BaseViewBiome
       , lvsSkyOverlay = Nothing
@@ -89,7 +87,6 @@ spec = describe "UiActor" $ do
       , lvsOverlayOpacity = -0.5
       }
     snapshotPlugin <- getUiSnapshot handle
-    uiViewMode snapshotPlugin `shouldBe` ViewOverlay "roads" 2
     uiViewSelection snapshotPlugin `shouldBe` defaultLayeredViewState
       { lvsSkyOverlay = Just (SkyOverlayPlugin "roads" 2)
       , lvsOverlayOpacity = 0.0
@@ -104,7 +101,6 @@ spec = describe "UiActor" $ do
       , lvsWeatherBasis = WeatherBasisAverage
       , lvsOverlayOpacity = 0.4
       }
-    uiViewMode snapshotComposited `shouldBe` ViewOverlay "roads" 2
 
   it "updates generation flag" $ withSystem $ \system -> do
     handle <- get @Ui system

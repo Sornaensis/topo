@@ -34,7 +34,7 @@ import Actor.Simulation
   , setSimWorldWithNodes
   )
 import Actor.SnapshotReceiver (readSnapshotVersion, readTerrainSnapshot)
-import Actor.UI (UiState(..), ViewMode(..), getUiSnapshot, setUiDayNightEnabled, setUiZoom, uiViewMode)
+import Actor.UI (LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), getUiSnapshot, setUiDayNightEnabled, setUiZoom)
 import Actor.UiActions (ActorHandles(..))
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.Headless
@@ -158,7 +158,7 @@ spec = describe "AutoTick scheduler" $ do
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       installWorld app
       let handles = appHandles app
-      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "cloud")])
+      viewRsp <- setBuiltinView app "cloud" "current"
       srSuccess viewRsp `shouldBe` True
       rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
       srSuccess rsp `shouldBe` True
@@ -190,10 +190,11 @@ spec = describe "AutoTick scheduler" $ do
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       installWorld app
       let handles = appHandles app
-      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "cloud"), "basis" .= (Text.pack "typical")])
+      viewRsp <- setBuiltinView app "cloud" "average"
       srSuccess viewRsp `shouldBe` True
       ui <- getUiSnapshot (ahUiHandle handles)
-      uiViewMode ui `shouldBe` ViewCloudTypical
+      lvsSkyOverlay (uiViewSelection ui) `shouldBe` Just SkyOverlayCloud
+      lvsWeatherBasis (uiViewSelection ui) `shouldBe` WeatherBasisAverage
       _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
 
       terrainSnap0 <- getTerrainSnapshot (ahDataHandle handles)
@@ -219,7 +220,7 @@ spec = describe "AutoTick scheduler" $ do
       installWorld app
       let handles = appHandles app
       setUiZoom (ahUiHandle handles) 2.5
-      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "weather")])
+      viewRsp <- setBuiltinView app "weather" "current"
       srSuccess viewRsp `shouldBe` True
       uiBeforeAuto <- getUiSnapshot (ahUiHandle handles)
       let currentStage = stageForZoom (uiZoom uiBeforeAuto)
@@ -254,7 +255,7 @@ spec = describe "AutoTick scheduler" $ do
       installWorld app
       let handles = appHandles app
       setUiZoom (ahUiHandle handles) 2.5
-      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "weather")])
+      viewRsp <- setBuiltinView app "weather" "current"
       srSuccess viewRsp `shouldBe` True
       uiBeforeAuto <- getUiSnapshot (ahUiHandle handles)
       let currentStage = stageForZoom (uiZoom uiBeforeAuto)
@@ -382,7 +383,7 @@ spec = describe "AutoTick scheduler" $ do
       installWorld app
       let handles = appHandles app
       setUiZoom (ahUiHandle handles) 2.5
-      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "biome")])
+      viewRsp <- dispatch app "set_view" (object ["base_mode" .= (Text.pack "biome")])
       srSuccess viewRsp `shouldBe` True
       _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
 
@@ -458,7 +459,7 @@ spec = describe "AutoTick scheduler" $ do
       installResponsiveWorldWithDelay 80000 app workerStarted runCountRef
       let handles = appHandles app
 
-      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "weather")])
+      viewRsp <- setBuiltinView app "weather" "current"
       srSuccess viewRsp `shouldBe` True
       rsp <- dispatch app "set_sim_auto_tick" (object ["enabled" .= True, "rate" .= (1.0 :: Double)])
       srSuccess rsp `shouldBe` True
@@ -495,7 +496,7 @@ spec = describe "AutoTick scheduler" $ do
       let handles = appHandles app
       setUiZoom (ahUiHandle handles) 2.5
 
-      viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "cloud")])
+      viewRsp <- setBuiltinView app "cloud" "current"
       srSuccess viewRsp `shouldBe` True
       uiBeforeAuto <- getUiSnapshot (ahUiHandle handles)
       let currentStage = stageForZoom (uiZoom uiBeforeAuto)
@@ -546,7 +547,7 @@ spec = describe "AutoTick scheduler" $ do
         installResponsiveWorld app workerStarted runCountRef
         let handles = appHandles app
 
-        viewRsp <- dispatch app "set_view_mode" (object ["mode" .= (Text.pack "weather")])
+        viewRsp <- setBuiltinView app "weather" "current"
         srSuccess viewRsp `shouldBe` True
         _ <- drainAtlasJobs (ahAtlasManagerHandle handles)
 
@@ -638,6 +639,12 @@ dispatch app method params = dispatchCommand (headlessCommandContext app) SeerCo
   , scMethod = method
   , scParams = params
   }
+
+setBuiltinView :: HeadlessApp -> Text -> Text -> IO SeerResponse
+setBuiltinView app overlay basis = dispatch app "set_view" (object
+  [ "overlay_mode" .= overlay
+  , "weather_basis" .= basis
+  ])
 
 installWorld :: HeadlessApp -> IO ()
 installWorld app = do

@@ -916,7 +916,6 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
       ]
 
   , service "GET" ["state"] "state.get" "state" "get_state" "Read current application state." NoRequestBody
-  , service "GET" ["state", "view-modes"] "state.viewModes" "state" "get_view_modes" "List view modes." NoRequestBody
   , service "GET" ["state", "views"] "state.views" "state" "get_views" "Read layered view state and choices." NoRequestBody
   , service "GET" ["ui", "state"] "ui.state" "ui" "get_ui_state" "Read UI state." NoRequestBody
 
@@ -1051,7 +1050,6 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
         OptionalJsonRequestBody
 
   , service "POST" ["ui", "seed"] "ui.seed.set" "ui" "set_seed" "Set seed." RequiredJsonRequestBody
-  , service "POST" ["ui", "view-mode"] "ui.viewMode.set" "ui" "set_view_mode" "Set view mode." RequiredJsonRequestBody
   , service "POST" ["ui", "view"] "ui.view.set" "ui" "set_view" "Set layered view." RequiredJsonRequestBody
   , service "POST" ["ui", "config-tab"] "ui.configTab.set" "ui" "set_config_tab" "Set config tab." RequiredJsonRequestBody
   , service "POST" ["ui", "select-hex"] "ui.hex.select" "ui" "select_hex" "Select a hex." OptionalJsonRequestBody

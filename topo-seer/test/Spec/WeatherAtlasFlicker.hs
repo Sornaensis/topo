@@ -19,6 +19,7 @@ import Linear (V2(..))
 import qualified SDL
 import qualified SDL.Raw.Types as Raw
 import Test.Hspec
+import Spec.Support.LayeredView (layeredSelectionForMode)
 import Unsafe.Coerce (unsafeCoerce)
 
 import Actor.AtlasCache
@@ -82,7 +83,6 @@ import Actor.UI
   , setUiDayNightEnabled
   , setUiSimAutoTick
   , setUiSimTickRate
-  , setUiViewMode
   , setUiViewSelection
   , setUiZoom
   , uiRenderWaterLevel
@@ -126,6 +126,8 @@ import Topo.Weather (weatherChunkToOverlay, weatherOverlaySchema)
 import Topo.World (TerrainWorld(..))
 import UI.TerrainAtlas (AtlasChunkGeometry(..), AtlasTileGeometry(..), TerrainAtlasTile(..))
 import UI.Widgets (Rect(..))
+
+setUiViewMode handle = setUiViewSelection handle . layeredSelectionForMode
 
 spec :: Spec
 spec = describe "headless weather/cloud atlas flicker regressions" $ do

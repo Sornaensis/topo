@@ -126,7 +126,6 @@ runServiceOperation app ctx method params =
 appServiceOperations :: AppService -> [AppServiceOperation]
 appServiceOperations app = concat
   [ [ appOperation stateGetStateOperation (stateGetState stateSvc)
-    , appOperation stateGetViewModesOperation (stateGetViewModes stateSvc)
     , appOperation stateGetViewsOperation (stateGetViews stateSvc)
     , appOperation stateGetUiStateOperation (stateGetUiState stateSvc)
     ]
@@ -202,7 +201,6 @@ appServiceOperations app = concat
   , [ appOperation screenshotTakeOperation (screenshotTake screenshotSvc)
     ]
   , [ appOperation uiSetSeedOperation (uiSetSeed uiSvc)
-    , appOperation uiSetViewModeOperation (uiSetViewMode uiSvc)
     , appOperation uiSetViewOperation (uiSetView uiSvc)
     , appOperation uiSetConfigTabOperation (uiSetConfigTab uiSvc)
     , appOperation uiSelectHexOperation (uiSelectHex uiSvc)

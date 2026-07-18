@@ -73,12 +73,12 @@ import Actor.UI
   , defaultLayeredViewState
   , effectiveViewSelection
   , getUiSnapshot
+  , layeredViewStateToViewMode
   , newUiSnapshotRef
   , setUiDayNightEnabled
   , setUiEditor
   , setUiGenerating
   , setUiSnapshotRef
-  , uiViewMode
   )
 import Actor.UI.Setters
   ( setUiConfigTab
@@ -254,7 +254,8 @@ spec = describe "CommandDispatch" $ do
       case stateResult of
         Right (ServiceResponse body) -> do
           lookupKey "seed" body `shouldSatisfy` (/= Nothing)
-          lookupKey "view_mode" body `shouldSatisfy` (/= Nothing)
+          lookupKey "view" body `shouldSatisfy` (/= Nothing)
+          lookupKey "view_mode" body `shouldBe` Nothing
         Left err -> expectationFailure ("expected get_state service success, got: " <> show err)
 
       seedResult <- runService ctx "set_seed" (object ["seed" .= (987 :: Int)])
@@ -640,79 +641,28 @@ spec = describe "CommandDispatch" $ do
     it "returns success with state fields" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "get_state" Null
       srSuccess rsp `shouldBe` True
-      -- result should contain at least "seed" and "view_mode"
+      -- State reports only the canonical layered selection.
       case srResult rsp of
         Object o -> do
           KM.member "seed"      o `shouldBe` True
-          KM.member "view_mode" o `shouldBe` True
+          KM.member "view"      o `shouldBe` True
+          KM.member "view_mode" o `shouldBe` False
         _ -> expectationFailure "expected JSON object in result"
 
-  -- -------------------------------------------------------------------
-  -- get_view_modes
-  -- -------------------------------------------------------------------
-  describe "get_view_modes" $ do
-    it "returns a non-empty list of view modes" $ withCtx $ \ctx -> do
+  describe "removed single-view operations" $ do
+    it "rejects get_view_modes as an unknown method" $ withCtx $ \ctx -> do
       rsp <- dispatch ctx "get_view_modes" Null
-      srSuccess rsp `shouldBe` True
-      case lookupKey "view_modes" (srResult rsp) of
-        Just (Array arr) -> length arr `shouldSatisfy` (> 0)
-        _                -> expectationFailure "expected view_modes array"
+      srSuccess rsp `shouldBe` False
 
-    it "marks exactly one view mode as active" $ withCtx $ \ctx -> do
-      rsp <- dispatch ctx "get_view_modes" Null
-      case lookupKey "view_modes" (srResult rsp) of
-        Just (Array arr) ->
-          let actives = filter isActive (toList arr)
-          in length actives `shouldBe` 1
-        _ -> expectationFailure "expected view_modes array"
-
-    it "exposes weather as temperature metadata" $ withCtx $ \ctx -> do
-      rsp <- dispatch ctx "get_view_modes" Null
-      srSuccess rsp `shouldBe` True
-      case lookupKey "view_modes" (srResult rsp) of
-        Just (Array arr) ->
-          case findViewMode "weather" (toList arr) of
-            Just weather -> do
-              lookupKey "label" weather `shouldBe` Just (String "Current Weather Temp")
-              lookupKey "description" weather `shouldBe`
-                Just (String "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use Current Cloud/Storm for aggregate cloud cover and storm tint.")
-            Nothing -> expectationFailure "missing weather view mode summary"
-        _ -> expectationFailure "expected view_modes array"
-
-    it "places explicit current/average weather controls in metadata" $ withCtx $ \ctx -> do
-      rsp <- dispatch ctx "get_view_modes" Null
-      srSuccess rsp `shouldBe` True
-      case lookupKey "view_modes" (srResult rsp) of
-        Just (Array arr) -> do
-          let modes = toList arr
-              names = mapMaybe viewModeName modes
-          take 8 names `shouldBe`
-            [ "elevation", "biome", "climate"
-            , "weather", "cloud", "moisture", "precipitation", "precipitation_current"
-            ]
-          case findViewMode "cloud" modes of
-            Just cloud -> do
-              lookupKey "label" cloud `shouldBe` Just (String "Current Cloud/Storm")
-              lookupKey "description" cloud `shouldBe`
-                Just (String "Current simulated aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers.")
-            Nothing -> expectationFailure "missing cloud view mode summary"
-          case findViewMode "cloud_typical" modes of
-            Just cloudTypical -> do
-              lookupKey "label" cloudTypical `shouldBe` Just (String "Typical Cloud Normal")
-              lookupKey "temporal_basis" cloudTypical `shouldBe` Just (String "typical_normal")
-            Nothing -> expectationFailure "missing typical cloud view mode summary"
-          case findViewMode "precipitation_current" modes of
-            Just precipCurrent -> do
-              lookupKey "label" precipCurrent `shouldBe` Just (String "Current Precipitation")
-              lookupKey "temporal_basis" precipCurrent `shouldBe` Just (String "instantaneous_current")
-            Nothing -> expectationFailure "missing current precipitation view mode summary"
-        _ -> expectationFailure "expected view_modes array"
+    it "rejects set_view_mode as an unknown method" $ withCtx $ \ctx -> do
+      rsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("biome" :: Text)])
+      srSuccess rsp `shouldBe` False
 
   -- -------------------------------------------------------------------
   -- get_views
   -- -------------------------------------------------------------------
   describe "get_views" $ do
-    it "returns layered view choices and legacy mode summaries" $ withCtx $ \ctx -> do
+    it "returns only layered view choices" $ withCtx $ \ctx -> do
       _ <- writeSingleChunkTerrainWithNormals ctx
       rsp <- dispatch ctx "get_views" Null
       srSuccess rsp `shouldBe` True
@@ -729,9 +679,8 @@ spec = describe "CommandDispatch" $ do
       case lookupKey "overlay_names" (srResult rsp) of
         Just (Array arr) -> toList arr `shouldContain` [String "weather_normals"]
         _ -> expectationFailure "expected overlay_names array"
-      case lookupKey "legacy_modes" (srResult rsp) of
-        Just (Array arr) -> length arr `shouldSatisfy` (> 0)
-        _ -> expectationFailure "expected legacy_modes array"
+      lookupKey "legacy_modes" (srResult rsp) `shouldBe` Nothing
+      lookupKey "legacy_view_mode" (srResult rsp) `shouldBe` Nothing
 
   -- -------------------------------------------------------------------
   -- get_sliders
@@ -869,55 +818,6 @@ spec = describe "CommandDispatch" $ do
       srSuccess rsp `shouldBe` False
 
   -- -------------------------------------------------------------------
-  -- set_view_mode
-  -- -------------------------------------------------------------------
-  describe "set_view_mode" $ do
-    it "switches to a valid view mode" $ withCtx $ \ctx -> do
-      rsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("biome" :: String)])
-      srSuccess rsp `shouldBe` True
-      lookupKey "view_mode" (srResult rsp) `shouldBe` Just (String "biome")
-
-    it "switches weather-related modes by explicit temporal basis" $ withCtx $ \ctx -> do
-      precipRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("precipitation" :: Text), "basis" .= ("current" :: Text)])
-      srSuccess precipRsp `shouldBe` True
-      lookupKey "view_mode" (srResult precipRsp) `shouldBe` Just (String "precipitation_current")
-      lookupKey "temporal_basis" (srResult precipRsp) `shouldBe` Just (String "instantaneous_current")
-
-      cloudRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("cloud" :: Text), "basis" .= ("typical" :: Text)])
-      srSuccess cloudRsp `shouldBe` True
-      lookupKey "view_mode" (srResult cloudRsp) `shouldBe` Just (String "cloud_typical")
-      lookupKey "temporal_basis" (srResult cloudRsp) `shouldBe` Just (String "typical_normal")
-
-      uiRsp <- dispatch ctx "get_ui_state" Null
-      srSuccess uiRsp `shouldBe` True
-      case lookupKey "view" (srResult uiRsp) of
-        Just (Object view) -> do
-          KM.lookup "mode" view `shouldBe` Just (String "cloud_typical")
-          KM.lookup "temporal_basis" view `shouldBe` Just (String "typical_normal")
-          KM.lookup "source_kind" view `shouldBe` Just (String "weather_normals")
-          case KM.lookup "selection" view of
-            Just (Object selection) -> do
-              KM.lookup "weather_basis" selection `shouldBe` Just (String "average")
-              KM.lookup "source_kind" selection `shouldBe` Just (String "weather_normals")
-            _ -> expectationFailure "expected get_ui_state.view.selection object"
-        _ -> expectationFailure "expected get_ui_state.view object"
-
-    it "rejects unsupported typical basis for average-only temperature and precipitation views" $ withCtx $ \ctx -> do
-      tempRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("weather" :: Text), "basis" .= ("typical" :: Text)])
-      srSuccess tempRsp `shouldBe` False
-
-      precipRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("precipitation" :: Text), "basis" .= ("typical" :: Text)])
-      srSuccess precipRsp `shouldBe` False
-
-    it "returns error for unknown view mode" $ withCtx $ \ctx -> do
-      rsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("nonexistent" :: String)])
-      srSuccess rsp `shouldBe` False
-
-    it "returns error when mode is missing" $ withCtx $ \ctx -> do
-      rsp <- dispatch ctx "set_view_mode" Null
-      srSuccess rsp `shouldBe` False
-
-  -- -------------------------------------------------------------------
   -- set_view
   -- -------------------------------------------------------------------
   describe "set_view" $ do
@@ -945,7 +845,7 @@ spec = describe "CommandDispatch" $ do
       lvsSkyOverlay (uiViewSelection ui) `shouldBe` Just SkyOverlayCloud
       lvsWeatherBasis (uiViewSelection ui) `shouldBe` WeatherBasisAverage
       lvsOverlayOpacity (uiViewSelection ui) `shouldSatisfy` (\opacity -> abs (opacity - 0.42) < 0.0001)
-      lookupKey "view_mode" (srResult rsp) `shouldBe` Just (String "cloud_typical")
+      lookupKey "view_mode" (srResult rsp) `shouldBe` Nothing
       lookupKey "base_mode" (srResult rsp) `shouldBe` Just (String "biome")
       lookupKey "overlay_mode" (srResult rsp) `shouldBe` Just (String "cloud")
       lookupKey "weather_basis" (srResult rsp) `shouldBe` Just (String "average")
@@ -1015,7 +915,8 @@ spec = describe "CommandDispatch" $ do
 
       offRsp <- dispatch ctx "cycle_overlay" (object ["direction" .= (1 :: Int)])
       srSuccess offRsp `shouldBe` True
-      lookupKey "view_mode" (srResult offRsp) `shouldBe` Just (String "biome")
+      lookupKey "view" (srResult offRsp) `shouldSatisfy` maybe False (const True)
+      lookupKey "view_mode" (srResult offRsp) `shouldBe` Nothing
       assertPreservedLayeredSelection ctx Nothing
 
       onRsp <- dispatch ctx "cycle_overlay" (object ["direction" .= (1 :: Int)])
@@ -1501,7 +1402,10 @@ spec = describe "CommandDispatch" $ do
         _ -> expectationFailure "expected complete inspector sections array"
 
     it "returns weather temperature label in active view metadata" $ withCtx $ \ctx -> do
-      viewRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("weather" :: Text)])
+      viewRsp <- dispatch ctx "set_view" (object
+        [ "overlay_mode" .= ("weather" :: Text)
+        , "weather_basis" .= ("current" :: Text)
+        ])
       srSuccess viewRsp `shouldBe` True
       _chunkKey <- writeSingleChunkTerrain ctx
       rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
@@ -1514,7 +1418,10 @@ spec = describe "CommandDispatch" $ do
         _ -> expectationFailure "expected active_view object"
 
     it "returns Cloud/Storm active view metadata and aggregate value fields" $ withCtx $ \ctx -> do
-      viewRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("cloud" :: Text)])
+      viewRsp <- dispatch ctx "set_view" (object
+        [ "overlay_mode" .= ("cloud" :: Text)
+        , "weather_basis" .= ("current" :: Text)
+        ])
       srSuccess viewRsp `shouldBe` True
       _chunkKey <- writeSingleChunkTerrain ctx
       rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
@@ -1534,7 +1441,10 @@ spec = describe "CommandDispatch" $ do
         _ -> expectationFailure "expected active_view object"
 
     it "returns current precipitation active view values from weather data" $ withCtx $ \ctx -> do
-      viewRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("precipitation" :: Text), "basis" .= ("current" :: Text)])
+      viewRsp <- dispatch ctx "set_view" (object
+        [ "overlay_mode" .= ("precipitation" :: Text)
+        , "weather_basis" .= ("current" :: Text)
+        ])
       srSuccess viewRsp `shouldBe` True
       _chunkKey <- writeSingleChunkTerrain ctx
       rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
@@ -1570,7 +1480,10 @@ spec = describe "CommandDispatch" $ do
         _ -> expectationFailure "expected weather_normals object"
 
     it "reports typical cloud normals as unavailable rather than falling back to current clouds" $ withCtx $ \ctx -> do
-      viewRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("cloud" :: Text), "basis" .= ("typical" :: Text)])
+      viewRsp <- dispatch ctx "set_view" (object
+        [ "overlay_mode" .= ("cloud" :: Text)
+        , "weather_basis" .= ("average" :: Text)
+        ])
       srSuccess viewRsp `shouldBe` True
       _chunkKey <- writeSingleChunkTerrain ctx
       rsp <- dispatch ctx "get_hex" (object ["q" .= (0 :: Int), "r" .= (0 :: Int)])
@@ -2040,36 +1953,14 @@ spec = describe "CommandDispatch" $ do
         `shouldBe` Just SkyOverlayWeatherTemperature
       lvsWeatherBasis (uiViewSelection (rsUi basisCommitted)) `shouldBe` WeatherBasisAverage
 
-    it "keeps legacy weather widget ids accepted as full-mode compatibility" $ withCtx $ \ctx -> do
+    it "rejects removed single-view widget ids" $ withCtx $ \ctx -> do
       showLeftViewWidgets ctx
-      let uiH = ahUiHandle (ccActorHandles ctx)
-      seedRsp <- dispatch ctx "click_widget" (object
-        [ "widget_id" .= ("WidgetViewBaseBiome" :: Text) ])
-      srSuccess seedRsp `shouldBe` True
-      overlayRsp <- dispatch ctx "click_widget" (object
-        [ "widget_id" .= ("WidgetViewOverlayTemperature" :: Text) ])
-      srSuccess overlayRsp `shouldBe` True
-
-      rsp <- dispatch ctx "click_widget" (object
+      precip <- dispatch ctx "click_widget" (object
         [ "widget_id" .= ("WidgetViewPrecipCurrent" :: Text) ])
-      srSuccess rsp `shouldBe` True
-      (awaitTrue 50 $ do
-        ui <- getUiSnapshot uiH
-        pure (uiViewMode ui == ViewPrecipCurrent
-          && lvsBaseView (uiViewSelection ui) == BaseViewElevation
-          && lvsSkyOverlay (uiViewSelection ui) == Just SkyOverlayPrecipitation
-          && lvsWeatherBasis (uiViewSelection ui) == WeatherBasisCurrent))
-        `shouldReturn` True
-
-      clearRsp <- dispatch ctx "click_widget" (object
+      srSuccess precip `shouldBe` False
+      elevation <- dispatch ctx "click_widget" (object
         [ "widget_id" .= ("WidgetViewElevation" :: Text) ])
-      srSuccess clearRsp `shouldBe` True
-      (awaitTrue 50 $ do
-        ui <- getUiSnapshot uiH
-        pure (uiViewMode ui == ViewElevation
-          && lvsBaseView (uiViewSelection ui) == BaseViewElevation
-          && lvsSkyOverlay (uiViewSelection ui) == Nothing))
-        `shouldReturn` True
+      srSuccess elevation `shouldBe` False
 
   describe "click_widget day/night" $ do
     it "routes the toggle through UiActions, bumps the snapshot version, and enqueues current atlas jobs" $ withCtx $ \ctx -> do
@@ -2147,7 +2038,8 @@ spec = describe "CommandDispatch" $ do
       jobs <- drainAtlasJobs atlasH
       let expectedStages = map zoomStagePair (orderedZoomStagesForZoom (uiZoom ui))
       length jobs `shouldBe` length expectedStages
-      map ajViewMode jobs `shouldBe` replicate (length expectedStages) (uiViewMode ui)
+      map (Just . ajViewMode) jobs `shouldBe`
+        replicate (length expectedStages) (layeredViewStateToViewMode (uiViewSelection ui))
       map atlasJobStage jobs `shouldBe` expectedStages
       map ajSnapshotVersion jobs `shouldSatisfy` all (== versionFinal)
 
@@ -2525,7 +2417,10 @@ spec = describe "CommandDispatch" $ do
         saveJobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
         length saveJobs `shouldBe` 0
 
-        viewRsp <- dispatch ctx "set_view_mode" (object ["mode" .= ("cloud" :: Text), "basis" .= ("typical" :: Text)])
+        viewRsp <- dispatch ctx "set_view" (object
+          [ "overlay_mode" .= ("cloud" :: Text)
+          , "weather_basis" .= ("average" :: Text)
+          ])
         srSuccess viewRsp `shouldBe` True
         _ <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
         loadBaseline <- beginPublicationAssertion ctx
@@ -2559,7 +2454,8 @@ spec = describe "CommandDispatch" $ do
         srSuccess uiRsp `shouldBe` True
         case lookupKey "view" (srResult uiRsp) of
           Just (Object view) -> do
-            KM.lookup "mode" view `shouldBe` Just (String "elevation")
+            KM.lookup "mode" view `shouldBe` Nothing
+            KM.lookup "base_mode" view `shouldBe` Just (String "elevation")
             case KM.lookup "selection" view of
               Just (Object selection) -> do
                 KM.lookup "base" selection `shouldBe` Just (String "elevation")
@@ -2722,12 +2618,6 @@ spec = describe "CommandDispatch" $ do
       jobs <- drainAtlasJobs (ahAtlasManagerHandle (ccActorHandles ctx))
       length jobs `shouldBe` 0
 
-    it "stamps legacy view-mode transition jobs from the exact committed epoch" $ withCtx $ \ctx -> do
-      _ <- writeReadyTerrainData ctx
-      committed <- expectExactSelectionPublication ctx "set_view_mode"
-        (object ["mode" .= ("biome" :: Text)])
-      lvsBaseView (effectiveViewSelection (rsUi committed)) `shouldBe` BaseViewBiome
-
     it "stamps layered view transition jobs from the exact committed epoch" $ withCtx $ \ctx -> do
       _ <- writeReadyTerrainData ctx
       committed <- expectExactSelectionPublication ctx "set_view" (object
@@ -2825,7 +2715,6 @@ spec = describe "CommandDispatch" $ do
         [ ("set_seed", Null)
         , ("set_seed", object ["seed" .= ((-1) :: Int)])
         , ("set_slider", object ["name" .= ("NoSuchSlider" :: Text), "value" .= (0.5 :: Double)])
-        , ("set_view_mode", object ["mode" .= ("missing" :: Text)])
         , ("set_overlay", object ["overlay" .= ("missing" :: Text)])
         , ("load_world", object ["name" .= ("__missing_publication_world__" :: Text)])
         ] $ \(method, params) -> do
@@ -3584,7 +3473,6 @@ assertSingleValidationDetail result expectedPath expectedCode =
 serviceOperationCases :: [ServiceOperationCase]
 serviceOperationCases =
   [ serviceCase "get_state" Null ExpectServiceSuccess
-  , serviceCase "get_view_modes" Null ExpectServiceSuccess
   , serviceCase "get_views" Null ExpectServiceSuccess
   , serviceCase "get_ui_state" Null ExpectServiceSuccess
   , serviceCase "get_sliders" Null ExpectServiceSuccess
@@ -3660,7 +3548,6 @@ serviceOperationCases =
       submitted <- submitScreenshotRequest (ccScreenshotRef ctx)
       submitted `shouldSatisfy` either (const False) (const True)
   , serviceCase "set_seed" (object ["seed" .= (2468 :: Int)]) ExpectServiceSuccess
-  , serviceCase "set_view_mode" (object ["mode" .= ("biome" :: String)]) ExpectServiceSuccess
   , serviceCase "set_view" (object ["base_mode" .= ("biome" :: String)]) ExpectServiceSuccess
   , serviceCase "set_config_tab" (object ["tab" .= ("climate" :: String)]) ExpectServiceSuccess
   , serviceCase "select_hex" (object ["q" .= (0 :: Int), "r" .= (5 :: Int)]) ExpectServiceSuccess
@@ -3777,23 +3664,6 @@ findStage stageId = go
       | lookupKey "id" value == Just (String stageId) = Just value
       | otherwise = go rest
 
-findViewMode :: Text -> [Value] -> Maybe Value
-findViewMode modeName = go
-  where
-    go [] = Nothing
-    go (value:rest)
-      | lookupKey "name" value == Just (String modeName) = Just value
-      | otherwise = go rest
-
-viewModeName :: Value -> Maybe Text
-viewModeName value = case lookupKey "name" value of
-  Just (String name) -> Just name
-  _                  -> Nothing
-
 stageHasStatus :: Text -> Value -> Bool
 stageHasStatus expected value = lookupKey "status" value == Just (String expected)
 
--- | Check whether a view-mode entry has @"active": true@.
-isActive :: Value -> Bool
-isActive (Object o) = KM.lookup "active" o == Just (Bool True)
-isActive _          = False

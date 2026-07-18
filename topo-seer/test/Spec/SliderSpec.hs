@@ -121,23 +121,16 @@ spec = do
            , WidgetViewBasePlateVelocity, WidgetViewOverlayNone
            , WidgetViewOverlayTemperature, WidgetViewOverlayPrecipitation
            , WidgetViewOverlayCloud, WidgetViewBasisAverage, WidgetViewBasisCurrent
-           , WidgetViewElevation, WidgetViewBiome, WidgetViewClimate
-           , WidgetViewWeather, WidgetViewCloud, WidgetViewCloudTypical, WidgetViewMoisture
-           , WidgetViewPrecip, WidgetViewPrecipCurrent, WidgetViewVegetation, WidgetViewTerrainForm
-           , WidgetViewPlateId, WidgetViewPlateBoundary
-           , WidgetViewPlateHardness, WidgetViewPlateCrust
-           , WidgetViewPlateAge, WidgetViewPlateHeight
-           , WidgetViewPlateVelocity
            ] $ \wid ->
         tooltipForWidget wid `shouldSatisfy` isNonEmptyTip
 
-    it "describes the weather view as current temperature and redirects cloud expectations" $
-      tooltipForWidget WidgetViewWeather
-        `shouldBe` Just "Current weather temperature; use Current Cloud for aggregate cloud cover and storm tint"
+    it "describes the temperature overlay independently from its basis" $
+      tooltipForWidget WidgetViewOverlayTemperature
+        `shouldBe` Just "Overlay temperature on the selected base; basis chooses climate average or current weather"
 
-    it "describes Cloud/Storm as aggregate cloud cover plus storm tint" $
-      tooltipForWidget WidgetViewCloud
-        `shouldBe` Just "Current aggregate cloud cover/cloud water with precipitation storm tint"
+    it "describes Cloud/Storm as an independent layered overlay" $
+      tooltipForWidget WidgetViewOverlayCloud
+        `shouldBe` Just "Overlay cloud/storm tint on the selected base; average uses weather_normals, current uses simulated weather"
 
   describe "water level separation" $ do
     it "changing uiWaterLevel does not affect uiRenderWaterLevel" $

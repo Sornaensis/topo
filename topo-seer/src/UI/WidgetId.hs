@@ -53,25 +53,6 @@ data WidgetId
   | WidgetViewOverlayCloud
   | WidgetViewBasisAverage
   | WidgetViewBasisCurrent
-  -- Legacy single-mode IDs kept for click_widget/API compatibility.
-  | WidgetViewElevation
-  | WidgetViewBiome
-  | WidgetViewClimate
-  | WidgetViewWeather
-  | WidgetViewMoisture
-  | WidgetViewPrecip
-  | WidgetViewPrecipCurrent
-  | WidgetViewVegetation
-  | WidgetViewTerrainForm
-  | WidgetViewPlateId
-  | WidgetViewPlateBoundary
-  | WidgetViewPlateHardness
-  | WidgetViewPlateCrust
-  | WidgetViewPlateAge
-  | WidgetViewPlateHeight
-  | WidgetViewPlateVelocity
-  | WidgetViewCloud
-  | WidgetViewCloudTypical
   | WidgetDayNightToggle
   | WidgetViewOverlayPrev
   -- ^ Previous overlay in the overlay store.
@@ -233,24 +214,6 @@ widgetIdToText wid = case wid of
   WidgetViewOverlayCloud -> "WidgetViewOverlayCloud"
   WidgetViewBasisAverage -> "WidgetViewBasisAverage"
   WidgetViewBasisCurrent -> "WidgetViewBasisCurrent"
-  WidgetViewElevation -> "WidgetViewElevation"
-  WidgetViewBiome -> "WidgetViewBiome"
-  WidgetViewClimate -> "WidgetViewClimate"
-  WidgetViewWeather -> "WidgetViewWeather"
-  WidgetViewMoisture -> "WidgetViewMoisture"
-  WidgetViewPrecip -> "WidgetViewPrecip"
-  WidgetViewPrecipCurrent -> "WidgetViewPrecipCurrent"
-  WidgetViewVegetation -> "WidgetViewVegetation"
-  WidgetViewTerrainForm -> "WidgetViewTerrainForm"
-  WidgetViewPlateId -> "WidgetViewPlateId"
-  WidgetViewPlateBoundary -> "WidgetViewPlateBoundary"
-  WidgetViewPlateHardness -> "WidgetViewPlateHardness"
-  WidgetViewPlateCrust -> "WidgetViewPlateCrust"
-  WidgetViewPlateAge -> "WidgetViewPlateAge"
-  WidgetViewPlateHeight -> "WidgetViewPlateHeight"
-  WidgetViewPlateVelocity -> "WidgetViewPlateVelocity"
-  WidgetViewCloud -> "WidgetViewCloud"
-  WidgetViewCloudTypical -> "WidgetViewCloudTypical"
   WidgetDayNightToggle -> "WidgetDayNightToggle"
   WidgetViewOverlayPrev -> "WidgetViewOverlayPrev"
   WidgetViewOverlayNext -> "WidgetViewOverlayNext"
@@ -392,12 +355,7 @@ nullaryWidgetIds =
   , WidgetViewBasePlateAge, WidgetViewBasePlateHeight, WidgetViewBasePlateVelocity
   , WidgetViewOverlayNone, WidgetViewOverlayTemperature, WidgetViewOverlayPrecipitation
   , WidgetViewOverlayCloud, WidgetViewBasisAverage, WidgetViewBasisCurrent
-  , WidgetViewElevation, WidgetViewBiome, WidgetViewClimate, WidgetViewWeather
-  , WidgetViewMoisture, WidgetViewPrecip, WidgetViewPrecipCurrent, WidgetViewVegetation
-  , WidgetViewTerrainForm, WidgetViewPlateId, WidgetViewPlateBoundary
-  , WidgetViewPlateHardness, WidgetViewPlateCrust, WidgetViewPlateAge
-  , WidgetViewPlateHeight, WidgetViewPlateVelocity, WidgetViewCloud
-  , WidgetViewCloudTypical, WidgetDayNightToggle, WidgetViewOverlayPrev
+  , WidgetDayNightToggle, WidgetViewOverlayPrev
   , WidgetViewOverlayNext, WidgetViewFieldPrev, WidgetViewFieldNext
   , WidgetOverlayManager, WidgetOverlaySchema, WidgetOverlayProvenance
   , WidgetOverlayExport, WidgetOverlayImportValidate, WidgetOverlayInspectorClose

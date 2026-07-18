@@ -323,6 +323,7 @@ test-suite topo-seer-test
       Spec.Simulation
       Spec.SliderSpec
       Spec.SnapshotReceiver
+      Spec.Support.LayeredView
       Spec.Support.OverlayFixtures
       Spec.TerrainActor
       Spec.TerrainCacheWorker

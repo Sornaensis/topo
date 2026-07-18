@@ -60,7 +60,8 @@ import Topo.Overlay (emptyOverlayStore)
 import Actor.Log (LogLevel(..), LogSnapshot(..))
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Actor.UI (UiState(..), ViewMode(..), emptyUiState, legacyViewModeToLayeredViewState)
+import Actor.UI (LayeredViewState, UiState(..), ViewMode(..), emptyUiState)
+import Spec.Support.LayeredView (layeredSelectionForMode)
 import Seer.Render.Viewport (currentAtlasViewportCoverage)
 import Seer.Render.ZoomStage (allZoomStages, ZoomStage(..), stageForZoom)
 import Topo (WorldConfig(..), emptyTerrainChunk)
@@ -99,6 +100,9 @@ atlasJobFor mode version stage =
     , ajViewportCoverage = Nothing
     , ajForceRebuild = False
     }
+
+legacyViewModeToLayeredViewState :: ViewMode -> LayeredViewState
+legacyViewModeToLayeredViewState = layeredSelectionForMode
 
 spec :: Spec
 spec = describe "AtlasScheduler" $ do

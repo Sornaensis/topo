@@ -55,7 +55,8 @@ spec = describe "Seer.Headless" $ do
       case srResult rsp of
         Object result -> do
           KM.member "seed" result `shouldBe` True
-          KM.member "view_mode" result `shouldBe` True
+          KM.member "view" result `shouldBe` True
+          KM.member "view_mode" result `shouldBe` False
         _ -> expectationFailure "expected JSON object result"
 
   it "defaults screenshot storage to disabled across runtime contexts" $

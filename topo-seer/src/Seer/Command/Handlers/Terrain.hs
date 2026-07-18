@@ -519,7 +519,6 @@ handleGetHex ctx reqId params =
                         , "overlay_field" .= pluginOverlayField (lvsSkyOverlay activeSelection)
                         , "weather_basis" .= weatherBasisToText (lvsWeatherBasis activeSelection)
                         , "overlay_opacity" .= lvsOverlayOpacity activeSelection
-                        , "legacy_view_mode" .= fmap viewModeToText (layeredViewStateToViewMode activeSelection)
                         , "label" .= maybe (viewModeToText activeMode) vmmLabel activeMetadata
                         , "description" .= maybe Null (Aeson.toJSON . vmmDescription) activeMetadata
                         , "basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) activeSemantics

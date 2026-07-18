@@ -103,7 +103,6 @@ import Actor.UI
   , setUiPluginDiagnosticStatuses
   , setUiDisabledPlugins
   , setUiOverlayNames
-  , setUiViewMode
   , setUiViewSelection
   , uiWaterLevel
   , uiWorldConfig
@@ -140,7 +139,6 @@ data UiAction
   = UiActionGenerate
   | UiActionReset
   | UiActionRevert
-  | UiActionSetViewMode !ViewMode
   | UiActionSetViewSelection !LayeredViewState
   | UiActionSetBaseViewMode !BaseViewMode
   | UiActionSetSkyOverlayMode !(Maybe SkyOverlayMode)
@@ -175,8 +173,6 @@ runUiAction req =
       logTimed req "Config Reset" (resetConfig req)
     UiActionRevert ->
       logTimed req "Config Revert" (revertConfig req)
-    UiActionSetViewMode mode ->
-      logTimed req ("View " <> viewModeLabel mode) (setViewModeAndRebuild req mode)
     UiActionSetViewSelection selection ->
       logTimed req "View selection" (setViewSelectionAndRebuild req selection)
     UiActionSetBaseViewMode base ->
@@ -426,20 +422,6 @@ viewportCoverageFor terrainSnap uiSnap mbWindowSize stage = do
         terrainSnap
         stage
     else Nothing
-
-setViewMode :: UiActionRequest -> ViewMode -> IO ()
-setViewMode req mode =
-  setUiViewMode (ahUiHandle (uarActorHandles req)) mode
-
-setViewModeAndRebuild :: UiActionRequest -> ViewMode -> IO ()
-setViewModeAndRebuild req mode = do
-  let handles = uarActorHandles req
-      uiHandle = ahUiHandle handles
-  previousUi <- getUiSnapshot uiHandle
-  setUiViewMode uiHandle mode
-  uiSnap <- getUiSnapshot uiHandle
-  (terrainSnap, snapshotVersion) <- publishLatestTerrainSnapshot handles uiSnap
-  enqueueAtlasTransitionForTerrain handles previousUi uiSnap snapshotVersion terrainSnap
 
 setViewSelectionAndRebuild :: UiActionRequest -> LayeredViewState -> IO ()
 setViewSelectionAndRebuild req selection =

@@ -7,9 +7,6 @@ module Seer.Service.State
   , StateSummaryResponse(..)
   , StateHexCoord(..)
   , StateLayeredViewSnapshot(..)
-  , StateViewModesRequest(..)
-  , StateViewModeSummary(..)
-  , StateViewModesResponse(..)
   , StateViewsRequest(..)
   , StateViewChoice(..)
   , StateWeatherBasisSummary(..)
@@ -26,7 +23,6 @@ module Seer.Service.State
   , StateUiHexSelectionSnapshot(..)
   , StateUiSimulationSnapshot(..)
   , stateGetStateOperation
-  , stateGetViewModesOperation
   , stateGetViewsOperation
   , stateGetUiStateOperation
   , stateServiceGroup
@@ -41,7 +37,6 @@ import Seer.Service.Types
 
 data StateService = StateService
   { stateGetState :: !(ServiceHandler StateGetRequest StateSummaryResponse)
-  , stateGetViewModes :: !(ServiceHandler StateViewModesRequest StateViewModesResponse)
   , stateGetViews :: !(ServiceHandler StateViewsRequest StateViewsResponse)
   , stateGetUiState :: !(ServiceHandler StateUiStateRequest StateUiStateResponse)
   }
@@ -56,7 +51,6 @@ data StateHexCoord = StateHexCoord
 
 data StateSummaryResponse = StateSummaryResponse
   { stateSummarySeed :: !Word64
-  , stateSummaryViewMode :: !Text
   , stateSummaryView :: !StateLayeredViewSnapshot
   , stateSummaryConfigTab :: !Text
   , stateSummaryGenerating :: !Bool
@@ -73,33 +67,8 @@ data StateLayeredViewSnapshot = StateLayeredViewSnapshot
   , stateLayeredOverlayField :: !(Maybe Int)
   , stateLayeredWeatherBasis :: !Text
   , stateLayeredOverlayOpacity :: !Float
-  , stateLayeredLegacyViewMode :: !(Maybe Text)
   , stateLayeredTemporalBasis :: !(Maybe Text)
   , stateLayeredSourceKind :: !(Maybe Text)
-  } deriving (Eq, Show)
-
-data StateViewModesRequest = StateViewModesRequest
-  deriving (Eq, Show)
-
-data StateViewModeSummary = StateViewModeSummary
-  { stateViewModeName :: !Text
-  , stateViewModeActive :: !Bool
-  , stateViewModeLabel :: !Text
-  , stateViewModeDescription :: !Text
-  , stateViewModeKind :: !Text
-  , stateViewModeTemporalBasis :: !(Maybe Text)
-  , stateViewModeSourceKind :: !(Maybe Text)
-  , stateViewModeUnit :: !(Maybe Text)
-  , stateViewModeColorScale :: !Text
-  , stateViewModeLegend :: !Value
-  , stateViewModeTooltipFields :: ![Text]
-  , stateViewModeInspectorFields :: ![Text]
-  , stateViewModeExportFields :: ![Text]
-  , stateViewModeHttp :: ![Text]
-  } deriving (Eq, Show)
-
-newtype StateViewModesResponse = StateViewModesResponse
-  { stateViewModes :: [StateViewModeSummary]
   } deriving (Eq, Show)
 
 data StateViewsRequest = StateViewsRequest
@@ -109,7 +78,6 @@ data StateViewChoice = StateViewChoice
   { stateViewChoiceName :: !Text
   , stateViewChoiceActive :: !Bool
   , stateViewChoiceLabel :: !Text
-  , stateViewChoiceLegacyViewMode :: !(Maybe Text)
   , stateViewChoicePluginOverlay :: !(Maybe Text)
   , stateViewChoiceFieldIndex :: !(Maybe Int)
   , stateViewChoiceMetadata :: !Value
@@ -128,15 +96,13 @@ data StateViewsResponse = StateViewsResponse
   , stateViewsOverlayModes :: ![StateViewChoice]
   , stateViewsWeatherBases :: ![StateWeatherBasisSummary]
   , stateViewsOverlayNames :: ![Text]
-  , stateViewsLegacyModes :: ![StateViewModeSummary]
   } deriving (Eq, Show)
 
 data StateUiStateRequest = StateUiStateRequest
   deriving (Eq, Show)
 
 data StateUiViewSnapshot = StateUiViewSnapshot
-  { stateUiViewMode :: !Text
-  , stateUiViewLayered :: !StateLayeredViewSnapshot
+  { stateUiViewLayered :: !StateLayeredViewSnapshot
   , stateUiViewOverlayName :: !(Maybe Text)
   , stateUiViewOverlayField :: !(Maybe Int)
   , stateUiViewOverlayNames :: ![Text]
@@ -211,7 +177,6 @@ stateServiceGroup = ServiceGroupSpec "state" stateServiceOperationSpecs
 stateServiceOperationSpecs :: [ServiceOperationSpec]
 stateServiceOperationSpecs =
   [ typedServiceOperationSpec stateGetStateOperation
-  , typedServiceOperationSpec stateGetViewModesOperation
   , typedServiceOperationSpec stateGetViewsOperation
   , typedServiceOperationSpec stateGetUiStateOperation
   ]
@@ -219,10 +184,6 @@ stateServiceOperationSpecs =
 stateGetStateOperation :: TypedServiceOperation StateGetRequest StateSummaryResponse
 stateGetStateOperation = typedOperation $
   operationSpec "state.get" "get_state" "Read current application state."
-
-stateGetViewModesOperation :: TypedServiceOperation StateViewModesRequest StateViewModesResponse
-stateGetViewModesOperation = typedOperation $
-  operationSpec "state.viewModes" "get_view_modes" "List supported view modes and active selection."
 
 stateGetViewsOperation :: TypedServiceOperation StateViewsRequest StateViewsResponse
 stateGetViewsOperation = typedOperation $

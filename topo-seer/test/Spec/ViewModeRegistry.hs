@@ -24,7 +24,6 @@ import Actor.UI.State
   , baseViewModeSummaryToJSON
   , baseViewModeToText
   , baseViewModeToViewMode
-  , builtinViewModeFromText
   , defaultLayeredViewState
   , layeredViewStateToJSON
   , layeredViewStateToViewMode
@@ -37,13 +36,11 @@ import Actor.UI.State
   , sourceKindToText
   , temporalBasisToText
   , viewModeDataSemantics
-  , viewModeFromTextWithBasis
   , viewModeKindToText
   , viewModeLegendTitle
   , viewModeMetadata
   , viewModeMetadataToJSON
   , viewModeSummaryToJSON
-  , viewModeToLayeredViewState
   , viewModeToText
   , weatherBasisFromText
   , weatherBasisToText
@@ -78,8 +75,9 @@ spec = describe "view mode registry" $ do
     map vmmName metas `shouldBe` nub (map vmmName metas)
     mapM_ assertComplete metas
 
-  it "round-trips built-in mode names through the registry parser" $
-    mapM_ (\mode -> builtinViewModeFromText (viewModeToText mode) `shouldBe` Just mode) allBuiltinViewModes
+  it "keeps built-in metadata names aligned with their stable text identifiers" $
+    map vmmName (mapMaybe viewModeMetadata allBuiltinViewModes)
+      `shouldBe` map viewModeToText allBuiltinViewModes
 
   it "places explicit average/current weather controls in built-in/API order" $
     take 8 allBuiltinViewModes `shouldBe`
@@ -105,16 +103,16 @@ spec = describe "view mode registry" $ do
     weatherBasisFromText "typical_normal" `shouldBe` Just WeatherBasisAverage
     weatherOverlayTemporalBasis SkyOverlayCloud WeatherBasisAverage `shouldBe` TypicalNormal
     assertObjectHas
-      [ "active", "name", "label", "legacy_view_mode", "kind" ]
+      [ "active", "name", "label", "kind" ]
       (baseViewModeSummaryToJSON True BaseViewElevation)
     assertObjectHas
-      [ "name", "label", "legacy_view_mode", "kind", "legend", "tooltip_fields", "inspector_fields" ]
+      [ "name", "label", "kind", "legend", "tooltip_fields", "inspector_fields" ]
       (baseViewModeMetadataToJSON BaseViewBiome)
     assertObjectHas
-      [ "active", "name", "label", "weather_basis_supported", "legacy_view_mode", "temporal_basis", "source_kind" ]
+      [ "active", "name", "label", "weather_basis_supported", "temporal_basis", "source_kind" ]
       (skyOverlayModeSummaryToJSON True WeatherBasisCurrent SkyOverlayCloud)
     assertObjectHas
-      [ "name", "label", "weather_basis_supported", "legacy_view_mode", "temporal_basis", "source_kind" ]
+      [ "name", "label", "weather_basis_supported", "temporal_basis", "source_kind" ]
       (skyOverlayModeMetadataToJSON SkyOverlayCloud)
     case skyOverlayModeSummaryToJSON False WeatherBasisAverage SkyOverlayCloud of
       Object o -> do
@@ -155,34 +153,13 @@ spec = describe "view mode registry" $ do
               vmmTemporalBasis meta `shouldBe` Just (weatherOverlayTemporalBasis overlay basis)
               vmmSourceKind meta `shouldBe` weatherOverlaySourceKind overlay basis
               assertObjectHas
-                [ "name", "label", "weather_basis_supported", "legacy_view_mode", "temporal_basis", "source_kind" ]
+                [ "name", "label", "weather_basis_supported", "temporal_basis", "source_kind" ]
                 (skyOverlayModeSummaryToJSON False basis overlay)
             Nothing -> expectationFailure ("missing overlay metadata for " <> Text.unpack (skyOverlayModeToText overlay))
     mapM_ assertBase allBaseViewModes
     mapM_ (\overlay -> mapM_ (assertOverlay overlay) [WeatherBasisAverage, WeatherBasisCurrent]) allBuiltinSkyOverlayModes
 
-  it "adapts legacy view modes to layered selections and back" $ do
-    let roundTrip mode = layeredViewStateToViewMode (viewModeToLayeredViewState mode) `shouldBe` Just mode
-    mapM_ roundTrip allBuiltinViewModes
-    roundTrip (ViewOverlay "roads" 2)
-    viewModeToLayeredViewState ViewElevation `shouldBe` defaultLayeredViewState
-    viewModeToLayeredViewState ViewWeather `shouldBe` defaultLayeredViewState
-      { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
-      , lvsWeatherBasis = WeatherBasisCurrent
-      }
-    viewModeToLayeredViewState ViewClimate `shouldBe` defaultLayeredViewState
-      { lvsSkyOverlay = Just SkyOverlayWeatherTemperature
-      , lvsWeatherBasis = WeatherBasisAverage
-      }
-    viewModeToLayeredViewState ViewCloudTypical `shouldBe` defaultLayeredViewState
-      { lvsSkyOverlay = Just SkyOverlayCloud
-      , lvsWeatherBasis = WeatherBasisAverage
-      }
-    layeredViewStateToViewMode defaultLayeredViewState
-      { lvsBaseView = BaseViewBiome
-      , lvsSkyOverlay = Just SkyOverlayPrecipitation
-      , lvsWeatherBasis = WeatherBasisCurrent
-      } `shouldBe` Just ViewPrecipCurrent
+  it "serializes canonical layered selections without compatibility fields" $ do
     case layeredViewStateToJSON defaultLayeredViewState
       { lvsBaseView = BaseViewBiome
       , lvsSkyOverlay = Just SkyOverlayCloud
@@ -194,7 +171,7 @@ spec = describe "view mode registry" $ do
         KM.lookup "weather_basis" o `shouldBe` Just (String "current")
         KM.lookup "temporal_basis" o `shouldBe` Just (String "instantaneous_current")
         KM.lookup "source_kind" o `shouldBe` Just (String "weather_snapshot")
-        KM.lookup "legacy_view_mode" o `shouldBe` Just (String "cloud")
+        KM.lookup "legacy_view_mode" o `shouldBe` Nothing
       _ -> expectationFailure "expected layered view JSON object"
 
     let reservedWeather = defaultLayeredViewState
@@ -233,12 +210,6 @@ spec = describe "view mode registry" $ do
     viewModeDataSemantics ViewMoisture `shouldBe` Nothing
     temporalBasisToText TypicalNormal `shouldBe` "typical_normal"
     sourceKindToText ExternalLive `shouldBe` "external_live"
-    viewModeFromTextWithBasis "weather" (Just LongRunAverage) Nothing `shouldBe` Just ViewClimate
-    viewModeFromTextWithBasis "weather" (Just InstantaneousCurrent) Nothing `shouldBe` Just ViewWeather
-    viewModeFromTextWithBasis "weather" (Just TypicalNormal) Nothing `shouldBe` Nothing
-    viewModeFromTextWithBasis "precipitation" (Just InstantaneousCurrent) Nothing `shouldBe` Just ViewPrecipCurrent
-    viewModeFromTextWithBasis "precipitation" (Just TypicalNormal) Nothing `shouldBe` Nothing
-    viewModeFromTextWithBasis "cloud" (Just TypicalNormal) Nothing `shouldBe` Just ViewCloudTypical
 
   it "presents weather as current temperature and redirects cloud/storm expectations" $ do
     let cloudOrStorm field = Text.isInfixOf "cloud" field || Text.isInfixOf "storm" field

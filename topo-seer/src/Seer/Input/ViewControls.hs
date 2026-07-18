@@ -13,7 +13,6 @@ module Seer.Input.ViewControls
   , nextWeatherBasis
   , ViewHotkey(..)
   , viewHotkeyForKey
-  , viewModeForKey
   ) where
 
 import Actor.Data (TerrainSnapshot(..))
@@ -22,7 +21,6 @@ import Actor.UI
   , LayeredViewState(..)
   , SkyOverlayMode(..)
   , UiState(..)
-  , ViewMode(..)
   , WeatherBasis(..)
   )
 import qualified Data.IntMap.Strict as IntMap
@@ -162,22 +160,6 @@ viewHotkeyForKey key =
     SDL.KeycodeK -> Just (ViewHotkeySetOverlay (Just SkyOverlayCloud))
     SDL.KeycodeO -> Just ViewHotkeyCycleOverlay
     SDL.KeycodeB -> Just ViewHotkeyCycleWeatherBasis
-    _ -> Nothing
-
--- | Legacy one-dimensional number-key mapping retained for compatibility.
-viewModeForKey :: SDL.Keycode -> Maybe ViewMode
-viewModeForKey key =
-  case key of
-    SDL.Keycode1 -> Just ViewElevation
-    SDL.Keycode2 -> Just ViewBiome
-    SDL.Keycode3 -> Just ViewClimate
-    SDL.Keycode4 -> Just ViewMoisture
-    SDL.Keycode5 -> Just ViewWeather
-    SDL.Keycode6 -> Just ViewPlateId
-    SDL.Keycode7 -> Just ViewPlateBoundary
-    SDL.Keycode8 -> Just ViewPlateHardness
-    SDL.Keycode9 -> Just ViewVegetation
-    SDL.Keycode0 -> Just ViewTerrainForm
     _ -> Nothing
 
 clamp :: Ord a => a -> a -> a -> a

@@ -1,10 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Handlers for state query commands: @get_state@, @get_view_modes@,
--- @get_views@, @get_ui_state@.
+-- | Handlers for state query commands: @get_state@, @get_views@,
+-- @get_ui_state@.
 module Seer.Command.Handlers.State
   ( handleGetState
-  , handleGetViewModes
   , handleGetViews
   , handleGetUiState
   ) where
@@ -30,26 +29,19 @@ import Actor.UI.State
   , TemporalBasis
   , UiSnapshotRef
   , UiState(..)
-  , ViewMode(..)
   , ViewModeDataSemantics(..)
   , WeatherBasis(..)
   , allBaseViewModes
   , allBuiltinSkyOverlayModes
-  , allBuiltinViewModes
   , baseViewModeSummaryToJSON
   , baseViewModeToText
-  , baseViewModeToViewMode
   , dataBrowserScopedError
+  , layeredViewStateDataSemantics
   , layeredViewStateToJSON
-  , layeredViewStateToViewMode
   , skyOverlayModeSummaryToJSON
   , skyOverlayModeToText
   , sourceKindToText
   , temporalBasisToText
-  , viewModeDataSemantics
-  , viewModeMetadata
-  , viewModeSummaryToJSON
-  , viewModeToText
   , weatherBasisToText
   , weatherOverlaySourceKind
   , weatherOverlayTemporalBasis
@@ -69,10 +61,8 @@ handleGetState :: CommandContext -> Int -> Value -> IO SeerResponse
 handleGetState ctx reqId _params = do
   ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
   let selection = uiViewSelection ui
-      legacyMode = legacyViewModeFor selection
   pure $ okResponse reqId $ object
     [ "seed"              .= uiSeed ui
-    , "view_mode"         .= viewModeToText legacyMode
     , "view"              .= layeredViewStateToJSON selection
     , "config_tab"        .= configTabToText (uiConfigTab ui)
     , "generating"        .= uiGenerating ui
@@ -82,26 +72,6 @@ handleGetState ctx reqId _params = do
     , "context_hex"       .= fmap (\(q, r) -> object ["q" .= q, "r" .= r]) (uiContextHex ui)
     ]
 
--- | Handle @get_view_modes@ — return all view mode names and active flag.
-handleGetViewModes :: CommandContext -> Int -> Value -> IO SeerResponse
-handleGetViewModes ctx reqId _params = do
-  ui <- readUiSnapshotRef (ccUiSnapshotRef ctx)
-  let selection = uiViewSelection ui
-  pure $ okResponse reqId $ object
-    [ "view_modes" .= legacyViewModeSummaries ui
-    , "view" .= layeredViewStateToJSON selection
-    ]
-
-legacyViewModeSummaries :: UiState -> [Value]
-legacyViewModeSummaries ui = map modeSummary allBuiltinViewModes
-  where
-    current = legacyViewModeFor (uiViewSelection ui)
-    modeSummary vm =
-      maybe
-        (object ["name" .= viewModeToText vm, "active" .= (vm == current)])
-        (viewModeSummaryToJSON (vm == current))
-        (viewModeMetadata vm)
-
 -- | Handle @get_views@ — return layered view state and available choices.
 handleGetViews :: CommandContext -> Int -> Value -> IO SeerResponse
 handleGetViews ctx reqId _params = do
@@ -109,17 +79,15 @@ handleGetViews ctx reqId _params = do
   terrainSnap <- readTerrainSnapshot (ahTerrainSnapshotRef (ccActorHandles ctx))
   let selection = uiViewSelection ui
       availableNames = availableOverlayNames ui terrainSnap
-  pure $ okResponse reqId $ viewChoicesJSON availableNames ui selection
+  pure $ okResponse reqId $ viewChoicesJSON availableNames selection
 
-viewChoicesJSON :: [Text] -> UiState -> LayeredViewState -> Value
-viewChoicesJSON availableNames ui selection = object
+viewChoicesJSON :: [Text] -> LayeredViewState -> Value
+viewChoicesJSON availableNames selection = object
   [ "view" .= layeredViewStateToJSON selection
-  , "legacy_view_mode" .= viewModeToText (legacyViewModeFor selection)
   , "base_modes" .= map (baseChoice selection) allBaseViewModes
   , "overlay_modes" .= overlayChoices availableNames selection
   , "weather_bases" .= map (weatherBasisChoice selection) [WeatherBasisAverage, WeatherBasisCurrent]
   , "overlay_names" .= availableNames
-  , "legacy_modes" .= legacyViewModeSummaries ui
   ]
 
 baseChoice :: LayeredViewState -> BaseViewMode -> Value
@@ -133,7 +101,6 @@ overlayChoices availableNames selection = noneChoice : builtinChoices <> pluginC
       [ "name" .= ("none" :: Text)
       , "active" .= maybe True (const False) activeOverlay
       , "label" .= ("No overlay" :: Text)
-      , "legacy_view_mode" .= (Nothing :: Maybe Text)
       , "plugin_overlay" .= (Nothing :: Maybe Text)
       , "field_index" .= (Nothing :: Maybe Int)
       ]
@@ -147,7 +114,6 @@ overlayChoices availableNames selection = noneChoice : builtinChoices <> pluginC
           , "overlay_mode" .= ("plugin" :: Text)
           , "active" .= (activeOverlay == Just (SkyOverlayPlugin name 0) || pluginActive name activeOverlay)
           , "label" .= ("Plugin overlay: " <> name)
-          , "legacy_view_mode" .= (Just ("overlay:" <> name) :: Maybe Text)
           , "plugin_overlay" .= Just name
           , "field_index" .= pluginFieldIndex name activeOverlay
           ]
@@ -187,12 +153,6 @@ pluginOverlayName _ = Nothing
 pluginOverlayField :: Maybe SkyOverlayMode -> Maybe Int
 pluginOverlayField (Just (SkyOverlayPlugin _ fieldIndex)) = Just fieldIndex
 pluginOverlayField _ = Nothing
-
-legacyViewModeFor :: LayeredViewState -> ViewMode
-legacyViewModeFor selection =
-  case layeredViewStateToViewMode selection of
-    Just mode -> mode
-    Nothing -> baseViewModeToViewMode (lvsBaseView selection)
 
 activeOverlayTemporalBasis :: LayeredViewState -> WeatherBasis -> Maybe TemporalBasis
 activeOverlayTemporalBasis selection basis = weatherOverlayTemporalBasis <$> lvsSkyOverlay selection <*> pure basis
@@ -238,21 +198,18 @@ handleGetUiState ctx reqId _params = do
   let editor = uiEditor ui
       dbs    = uiDataBrowser ui
       selection = uiViewSelection ui
-      legacyMode = legacyViewModeFor selection
-      activeSemantics = viewModeDataSemantics legacyMode
+      activeSemantics = layeredViewStateDataSemantics selection
   pure $ okResponse reqId $ object
     [ "seed"        .= uiSeed ui
     , "generating"  .= uiGenerating ui
     , "world_name"  .= uiWorldName ui
     , "chunk_size"  .= uiChunkSize ui
     , "view" .= object
-        [ "mode"           .= viewModeToText legacyMode
-        , "base_mode"      .= baseViewModeToText (lvsBaseView selection)
+        [ "base_mode"      .= baseViewModeToText (lvsBaseView selection)
         , "overlay_mode"   .= overlayModeName (lvsSkyOverlay selection)
         , "plugin_overlay" .= pluginOverlayName (lvsSkyOverlay selection)
         , "weather_basis"  .= weatherBasisToText (lvsWeatherBasis selection)
         , "overlay_opacity" .= lvsOverlayOpacity selection
-        , "legacy_view_mode" .= fmap viewModeToText (layeredViewStateToViewMode selection)
         , "temporal_basis" .= fmap (temporalBasisToText . vmdsTemporalBasis) activeSemantics
         , "source_kind"    .= fmap (sourceKindToText . vmdsSourceKind) activeSemantics
         , "selection"      .= layeredViewStateToJSON selection

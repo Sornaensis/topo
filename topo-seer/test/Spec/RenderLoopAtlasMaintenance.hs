@@ -11,7 +11,8 @@ import Actor.AtlasResultBroker (atlasResultsPending, drainFreshResultsN, newAtla
 import Actor.AtlasScheduler (AtlasFreshness(..))
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.SnapshotReceiver (SnapshotVersion(..))
-import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState, legacyViewModeToLayeredViewState)
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, emptyUiState)
+import Spec.Support.LayeredView (layeredSelectionForMode)
 import Data.Maybe (isNothing)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
@@ -63,6 +64,9 @@ import UI.TerrainCache (ChunkTextureCache(..))
 import UI.TerrainRender (ChunkTexture(..))
 import UI.Widgets (Rect(..))
 import Unsafe.Coerce (unsafeCoerce)
+
+legacyViewModeToLayeredViewState :: ViewMode -> LayeredViewState
+legacyViewModeToLayeredViewState = layeredSelectionForMode
 
 spec :: Spec
 spec = describe "render-loop atlas maintenance wakeups" $ do

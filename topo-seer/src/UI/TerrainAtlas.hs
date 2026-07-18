@@ -12,7 +12,7 @@ module UI.TerrainAtlas
 
 import UI.TexturePool (TexturePool, acquireTexture)
 
-import Actor.UI (ViewMode(..))
+import Actor.UI (LayeredViewState(..), SkyOverlayMode(..))
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (mapMaybe)
@@ -28,7 +28,7 @@ import Topo.Overlay (OverlayStore)
 import Topo.Weather (getWeatherNormalsFromStore)
 import UI.OverlayExtract (extractOverlayField)
 import UI.RiverRender (RiverGeometry(..))
-import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometry)
+import UI.TerrainRender (ChunkGeometry(..), buildChunkGeometryForSelection)
 import UI.HexGeometry (normalizeHexBounds)
 import UI.Widgets (Rect(..))
 
@@ -61,7 +61,7 @@ maxAtlasTextureSize = 4096
 
 -- | Build per-tile geometry on the CPU (no SDL renderer required).
 buildAtlasTileGeometry
-  :: ViewMode
+  :: LayeredViewState
   -> Float
   -> IntMap TerrainChunk
   -> IntMap ClimateChunk
@@ -72,15 +72,15 @@ buildAtlasTileGeometry
   -> Int
   -> Int
   -> [AtlasTileGeometry]
-buildAtlasTileGeometry mode waterLevel terrainChunks climateChunks weatherChunks vegChunks overlayStore config hexRadiusPx atlasScale =
-  let overlayMap = case mode of
-        ViewOverlay name fieldIdx ->
+buildAtlasTileGeometry selection waterLevel terrainChunks climateChunks weatherChunks vegChunks overlayStore config hexRadiusPx atlasScale =
+  let overlayMap = case lvsSkyOverlay selection of
+        Just (SkyOverlayPlugin name fieldIdx) ->
           case extractOverlayField name fieldIdx (wcChunkSize config * wcChunkSize config) overlayStore of
             Just m  -> m
             Nothing -> IntMap.empty
         _ -> IntMap.empty
       weatherNormalsChunks = getWeatherNormalsFromStore overlayStore
-      geometryMap = IntMap.mapWithKey (\k -> buildChunkGeometry hexRadiusPx config mode waterLevel climateChunks weatherChunks weatherNormalsChunks vegChunks (IntMap.lookup k overlayMap) k) terrainChunks
+      geometryMap = IntMap.mapWithKey (\k -> buildChunkGeometryForSelection hexRadiusPx config selection waterLevel climateChunks weatherChunks weatherNormalsChunks vegChunks (IntMap.lookup k overlayMap) k) terrainChunks
   in composeTilesFromGeometry geometryMap hexRadiusPx atlasScale
 
 -- | Compose atlas tiles from a pre-built chunk geometry map.

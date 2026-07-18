@@ -44,9 +44,6 @@ module Actor.UI
   , weatherOverlayTemporalBasis
   , layeredViewStateToJSON
   , effectiveViewSelection
-  , uiViewMode
-  , viewModeToLayeredViewState
-  , legacyViewModeToLayeredViewState
   , layeredViewStateToViewMode
   , layeredViewStateIsLegacyEquivalent
   , PipelineStageRunState(..)
@@ -107,7 +104,6 @@ import Actor.UI.State
   , layeredViewStateIsLegacyEquivalent
   , layeredViewStateToJSON
   , layeredViewStateToViewMode
-  , legacyViewModeToLayeredViewState
   , skyOverlayModeFromText
   , skyOverlayModeFromViewMode
   , skyOverlayModeLabel
@@ -120,9 +116,7 @@ import Actor.UI.State
   , requestUiSnapshot
   , setUiSnapshotRef
   , uiActorDef
-  , uiViewMode
   , uiWorldTime
-  , viewModeToLayeredViewState
   , weatherBasisFromText
   , weatherBasisToText
   , weatherOverlayTemporalBasis

@@ -465,7 +465,6 @@ appServiceRequestValidators =
   , ("sim_tick", fields "sim_tick" [optionalInt "count"])
 
   , ("set_seed", fields "set_seed" [requiredWord64 "seed"])
-  , ("set_view_mode", fields "set_view_mode" [requiredText "mode", optionalText "basis", optionalText "temporal_basis", optionalInt "field_index"])
   , ("set_view", fields "set_view"
       [ optionalText "base_mode"
       , optionalText "base"

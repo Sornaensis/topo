@@ -2,7 +2,6 @@
 module UI.TerrainRender
   ( ChunkGeometry(..)
   , ChunkTexture(..)
-  , buildChunkGeometry
   , buildChunkGeometryForSelection
   , buildChunkBaseGeometry
   , buildChunkSkyOverlayGeometryForSelection
@@ -15,9 +14,7 @@ module UI.TerrainRender
 import Actor.UI
   ( BaseViewMode
   , LayeredViewState(..)
-  , ViewMode(..)
   , layeredViewStateIsLegacyEquivalent
-  , layeredViewStateToViewMode
   )
 import Control.Monad.ST (ST)
 import Data.IntMap.Strict (IntMap)
@@ -35,7 +32,7 @@ import Topo (ChunkCoord(..), ChunkId(..), ClimateChunk(..), TerrainChunk(..), Ve
 import Topo.Weather (WeatherNormalsChunk(..))
 import UI.DayNight (dayNightMinBrightness)
 import UI.HexGeometry (hexCenterF, hexChunkBounds, hexCornerOffsets, renderHexRadiusPx)
-import UI.TerrainColor (terrainBaseColor, terrainColor, terrainColorForSelection, terrainSkyOverlayColor)
+import UI.TerrainColor (terrainBaseColor, terrainColorForSelection, terrainSkyOverlayColor)
 import UI.Widgets (Rect(..))
 
 -- | Triangle mesh for a single terrain chunk, ready for rendering.
@@ -51,20 +48,8 @@ data ChunkTexture = ChunkTexture
   , ctBounds :: !Rect
   }
 
--- | Build the mesh for a terrain chunk in the given view mode and climate context.
---
--- The @Maybe (U.Vector Float)@ parameter carries pre-extracted overlay field
--- data for this chunk when 'ViewOverlay' mode is active.  For all other
--- view modes it should be 'Nothing'.
---
--- Day\/night brightness is no longer baked into the base geometry; it is
--- rendered as a separate overlay layer (see 'buildDayNightGeometry').
---
--- Uses pre-allocated storable vectors and direct writes to avoid the
--- overhead of building intermediate lists and calling @SV.fromList@.
-buildChunkGeometry :: Int -> WorldConfig -> ViewMode -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap WeatherNormalsChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
-buildChunkGeometry hexRadiusPx config mode =
-  buildChunkGeometryWithColor (terrainColor mode) hexRadiusPx config
+-- Geometry builders use pre-allocated storable vectors and direct writes to
+-- avoid intermediate lists and @SV.fromList@ overhead.
 
 -- | Build chunk geometry from an explicit composable base/overlay selection.
 buildChunkGeometryForSelection :: Int -> WorldConfig -> LayeredViewState -> Float -> IntMap ClimateChunk -> IntMap WeatherChunk -> IntMap WeatherNormalsChunk -> IntMap VegetationChunk -> Maybe (U.Vector Float) -> Int -> TerrainChunk -> ChunkGeometry
@@ -89,15 +74,13 @@ buildChunkSkyOverlayGeometryForSelection :: Int -> WorldConfig -> LayeredViewSta
 buildChunkSkyOverlayGeometryForSelection hexRadiusPx config selection =
   buildChunkGeometryWithColor overlayColor hexRadiusPx config
   where
-    legacyMode = layeredViewStateToViewMode selection
     legacyOpaque = layeredViewStateIsLegacyEquivalent selection
     overlayColor waterLevel chunk climate weather normals vegChunk overlayVal idx =
       case lvsSkyOverlay selection of
         Nothing -> V4 0 0 0 0
         Just overlay
-          | legacyOpaque
-          , Just mode <- legacyMode ->
-              terrainColor mode waterLevel chunk climate weather normals vegChunk overlayVal idx
+          | legacyOpaque ->
+              terrainColorForSelection (selection { lvsOverlayOpacity = 1 }) waterLevel chunk climate weather normals vegChunk overlayVal idx
           | otherwise ->
               terrainSkyOverlayColor overlay (lvsWeatherBasis selection) waterLevel chunk climate weather normals overlayVal idx
 

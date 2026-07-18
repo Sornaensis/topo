@@ -11,13 +11,13 @@ module Bench.FrameAlloc (benchmarks) where
 import qualified Data.IntMap.Strict as IntMap
 import Test.Tasty.Bench
 
-import Actor.UI.State (ViewMode(..))
+import Actor.UI.State (defaultLayeredViewState)
 import Bench.AtlasCache ()  -- NFData AtlasTileGeometry, AtlasChunkGeometry
 import Fixtures
 import Seer.Render.Terrain (TerrainCache(..), buildTerrainCache)
 import Seer.Render.Viewport (visibleChunkKeys)
 import UI.TerrainAtlas (composeTilesFromGeometry)
-import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
+import UI.TerrainRender (ChunkGeometry, buildChunkGeometryForSelection)
 
 ------------------------------------------------------------------------
 -- Geometry map fixtures
@@ -26,14 +26,14 @@ import UI.TerrainRender (ChunkGeometry, buildChunkGeometry)
 -- | 16-chunk geometry map (pre-built from terrain/climate/weather/veg).
 geoMap16 :: IntMap.IntMap ChunkGeometry
 geoMap16 = IntMap.mapWithKey (\k tc ->
-  buildChunkGeometry 6 benchWorldConfig ViewElevation 0.3
+  buildChunkGeometryForSelection 6 benchWorldConfig defaultLayeredViewState 0.3
     climateMap16 weatherMap16 IntMap.empty vegMap16
     Nothing k tc) terrainMap16
 
 -- | 64-chunk geometry map.
 geoMap64 :: IntMap.IntMap ChunkGeometry
 geoMap64 = IntMap.mapWithKey (\k tc ->
-  buildChunkGeometry 6 benchWorldConfig ViewElevation 0.3
+  buildChunkGeometryForSelection 6 benchWorldConfig defaultLayeredViewState 0.3
     climateMap64 weatherMap64 IntMap.empty vegMap64
     Nothing k tc) terrainMap64
 

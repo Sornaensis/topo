@@ -3,7 +3,8 @@ module Spec.CacheProperties (spec) where
 import Actor.AtlasCache (AtlasKey(..), atlasKeyFor, atlasKeyVersion, terrainSnapshotSelectionVersion, terrainSnapshotViewVersion)
 import Actor.Data (TerrainGeoContext(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.TerrainCacheWorker (TerrainCacheKey(..), terrainCacheKeyFrom)
-import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, effectiveViewSelection, emptyUiState, legacyViewModeToLayeredViewState)
+import Actor.UI (BaseViewMode(..), LayeredViewState(..), SkyOverlayMode(..), UiState(..), ViewMode(..), WeatherBasis(..), defaultLayeredViewState, effectiveViewSelection, emptyUiState)
+import Spec.Support.LayeredView (layeredSelectionForMode)
 import Topo (WeatherChunk(..), WorldConfig(..), emptyTerrainChunk)
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
 import Topo.Overlay (Overlay(..), OverlayProvenance(..), OverlayStore, emptyOverlay, emptyOverlayStore, insertOverlay)
@@ -31,6 +32,9 @@ import UI.TerrainCache (ChunkTextureCache(..))
 import UI.TerrainRender (ChunkTexture(..))
 import UI.Widgets (Rect(..))
 import Unsafe.Coerce (unsafeCoerce)
+
+legacyViewModeToLayeredViewState :: ViewMode -> LayeredViewState
+legacyViewModeToLayeredViewState = layeredSelectionForMode
 
 spec :: Spec
 spec = describe "Cache properties" $ do
