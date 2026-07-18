@@ -681,6 +681,7 @@ spec = describe "Seer.HTTP.Server" $ do
         waitOverlayInspector app
         managerState <- getWidgetStateHttp app "WidgetOverlayManager"
         inspectorField "manager" (hresBody managerState) `shouldBe` Just (hresBody directManager)
+        _ <- clickWidgetHttp app "WidgetOverlayInspectorClose" Nothing Nothing
 
         directSchema <- request app (mkRequest "GET" ["overlays", "schema"])
           { hreqQuery = [("overlay", Just "weather")] }
@@ -689,6 +690,7 @@ spec = describe "Seer.HTTP.Server" $ do
         waitOverlayInspector app
         schemaState <- getWidgetStateHttp app "WidgetOverlaySchema"
         inspectorField "schema" (hresBody schemaState) `shouldBe` Just (hresBody directSchema)
+        _ <- clickWidgetHttp app "WidgetOverlayInspectorClose" Nothing Nothing
 
         directProvenance <- request app (mkRequest "GET" ["overlays", "provenance"])
           { hreqQuery = [("overlay", Just "weather")] }
@@ -697,6 +699,7 @@ spec = describe "Seer.HTTP.Server" $ do
         waitOverlayInspector app
         provenanceState <- getWidgetStateHttp app "WidgetOverlayProvenance"
         inspectorField "provenance" (hresBody provenanceState) `shouldBe` Just (hresBody directProvenance)
+        _ <- clickWidgetHttp app "WidgetOverlayInspectorClose" Nothing Nothing
 
         directExport <- request app $ withBody "POST" ["overlays", "export"]
           (object ["overlay" .= ("weather" :: Text)])
@@ -705,6 +708,7 @@ spec = describe "Seer.HTTP.Server" $ do
         waitOverlayInspector app
         exportState <- getWidgetStateHttp app "WidgetOverlayExport"
         inspectorField "export" (hresBody exportState) `shouldBe` Just (hresBody directExport)
+        _ <- clickWidgetHttp app "WidgetOverlayInspectorClose" Nothing Nothing
 
         directValidation <- request app $ withBody "POST" ["overlays", "import", "validate"]
           (object ["schema" .= object [], "payload" .= object []])

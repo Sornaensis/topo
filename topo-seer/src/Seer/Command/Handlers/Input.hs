@@ -23,6 +23,7 @@ import qualified Data.Aeson.Types as Aeson
 import Data.Char (isPrint)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Linear (V2(..))
 
 import Actor.UI.Setters
   ( setUiPresetInput
@@ -32,6 +33,7 @@ import Actor.UI.Setters
   , setUiWorldFilter
   , setUiWorldSelected
   , setUiSeedInput
+  , setUiOverlayInspectorImportText
   )
 import Actor.Log (getLogSnapshot)
 import Actor.UI.State
@@ -47,6 +49,7 @@ import Seer.Config.PresetCatalogue (presetCatalogueMatches)
 import Seer.DataBrowser.Executor (submitDataBrowserAction)
 import qualified Seer.DataBrowser.Lifecycle as DataBrowser
 import Seer.DataBrowser.Model (DataBrowserBeginResult(..))
+import Seer.Draw.OverlayInspector (overlayInspectorViewScrollLimit)
 import Seer.Input.Intent
   ( InputIntentEnv(..)
   , InputIntentResult(..)
@@ -57,8 +60,10 @@ import Seer.Input.Intent
   , parseInputKey
   , parseKeyModifiers
   )
+import Seer.OverlayInspector.Model (overlayInspectorModelValue)
 import Seer.Service.Types (ServiceError(..), ServiceResult)
 import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import UI.Layout (layoutForSeed)
 
 -- --------------------------------------------------------------------------
 -- get_dialog_state
@@ -78,6 +83,7 @@ handleGetDialogState ctx reqId _params = do
         MenuPresetLoad -> "preset_load"
         MenuWorldSave  -> "world_save"
         MenuWorldLoad  -> "world_load"
+        MenuOverlayInspector -> "overlay_inspector"
       dbsField = case dbsFocusedField dbs of
         Just f | dbsEditMode dbs || dbsCreateMode dbs -> Just f
         _ -> Nothing
@@ -99,6 +105,7 @@ handleGetDialogState ctx reqId _params = do
     , "data_edit_mode"  .= dbsEditMode dbs
     , "data_create_mode" .= dbsCreateMode dbs
     , "data_text_cursor" .= dbsTextCursor dbs
+    , "overlay_inspector" .= overlayInspectorModelValue (uiOverlayInspector ui)
     ]
 
 -- --------------------------------------------------------------------------
@@ -163,6 +170,13 @@ handleSetDialogText ctx reqId params = do
           pure $ okResponse reqId $ object
             [ "target" .= ("seed" :: Text)
             , "text"   .= txt
+            ]
+        "overlay_import" -> do
+          let filtered = Text.filter isPrint txt
+          setUiOverlayInspectorImportText uiH filtered (Text.length filtered)
+          pure $ okResponse reqId $ object
+            [ "target" .= ("overlay_import" :: Text)
+            , "text" .= filtered
             ]
         "data_field" -> do
           let dbs = uiDataBrowser ui
@@ -229,6 +243,9 @@ inputIntentEnv runner ctx = InputIntentEnv
   , iieGetLog = getLogSnapshot (ahLogHandle handles)
   , iieRunService = runner ctx
   , iieApplyDataBrowser = runDataBrowserOwnerActionWith (runner ctx) ctx
+  , iieDeferBlockingWidgets = False
+  , iieOverlayInspectorScrollLimit = \inspector -> pure $
+      overlayInspectorViewScrollLimit (layoutForSeed (V2 1200 800) 160 120) inspector
   }
   where
     handles = ccActorHandles ctx
@@ -247,6 +264,7 @@ intentResponse reqId keyName modifiers (Right result) = okResponse reqId $ objec
   , "field" .= iirField result
   , "name" .= iirName result
   , "menu_mode" .= iirMenuMode result
+  , "clipboard" .= iirClipboard result
   ]
 
 modifierTexts :: KeyModifiers -> [Text]
@@ -280,6 +298,7 @@ autoDetectTarget ui = case uiMenuMode ui of
   MenuWorldSave  -> "world_input"
   MenuPresetLoad -> "preset_filter"
   MenuWorldLoad  -> "world_filter"
+  MenuOverlayInspector -> "overlay_import"
   _ | uiSeedEditing ui -> "seed"
     | otherwise ->
         let dbs = uiDataBrowser ui

@@ -264,6 +264,17 @@ module Actor.UI.Setters
   , setUiSeedEditing
   , setUiSeedInput
   , setUiDataBrowser
+  , setUiOverlayInspector
+  , openUiOverlayInspector
+  , closeUiOverlayInspector
+  , setUiOverlayInspectorFocus
+  , setUiOverlayInspectorScroll
+  , moveUiOverlayInspectorSelection
+  , selectUiOverlayInspectorOverlay
+  , setUiOverlayInspectorImportText
+  , setUiOverlayInspectorImportDraft
+  , applyUiOverlayInspectorValidationPreparation
+  , setUiOverlayInspectorNotice
   , setUiOverlayNames
   , setUiOverlayFields
   , setUiDataResources
@@ -278,6 +289,11 @@ import Hyperspace.Actor
 import Seer.Config.SliderRegistry (SliderId(..))
 import Seer.Config.Snapshot.Types (ConfigSnapshot)
 import Seer.Editor.Types (EditorState)
+import Seer.OverlayInspector.Model
+  ( OverlayInspectorFocus
+  , OverlayInspectorModel
+  , OverlayInspectorView
+  )
 import Seer.World.Persist.Types (WorldSaveManifest)
 import Topo.Overlay.Schema (OverlayFieldType)
 import Topo.Pipeline.Stage (StageId)
@@ -584,6 +600,41 @@ setUiSeedEditing = sendUnary SetSeedEditing
 setUiSeedInput = sendUnary SetSeedInput
 setUiDataBrowser :: UiHandle -> DataBrowserState -> IO ()
 setUiDataBrowser = sendUnary SetDataBrowser
+
+setUiOverlayInspector :: UiHandle -> OverlayInspectorModel -> IO ()
+setUiOverlayInspector = sendUnary SetOverlayInspector
+
+openUiOverlayInspector :: UiHandle -> OverlayInspectorView -> IO ()
+openUiOverlayInspector = sendUnary OpenOverlayInspector
+
+closeUiOverlayInspector :: UiHandle -> IO ()
+closeUiOverlayInspector handle = sendUpdate handle CloseOverlayInspector
+
+setUiOverlayInspectorFocus :: UiHandle -> OverlayInspectorFocus -> IO ()
+setUiOverlayInspectorFocus = sendUnary SetOverlayInspectorFocus
+
+setUiOverlayInspectorScroll :: UiHandle -> Int -> IO ()
+setUiOverlayInspectorScroll = sendUnary SetOverlayInspectorScroll
+
+moveUiOverlayInspectorSelection :: UiHandle -> Int -> IO ()
+moveUiOverlayInspectorSelection = sendUnary MoveOverlayInspectorSelection
+
+selectUiOverlayInspectorOverlay :: UiHandle -> Maybe Text -> IO ()
+selectUiOverlayInspectorOverlay = sendUnary SelectOverlayInspectorOverlay
+
+setUiOverlayInspectorImportText :: UiHandle -> Text -> Int -> IO ()
+setUiOverlayInspectorImportText handle text cursor =
+  sendUpdate handle (SetOverlayInspectorImportText text cursor)
+
+setUiOverlayInspectorImportDraft :: UiHandle -> Value -> IO ()
+setUiOverlayInspectorImportDraft = sendUnary SetOverlayInspectorImportDraft
+
+applyUiOverlayInspectorValidationPreparation :: UiHandle -> Either Text Value -> IO ()
+applyUiOverlayInspectorValidationPreparation = sendUnary ApplyOverlayInspectorValidationPreparation
+
+setUiOverlayInspectorNotice :: UiHandle -> Maybe Text -> IO ()
+setUiOverlayInspectorNotice = sendUnary SetOverlayInspectorNotice
+
 setUiOverlayNames = sendUnary SetOverlayNames
 setUiOverlayFields = sendUnary SetOverlayFields
 

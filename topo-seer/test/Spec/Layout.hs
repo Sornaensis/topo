@@ -138,6 +138,23 @@ spec = describe "UI.Layout" $ do
       [(left, right) | (left:rest) <- tails actions, right <- rest]
     shouldNotOverlap (worldDeleteConfirmOkRect layout) (worldDeleteConfirmCancelRect layout)
 
+  it "keeps overlay inspector controls inside a centered modal" $ do
+    let assertLayout layout = do
+          let dialog = overlayInspectorDialogRect layout
+              controls =
+                [ overlayInspectorTitleRect layout
+                , overlayInspectorCloseRect layout
+                , overlayInspectorBodyRect layout
+                , overlayInspectorCopyRect layout
+                , overlayInspectorSaveRect layout
+                , overlayInspectorImportInputRect layout
+                , overlayInspectorValidateRect layout
+                ]
+          mapM_ (`shouldSatisfy` insideRect dialog) controls
+          shouldNotOverlap (overlayInspectorCloseRect layout) (overlayInspectorTitleRect layout)
+          shouldNotOverlap (overlayInspectorCopyRect layout) (overlayInspectorSaveRect layout)
+    mapM_ assertLayout [layoutFor (V2 580 480) 24, layoutFor (V2 1200 900) 160]
+
   it "positions editor toolbar centered horizontally below top bar" $ do
     let layout = layoutFor (V2 1200 800) 160
         Rect (V2 tx ty, V2 tw th) = editorToolbarRect layout

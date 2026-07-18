@@ -54,6 +54,7 @@ library
       Seer.Draw.Dialog
       Seer.Draw.LeftPanel
       Seer.Draw.Overlay
+      Seer.Draw.OverlayInspector
       Seer.Headless
       Seer.HTTP.Auth
       Seer.HTTP.API
@@ -78,6 +79,7 @@ library
       Seer.OverlayInspector.AppService
       Seer.OverlayInspector.Executor
       Seer.OverlayInspector.Model
+      Seer.OverlayInspector.Storage
       Seer.System
       Seer.System.Cache
       Seer.System.Snapshot

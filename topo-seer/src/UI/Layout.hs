@@ -123,6 +123,16 @@ module UI.Layout
   , worldDeleteConfirmOkRect
   , worldDeleteConfirmCancelRect
   , worldLoadErrorRect
+    -- Overlay inspector dialog
+  , overlayInspectorDialogRect
+  , overlayInspectorTitleRect
+  , overlayInspectorCloseRect
+  , overlayInspectorBodyRect
+  , overlayInspectorRowRect
+  , overlayInspectorCopyRect
+  , overlayInspectorSaveRect
+  , overlayInspectorImportInputRect
+  , overlayInspectorValidateRect
     -- Editor toolbar
   , editorToolbarRect
   , editorToolButtonRect
@@ -794,6 +804,55 @@ worldLoadErrorRect layout =
   let Rect (V2 dx dy, V2 dw _) = worldLoadDialogRect layout
       pad = 16
   in Rect (V2 (dx + pad) (dy + 334), V2 (dw - pad * 2) 18)
+
+-- | Window-clamped overlay inspector surface. All internal geometry derives
+-- from this rect so hit-testing and drawing remain identical at small sizes.
+overlayInspectorDialogRect :: Layout -> Rect
+overlayInspectorDialogRect layout =
+  let V2 winW winH = layoutSize layout
+      width = max 360 (min 760 (winW - 32))
+      height = max 360 (min 600 (winH - 40))
+  in Rect (V2 ((winW - width) `div` 2) (max 8 ((winH - height) `div` 2)), V2 width height)
+
+overlayInspectorTitleRect :: Layout -> Rect
+overlayInspectorTitleRect layout =
+  let Rect (V2 x y, V2 width _) = overlayInspectorDialogRect layout
+  in Rect (V2 (x + 16) (y + 10), V2 (width - 64) 28)
+
+overlayInspectorCloseRect :: Layout -> Rect
+overlayInspectorCloseRect layout =
+  let Rect (V2 x y, V2 width _) = overlayInspectorDialogRect layout
+  in Rect (V2 (x + width - 40) (y + 10), V2 28 28)
+
+overlayInspectorBodyRect :: Layout -> Rect
+overlayInspectorBodyRect layout =
+  let Rect (V2 x y, V2 width height) = overlayInspectorDialogRect layout
+  in Rect (V2 (x + 16) (y + 48), V2 (width - 32) (height - 104))
+
+overlayInspectorRowRect :: Int -> Layout -> Rect
+overlayInspectorRowRect index layout =
+  let Rect (V2 x y, V2 width _) = overlayInspectorBodyRect layout
+  in Rect (V2 (x + 4) (y + 4 + index * 30), V2 (width - 8) 26)
+
+overlayInspectorCopyRect :: Layout -> Rect
+overlayInspectorCopyRect layout = overlayInspectorFooterButton 0 layout
+
+overlayInspectorSaveRect :: Layout -> Rect
+overlayInspectorSaveRect layout = overlayInspectorFooterButton 1 layout
+
+overlayInspectorValidateRect :: Layout -> Rect
+overlayInspectorValidateRect layout = overlayInspectorFooterButton 1 layout
+
+overlayInspectorFooterButton :: Int -> Layout -> Rect
+overlayInspectorFooterButton index layout =
+  let Rect (V2 x y, V2 _ height) = overlayInspectorDialogRect layout
+      buttonWidth = 120
+  in Rect (V2 (x + 16 + index * (buttonWidth + 12)) (y + height - 44), V2 buttonWidth 28)
+
+overlayInspectorImportInputRect :: Layout -> Rect
+overlayInspectorImportInputRect layout =
+  let Rect (V2 x y, V2 width height) = overlayInspectorBodyRect layout
+  in Rect (V2 x (y + 38), V2 width (max 80 (height - 76)))
 
 -- | Checkbox rect for a pipeline stage toggle at the given row index.
 --

@@ -22,6 +22,8 @@ module Seer.Input.Intent
 import Control.Monad (when)
 import Data.Aeson (Value(..), object, (.=))
 import Data.Char (toLower)
+import Data.List (findIndex)
+import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -44,6 +46,11 @@ import Actor.UI.Setters
   , setUiWorldDeleteConfirm
   , setUiWorldDeleteTarget
   , setUiWorldDeleteError
+  , closeUiOverlayInspector
+  , setUiOverlayInspectorFocus
+  , setUiOverlayInspectorScroll
+  , moveUiOverlayInspectorSelection
+  , setUiOverlayInspectorImportText
   )
 import Actor.UI.State
   ( BaseViewMode(..)
@@ -61,8 +68,14 @@ import Seer.DataBrowser.Lifecycle (DataBrowserAppAction(..))
 import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..))
 import Seer.Input.Seed (parseSeedText)
 import Seer.Input.ViewControls (nextBuiltinOverlay, nextWeatherBasis)
-import Seer.Service.Types (ServiceResult, serviceErrorText)
+import Seer.OverlayInspector.Model
+  ( OverlayInspectorFocus(..)
+  , OverlayInspectorModel(..)
+  , OverlayInspectorView(..)
+  )
+import Seer.Service.Types (ServiceResponse(..), ServiceResult, serviceErrorText)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
+import UI.WidgetId (WidgetId(..), widgetIdToText)
 
 -- | Normalized keys understood by both SDL and automation.
 data InputKey
@@ -102,6 +115,8 @@ data InputIntentEnv = InputIntentEnv
   , iieGetLog :: !(IO LogSnapshot)
   , iieRunService :: !(Text -> Value -> IO ServiceResult)
   , iieApplyDataBrowser :: !(DataBrowserAppAction -> IO (Either Text ()))
+  , iieDeferBlockingWidgets :: !Bool
+  , iieOverlayInspectorScrollLimit :: !(OverlayInspectorModel -> IO Int)
   }
 
 -- | Structured execution outcome used by API responses and SDL runtime hooks.
@@ -116,6 +131,9 @@ data InputIntentResult = InputIntentResult
   , iirField :: !(Maybe Text)
   , iirName :: !(Maybe Text)
   , iirMenuMode :: !(Maybe Text)
+  , iirClipboard :: !(Maybe Text)
+  , iirDeferredWidget :: !(Maybe WidgetId)
+  , iirStartTextInput :: !Bool
   } deriving (Eq, Show)
 
 emptyResult :: Text -> Bool -> InputIntentResult
@@ -130,6 +148,9 @@ emptyResult action applied = InputIntentResult
   , iirField = Nothing
   , iirName = Nothing
   , iirMenuMode = Nothing
+  , iirClipboard = Nothing
+  , iirDeferredWidget = Nothing
+  , iirStartTextInput = False
   }
 
 applied :: Text -> InputIntentResult
@@ -179,31 +200,48 @@ executeTextIntent :: InputIntentEnv -> Text -> IO (Either Text InputIntentResult
 executeTextIntent env input = do
   ui <- iieGetUi env
   let uiH = ahUiHandle (iieActorHandles env)
-  if uiSeedEditing ui
-    then do
-      let accepted = Text.filter (`elem` ['0'..'9']) input
-          current = uiSeedInput ui
-          next | Text.null accepted = current
-               | current == "0" = accepted
-               | otherwise = current <> accepted
-      setUiSeedInput uiH next
-      pure (Right (applied "seed_text") { iirText = Just next })
-    else case focusedDataField ui of
-      Just field -> do
-        let accepted = Text.filter (>= ' ') input
-        if Text.null accepted
-          then pure (Right noEffect)
-          else dataAction env (DataBrowserInsertText accepted)
-            (applied "data_field_text") { iirField = Just field, iirText = Just accepted }
-      Nothing -> case uiMenuMode ui of
-        MenuPresetSave -> appendText (uiPresetInput ui) input (setUiPresetInput uiH) "preset_text"
-        MenuWorldSave -> appendText (uiWorldSaveInput ui) input (setUiWorldSaveInput uiH) "world_text"
-        MenuPresetLoad -> appendFilter (uiPresetFilter ui) input (setUiPresetFilter uiH) (setUiPresetSelected uiH) "preset_filter"
-        MenuWorldLoad
-          | uiWorldDeleteConfirm ui -> pure (Right noEffect)
-          | otherwise -> appendFilter (uiWorldFilter ui) input (setUiWorldFilter uiH) (setUiWorldSelected uiH) "world_filter"
-        _ -> pure (Right noEffect)
+  if uiMenuMode ui == MenuOverlayInspector
+    then case focusedOverlayImport ui of
+      Just inspector -> insertOverlay inspector
+      Nothing -> pure (Right noEffect)
+    else if uiSeedEditing ui
+      then do
+        let accepted = Text.filter (`elem` ['0'..'9']) input
+            current = uiSeedInput ui
+            next | Text.null accepted = current
+                 | current == "0" = accepted
+                 | otherwise = current <> accepted
+        setUiSeedInput uiH next
+        pure (Right (applied "seed_text") { iirText = Just next })
+      else case focusedDataField ui of
+        Just field -> do
+          let accepted = Text.filter (>= ' ') input
+          if Text.null accepted
+            then pure (Right noEffect)
+            else dataAction env (DataBrowserInsertText accepted)
+              (applied "data_field_text") { iirField = Just field, iirText = Just accepted }
+        Nothing -> case uiMenuMode ui of
+          MenuPresetSave -> appendText (uiPresetInput ui) input (setUiPresetInput uiH) "preset_text"
+          MenuWorldSave -> appendText (uiWorldSaveInput ui) input (setUiWorldSaveInput uiH) "world_text"
+          MenuPresetLoad -> appendFilter (uiPresetFilter ui) input (setUiPresetFilter uiH) (setUiPresetSelected uiH) "preset_filter"
+          MenuWorldLoad
+            | uiWorldDeleteConfirm ui -> pure (Right noEffect)
+            | otherwise -> appendFilter (uiWorldFilter ui) input (setUiWorldFilter uiH) (setUiWorldSelected uiH) "world_filter"
+          _ -> pure (Right noEffect)
   where
+    insertOverlay inspector = do
+      let accepted = Text.filter (>= ' ') input
+          cursor = oimImportCursor inspector
+          current = oimImportText inspector
+          next = Text.take cursor current <> accepted <> Text.drop cursor current
+          nextCursor = cursor + Text.length accepted
+      if Text.null accepted
+        then pure (Right noEffect)
+        else do
+          setUiOverlayInspectorImportText
+            (ahUiHandle (iieActorHandles env)) next nextCursor
+          pure (Right (applied "overlay_import_text")
+            { iirText = Just next, iirCursor = Just nextCursor })
     appendText current raw setter action = do
       let next = current <> Text.filter (>= ' ') raw
       setter next
@@ -263,6 +301,9 @@ executeDialogCancel env = do
     else case focusedDataField ui of
       Just field -> executeDataFieldKey env ui field KeyEscape
       Nothing -> case uiMenuMode ui of
+        MenuOverlayInspector -> do
+          closeUiOverlayInspector (ahUiHandle (iieActorHandles env))
+          pure (Right (applied "overlay_inspector_close") { iirStopTextInput = True })
         MenuPresetSave -> executeModalKey env ui KeyEscape
         MenuPresetLoad -> executeModalKey env ui KeyEscape
         MenuWorldSave -> executeModalKey env ui KeyEscape
@@ -272,17 +313,144 @@ executeDialogCancel env = do
 executeKeyIntent :: InputIntentEnv -> KeyModifiers -> InputKey -> IO (Either Text InputIntentResult)
 executeKeyIntent env mods key = do
   ui <- iieGetUi env
-  if uiSeedEditing ui
-    then executeSeedKey env ui key
-    else case focusedDataField ui of
-      Just field -> executeDataFieldKey env ui field key
-      Nothing -> case uiMenuMode ui of
-        MenuPresetSave -> executeModalKey env ui key
-        MenuPresetLoad -> executeModalKey env ui key
-        MenuWorldSave -> executeModalKey env ui key
-        MenuWorldLoad -> executeModalKey env ui key
-        _ | editorActive (uiEditor ui) -> executeEditorKey env ui mods key
-          | otherwise -> executeGlobalKey env ui key
+  if uiMenuMode ui == MenuOverlayInspector
+    then executeOverlayInspectorKey env ui mods key
+    else if uiSeedEditing ui
+      then executeSeedKey env ui key
+      else case focusedDataField ui of
+        Just field -> executeDataFieldKey env ui field key
+        Nothing -> case uiMenuMode ui of
+          MenuPresetSave -> executeModalKey env ui key
+          MenuPresetLoad -> executeModalKey env ui key
+          MenuWorldSave -> executeModalKey env ui key
+          MenuWorldLoad -> executeModalKey env ui key
+          _ | editorActive (uiEditor ui) -> executeEditorKey env ui mods key
+            | otherwise -> executeGlobalKey env ui key
+
+executeOverlayInspectorKey
+  :: InputIntentEnv
+  -> UiState
+  -> KeyModifiers
+  -> InputKey
+  -> IO (Either Text InputIntentResult)
+executeOverlayInspectorKey env ui mods key =
+  case key of
+    KeyEscape -> do
+      closeUiOverlayInspector uiH
+      pure (Right (applied "overlay_inspector_close") { iirStopTextInput = True })
+    KeyTab -> cycleFocus (if kmShift mods then (-1) else 1)
+    KeyUp -> vertical (-1)
+    KeyDown -> vertical 1
+    KeyHome | importFocused -> setCursor 0
+    KeyEnd | importFocused -> setCursor (Text.length (oimImportText inspector))
+    KeyHome -> setScroll 0
+    KeyEnd -> setScroll maxBound
+    KeyEnter -> activateFocus
+    KeyBackspace | importFocused -> editImportBackspace
+    KeyDelete | importFocused -> editImportDelete
+    KeyLeft | importFocused -> moveCursor (-1)
+    KeyRight | importFocused -> moveCursor 1
+    KeySpace | importFocused -> executeTextIntent env " "
+    KeyCharacter ch | importFocused && ch >= ' ' -> executeTextIntent env (Text.singleton ch)
+    KeyCharacter ch | kmCtrl mods && toLower ch == 'c' && exportView -> copyResult
+    _ -> pure (Right noEffect)
+  where
+    uiH = ahUiHandle (iieActorHandles env)
+    inspector = uiOverlayInspector ui
+    importFocused = oimView inspector == Just OverlayInspectorImportView
+      && oimFocus inspector == OverlayInspectorImportInputFocus
+    exportView = oimView inspector == Just OverlayInspectorExportView
+    setScroll requested = do
+      scrollLimit <- iieOverlayInspectorScrollLimit env inspector
+      let next = max 0 (min scrollLimit requested)
+      setUiOverlayInspectorScroll uiH next
+      pure (Right (applied "overlay_inspector_scroll") { iirSelected = Just next })
+    vertical delta = case oimView inspector of
+      Just OverlayInspectorManagerView -> do
+        moveUiOverlayInspectorSelection uiH delta
+        pure (Right (applied "overlay_inspector_selection"))
+      _ -> setScroll (oimScroll inspector + delta * 3)
+    cycleFocus delta = do
+      let focuses = case oimView inspector of
+            Just OverlayInspectorManagerView ->
+              [ OverlayInspectorCloseFocus
+              , OverlayInspectorManagerFocus (selectedManagerIndex inspector)
+              ]
+            Just OverlayInspectorExportView ->
+              [OverlayInspectorCloseFocus, OverlayInspectorCopyFocus, OverlayInspectorSaveFocus]
+            Just OverlayInspectorImportView ->
+              [OverlayInspectorCloseFocus, OverlayInspectorImportInputFocus, OverlayInspectorValidateFocus]
+            _ -> [OverlayInspectorCloseFocus]
+          currentIndex = maybe 0 id (findIndex (sameFocus (oimFocus inspector)) focuses)
+          nextIndex = (currentIndex + delta + length focuses) `mod` length focuses
+          next = focuses !! nextIndex
+      setUiOverlayInspectorFocus uiH next
+      pure (Right (applied "overlay_inspector_focus")
+        { iirSelected = Just nextIndex
+        , iirStartTextInput = next == OverlayInspectorImportInputFocus
+        , iirStopTextInput = oimFocus inspector == OverlayInspectorImportInputFocus
+            && next /= OverlayInspectorImportInputFocus
+        })
+    sameFocus current candidate = case (current, candidate) of
+      (OverlayInspectorManagerFocus _, OverlayInspectorManagerFocus _) -> True
+      _ -> current == candidate
+    activateFocus = case oimFocus inspector of
+      OverlayInspectorCloseFocus -> do
+        closeUiOverlayInspector uiH
+        pure (Right (applied "overlay_inspector_close") { iirStopTextInput = True })
+      OverlayInspectorCopyFocus -> copyResult
+      OverlayInspectorSaveFocus -> invokeOrDefer "overlay_inspector_save" WidgetOverlayInspectorSave
+      OverlayInspectorValidateFocus -> invokeOrDefer
+        "overlay_inspector_validate" WidgetOverlayInspectorValidate
+      OverlayInspectorImportInputFocus ->
+        pure (Right (applied "overlay_import_focus") { iirStartTextInput = True })
+      OverlayInspectorManagerFocus _ -> pure (Right noEffect)
+    invoke widget = do
+      result <- iieRunService env "click_widget"
+        (object ["widget_id" .= widgetIdToText widget])
+      pure $ case result of
+        Left err -> Left (serviceErrorText err)
+        Right _ -> Right (applied "overlay_inspector_activate")
+    invokeOrDefer action widget
+      | iieDeferBlockingWidgets env = pure (Right (applied action)
+          { iirDeferredWidget = Just widget })
+      | otherwise = invoke widget
+    invokeClipboard = do
+      result <- iieRunService env "click_widget"
+        (object ["widget_id" .= widgetIdToText WidgetOverlayInspectorCopy])
+      pure $ case result of
+        Left err -> Left (serviceErrorText err)
+        Right (ServiceResponse (Object fields)) -> case KeyMap.lookup "clipboard" fields of
+          Just (String clipboard) -> Right (applied "overlay_inspector_copy")
+            { iirClipboard = Just clipboard }
+          _ -> Left "overlay copy response omitted clipboard payload"
+        Right _ -> Left "overlay copy response was not an object"
+    copyResult = case oimExportPayload inspector of
+      Nothing -> pure (Left "export payload is not loaded")
+      Just _
+        | iieDeferBlockingWidgets env -> pure (Right (applied "overlay_inspector_copy")
+            { iirDeferredWidget = Just WidgetOverlayInspectorCopy })
+        | otherwise -> invokeClipboard
+    editImportBackspace =
+      let cursor = oimImportCursor inspector
+          current = oimImportText inspector
+          next = if cursor <= 0 then current else Text.take (cursor - 1) current <> Text.drop cursor current
+          nextCursor = max 0 (cursor - 1)
+      in updateImport next nextCursor "overlay_import_backspace"
+    editImportDelete =
+      let cursor = oimImportCursor inspector
+          current = oimImportText inspector
+          next = Text.take cursor current <> Text.drop (cursor + 1) current
+      in updateImport next cursor "overlay_import_delete"
+    moveCursor delta = setCursor (oimImportCursor inspector + delta)
+    setCursor requested =
+      let next = max 0 (min (Text.length (oimImportText inspector)) requested)
+      in do
+        setUiOverlayInspectorImportText uiH (oimImportText inspector) next
+        pure (Right (applied "overlay_import_cursor") { iirCursor = Just next })
+    updateImport next cursor action = do
+      setUiOverlayInspectorImportText uiH next cursor
+      pure (Right (applied action) { iirText = Just next, iirCursor = Just cursor })
 
 executeSeedKey :: InputIntentEnv -> UiState -> InputKey -> IO (Either Text InputIntentResult)
 executeSeedKey env ui key =
@@ -494,6 +662,22 @@ dataAction env action result = do
   response <- iieApplyDataBrowser env action
   pure (result <$ response)
 
+selectedManagerIndex :: OverlayInspectorModel -> Int
+selectedManagerIndex inspector =
+  case oimSelectedOverlay inspector >>= \selected ->
+      findIndex (== selected) (oimOverlayNames inspector) of
+    Just index -> index
+    Nothing -> 0
+
+focusedOverlayImport :: UiState -> Maybe OverlayInspectorModel
+focusedOverlayImport ui =
+  let inspector = uiOverlayInspector ui
+  in if uiMenuMode ui == MenuOverlayInspector
+        && oimView inspector == Just OverlayInspectorImportView
+        && oimFocus inspector == OverlayInspectorImportInputFocus
+       then Just inspector
+       else Nothing
+
 focusedDataField :: UiState -> Maybe Text
 focusedDataField ui =
   let dbs = uiDataBrowser ui
@@ -664,3 +848,4 @@ menuModeText mode = case mode of
   MenuPresetLoad -> "preset_load"
   MenuWorldSave -> "world_save"
   MenuWorldLoad -> "world_load"
+  MenuOverlayInspector -> "overlay_inspector"

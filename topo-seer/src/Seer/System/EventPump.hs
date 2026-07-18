@@ -10,11 +10,11 @@ module Seer.System.EventPump
 import Actor.Log (LogSnapshotRef, getLogSnapshot)
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion, publishSnapshot, publishSnapshotIfVersion, readCommittedUiAndLog, uiSnapshotUpdate, withLogSnapshot)
-import Actor.UI (UiSnapshotRef, getUiSnapshot)
+import Actor.UI (UiMenuMode(..), UiState(..), UiSnapshotRef, getUiSnapshot)
 import Actor.UiActions (UiActions, awaitUiActions)
 import Actor.UiActions.Handles (ActorHandles(..))
-import Control.Monad (forM_)
-import Data.IORef (IORef)
+import Control.Monad (forM_, when)
+import Data.IORef (IORef, writeIORef)
 import Data.Word (Word32)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
@@ -54,6 +54,7 @@ data EventPumpEnv = EventPumpEnv
   , epeMousePosRef :: !(IORef (Int, Int))
   , epeDragRef :: !(IORef (Maybe DragState))
   , epeTooltipHoverRef :: !(IORef TooltipHover)
+  , epeOverlayModalLatchRef :: !(IORef Bool)
   , epeInputActionDispatcher :: !InputActionDispatcher
   }
 
@@ -67,6 +68,11 @@ data EventPumpResult = EventPumpResult
 
 processEvents :: EventPumpEnv -> Word32 -> [SDL.Event] -> RenderSnapshot -> IO EventPumpResult
 processEvents env _timingLogThresholdMs events renderSnap = do
+  -- A rendered modal barriers this entire SDL batch even if an early event
+  -- closes the actor-owned state. The next rendered snapshot may release it.
+  let renderedOverlayModal = uiMenuMode (rsUi renderSnap) == MenuOverlayInspector
+  when renderedOverlayModal $
+    writeIORef (epeOverlayModalLatchRef env) True
   -- SDL APIs requested by completed semantic actions are always marshalled
   -- back onto the event-pump thread, including during otherwise idle frames.
   drainInputMainThreadActions (epeInputActionDispatcher env)
@@ -78,6 +84,8 @@ processEvents env _timingLogThresholdMs events renderSnap = do
       published <- if fired
         then publishSnapshotFromEnvIfChanged env renderSnap
         else pure Nothing
+      when renderedOverlayModal $
+        writeIORef (epeOverlayModalLatchRef env) False
       pure EventPumpResult
         { eprElapsedMs = 0
         , eprPublishedVersion = published
@@ -100,7 +108,7 @@ processEvents env _timingLogThresholdMs events renderSnap = do
             (rsLog renderSnap)
             (rsData renderSnap)
             (rsTerrain renderSnap)
-          inputContext = mkInputContext
+      let inputContext = mkInputContext
             (epeWindow env)
             inputEnv
             (epeQuitRef env)
@@ -108,6 +116,7 @@ processEvents env _timingLogThresholdMs events renderSnap = do
             (epeMousePosRef env)
             (epeDragRef env)
             (epeTooltipHoverRef env)
+            (epeOverlayModalLatchRef env)
             (epeInputActionDispatcher env)
       forM_ coalescedEvents (handleEvent inputContext)
       drainInputMainThreadActions (epeInputActionDispatcher env)
@@ -118,6 +127,8 @@ processEvents env _timingLogThresholdMs events renderSnap = do
       awaitUiActions (epeUiActionsHandle env)
       published <- publishSnapshotFromEnvIfChanged env renderSnap
       handleEnd <- getMonotonicTimeNSec
+      when renderedOverlayModal $
+        writeIORef (epeOverlayModalLatchRef env) False
       pure EventPumpResult
         { eprElapsedMs = nsToMs handleStart handleEnd
         , eprPublishedVersion = published

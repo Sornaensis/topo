@@ -5,6 +5,7 @@ module UI.WidgetTree
   , buildWidgets
   , buildActiveWidgets
   , buildMenuWidgets
+  , buildOverlayInspectorWidgets
   , buildEditorWidgets
   , buildEditorReopenWidget
   , buildViewModeWidgets
@@ -35,6 +36,10 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Seer.OverlayInspector.Model
+  ( OverlayInspectorModel(..)
+  , OverlayInspectorView(..)
+  )
 import Linear (V2(..))
 import Seer.Config.PresetCatalogue (presetCatalogueMatches)
 import Seer.Config.SliderRegistry (SliderTab(..), SliderDef(..), allSliderDefs, sliderDefsForTab, sliderMinusWidgetId, sliderPlusWidgetId)
@@ -124,12 +129,42 @@ buildMenuWidgets ui layout = case uiMenuMode ui of
         ++ [ Widget WidgetWorldLoadItem (worldLoadListRect layout)
            | not (null filteredWorlds)
            ]
+  MenuOverlayInspector -> buildOverlayInspectorWidgets (uiOverlayInspector ui) layout
   where
     filteredWorlds = filter (matches (uiWorldFilter ui) . wsmName) (uiWorldList ui)
     worldSelectionValid =
       uiWorldSelected ui >= 0 && uiWorldSelected ui < length filteredWorlds
     matches query candidate =
       T.toLower query `T.isInfixOf` T.toLower candidate
+
+-- | Modal overlay inspector targets. The close target is always available;
+-- view-specific controls mirror exactly what drawing presents.
+buildOverlayInspectorWidgets :: OverlayInspectorModel -> Layout -> [Widget]
+buildOverlayInspectorWidgets inspector layout =
+  Widget WidgetOverlayInspectorClose (overlayInspectorCloseRect layout) :
+  case oimView inspector of
+    Just OverlayInspectorManagerView ->
+      let names = oimOverlayNames inspector
+          statusSlots = if oimPending inspector == Nothing
+              && oimAsyncError inspector == Nothing
+              && oimNotice inspector == Nothing
+            then 0 else 1
+          Rect (_, V2 _ bodyHeight) = overlayInspectorBodyRect layout
+          visibleCount = max 1 (bodyHeight `div` 30 - statusSlots - 4)
+          start = min (max 0 (length names - visibleCount)) (oimScroll inspector)
+      in [ Widget (WidgetOverlayInspectorItem index)
+             (overlayInspectorRowRect (slot + statusSlots) layout)
+         | (slot, index) <- zip [0..] (take visibleCount [start .. length names - 1])
+         ]
+    Just OverlayInspectorExportView ->
+      [ Widget WidgetOverlayInspectorCopy (overlayInspectorCopyRect layout)
+      , Widget WidgetOverlayInspectorSave (overlayInspectorSaveRect layout)
+      ]
+    Just OverlayInspectorImportView ->
+      [ Widget WidgetOverlayInspectorImportInput (overlayInspectorImportInputRect layout)
+      , Widget WidgetOverlayInspectorValidate (overlayInspectorValidateRect layout)
+      ]
+    _ -> []
 
 uniqueWidgets :: [Widget] -> [Widget]
 uniqueWidgets = nubBy (\left right -> widgetId left == widgetId right)

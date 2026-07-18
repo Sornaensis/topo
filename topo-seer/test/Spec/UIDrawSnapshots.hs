@@ -22,6 +22,14 @@ import Seer.DataBrowser.Model
   , DataBrowserWorkerRequest(..)
   , dataBrowserOperationProgressText
   )
+import Seer.Draw.OverlayInspector
+  ( overlayInspectorBodyLines
+  , overlayInspectorScrollLimit
+  , overlayInspectorTitle
+  , overlayInspectorViewScrollLimit
+  , overlayInspectorVisibleLines
+  )
+import Seer.OverlayInspector.Model
 import Test.Hspec
 import Topo.Plugin.DataResource
   ( DataFieldDef(..)
@@ -87,6 +95,48 @@ spec = describe "UI draw-command snapshots" $ do
       , "Saving…"
       , "Deleting…"
       ]
+
+  it "snapshots every overlay inspector view with explicit workflow copy" $ do
+    let payload = Object mempty
+        base = emptyOverlayInspectorModel
+          { oimOverlayNames = ["roads"]
+          , oimSelectedOverlay = Just "roads"
+          , oimManagerPayload = Just payload
+          , oimSchemaPayload = Just payload
+          , oimProvenancePayload = Just payload
+          , oimExportPayload = Just payload
+          }
+        view selected = openOverlayInspectorView selected base
+    overlayInspectorTitle (view OverlayInspectorManagerView)
+      `shouldBe` "Overlay Manager"
+    overlayInspectorTitle (view OverlayInspectorSchemaView)
+      `shouldBe` "Overlay Schema — roads"
+    overlayInspectorTitle (view OverlayInspectorProvenanceView)
+      `shouldBe` "Overlay Provenance — roads"
+    overlayInspectorBodyLines (view OverlayInspectorExportView)
+      `shouldSatisfy` any (Text.isInfixOf "Copy JSON or Save JSON")
+    overlayInspectorBodyLines (view OverlayInspectorManagerView)
+      `shouldSatisfy` any (Text.isInfixOf "Manager response")
+    overlayInspectorBodyLines (view OverlayInspectorImportView)
+      `shouldSatisfy` any (Text.isInfixOf "does not import or adopt")
+
+  it "wraps inspector payloads to the visible width and clamps page scrolling" $ do
+    let body = Rect (V2 0 0, V2 180 44)
+        payload = String (Text.replicate 200 "x")
+        inspector = (openOverlayInspectorView OverlayInspectorSchemaView
+          emptyOverlayInspectorModel)
+          { oimSchemaPayload = Just payload
+          , oimScroll = maxBound
+          }
+        visible = overlayInspectorVisibleLines body inspector
+    visible `shouldSatisfy` (not . null)
+    visible `shouldSatisfy` all ((<= 21) . Text.length)
+    overlayInspectorScrollLimit body inspector `shouldSatisfy` (> 0)
+    let smallLayout = layoutFor (V2 580 480) 24
+        longInspector = inspector
+          { oimSchemaPayload = Just (String (Text.replicate 3000 "x")) }
+    overlayInspectorViewScrollLimit smallLayout longInspector
+      `shouldSatisfy` (> 30)
 
   it "captures Data Browser browse, pagination, create, and loading states" $ do
     let layout = layoutFor (V2 800 960) 0

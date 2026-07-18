@@ -121,6 +121,12 @@ import Seer.OverlayInspector.Executor
   , shutdownOverlayInspectorExecutor
   , waitOverlayInspectorExecutorIdle
   )
+import Seer.OverlayInspector.Model
+  ( OverlayInspectorFocus(..)
+  , OverlayInspectorModel(..)
+  , OverlayInspectorView(..)
+  , overlayInspectorPayloadText
+  )
 import Seer.Config.Snapshot (ConfigSnapshot(..), snapshotDir)
 import Seer.Editor.History (emptyHistory)
 import Seer.Render.ZoomStage (ZoomStage(..), orderedZoomStagesForZoom, stageForZoom)
@@ -1289,6 +1295,26 @@ spec = describe "CommandDispatch" $ do
           KM.member "overlay_names" o `shouldBe` True
         _ -> expectationFailure "expected JSON object in result"
 
+    it "opens selection-scoped inspector views before an overlay is available" $ withCtx $ \ctx -> do
+      showLeftViewWidgets ctx
+      let uiH = ahUiHandle (ccActorHandles ctx)
+          cases =
+            [ ("WidgetOverlaySchema", OverlayInspectorSchemaView)
+            , ("WidgetOverlayProvenance", OverlayInspectorProvenanceView)
+            , ("WidgetOverlayExport", OverlayInspectorExportView)
+            ]
+      mapM_ (\(widget, expectedView) -> do
+          opened <- dispatch ctx "click_widget"
+            (object ["widget_id" .= (widget :: Text)])
+          srSuccess opened `shouldBe` True
+          ui <- getUiSnapshot uiH
+          uiMenuMode ui `shouldBe` MenuOverlayInspector
+          oimView (uiOverlayInspector ui) `shouldBe` Just expectedView
+          oimNotice (uiOverlayInspector ui) `shouldSatisfy` (/= Nothing)
+          _ <- dispatch ctx "click_widget"
+            (object ["widget_id" .= ("WidgetOverlayInspectorClose" :: Text)])
+          pure ()) cases
+
     it "routes overlay widgets through AppService into the inspector model" $ withCtx $ \ctx -> do
       _ <- writeSingleChunkTerrainWithNormals ctx
       showLeftViewWidgets ctx
@@ -1302,6 +1328,12 @@ spec = describe "CommandDispatch" $ do
         (object ["widget_id" .= ("WidgetOverlayManager" :: Text)])
       inspectorPayload "manager" (srResult managerState)
         `shouldBe` Just (srResult directManager)
+      managerUi <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      uiMenuMode managerUi `shouldBe` MenuOverlayInspector
+      oimView (uiOverlayInspector managerUi) `shouldBe` Just OverlayInspectorManagerView
+      closeManager <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayInspectorClose" :: Text)])
+      srSuccess closeManager `shouldBe` True
 
       directSchema <- dispatch ctx "get_overlay_schema"
         (object ["overlay" .= ("weather_normals" :: Text)])
@@ -1313,6 +1345,88 @@ spec = describe "CommandDispatch" $ do
         (object ["widget_id" .= ("WidgetOverlaySchema" :: Text)])
       inspectorPayload "schema" (srResult schemaState)
         `shouldBe` Just (srResult directSchema)
+      _ <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayInspectorClose" :: Text)])
+
+      directProvenance <- dispatch ctx "get_overlay_provenance"
+        (object ["overlay" .= ("weather_normals" :: Text)])
+      provenanceClick <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayProvenance" :: Text)])
+      srSuccess provenanceClick `shouldBe` True
+      waitOverlayInspectorExecutorIdle (ccOverlayInspectorExecutor ctx)
+      provenanceUi <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      oimProvenancePayload (uiOverlayInspector provenanceUi)
+        `shouldBe` Just (srResult directProvenance)
+      _ <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayInspectorClose" :: Text)])
+
+      directExport <- dispatch ctx "export_overlay_data"
+        (object ["overlay" .= ("weather_normals" :: Text)])
+      exportClick <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayExport" :: Text)])
+      srSuccess exportClick `shouldBe` True
+      waitOverlayInspectorExecutorIdle (ccOverlayInspectorExecutor ctx)
+      exportUi <- getUiSnapshot (ahUiHandle (ccActorHandles ctx))
+      oimExportPayload (uiOverlayInspector exportUi)
+        `shouldBe` Just (srResult directExport)
+      copied <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayInspectorCopy" :: Text)])
+      let exactClipboard = String (overlayInspectorPayloadText (srResult directExport))
+      lookupKey "clipboard" (srResult copied) `shouldBe` Just exactClipboard
+      copiedByKey <- dispatch ctx "send_key" (object
+        [ "key" .= ("c" :: Text)
+        , "modifiers" .= (["ctrl"] :: [Text])
+        ])
+      lookupKey "clipboard" (srResult copiedByKey) `shouldBe` Just exactClipboard
+
+    it "operates overlay modal selection, focus, scrolling, import diagnostics, and cancel" $ withCtx $ \ctx -> do
+      _ <- writeSingleChunkTerrainWithNormals ctx
+      showLeftViewWidgets ctx
+      let uiH = ahUiHandle (ccActorHandles ctx)
+      setUiSeedEditing uiH True
+      opened <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayManager" :: Text)])
+      srSuccess opened `shouldBe` True
+      waitOverlayInspectorExecutorIdle (ccOverlayInspectorExecutor ctx)
+      manager <- getUiSnapshot uiH
+      uiSeedEditing manager `shouldBe` False
+      oimOverlayNames (uiOverlayInspector manager) `shouldSatisfy` (not . null)
+      selected <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayInspectorItem:0" :: Text)])
+      srSuccess selected `shouldBe` True
+      afterSelection <- getUiSnapshot uiH
+      oimFocus (uiOverlayInspector afterSelection) `shouldBe` OverlayInspectorManagerFocus 0
+      down <- dispatch ctx "send_key" (object ["key" .= ("down" :: Text)])
+      srSuccess down `shouldBe` True
+      home <- dispatch ctx "send_key" (object ["key" .= ("home" :: Text)])
+      srSuccess home `shouldBe` True
+      oimScroll . uiOverlayInspector <$> getUiSnapshot uiH `shouldReturn` 0
+      closed <- dispatch ctx "send_key" (object ["key" .= ("escape" :: Text)])
+      srSuccess closed `shouldBe` True
+      uiMenuMode <$> getUiSnapshot uiH `shouldReturn` MenuNone
+
+      showLeftViewWidgets ctx
+      importOpened <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayImportValidate" :: Text)])
+      srSuccess importOpened `shouldBe` True
+      waitOverlayInspectorExecutorIdle (ccOverlayInspectorExecutor ctx)
+      openedImportUi <- getUiSnapshot uiH
+      oimFocus (uiOverlayInspector openedImportUi) `shouldBe` OverlayInspectorImportInputFocus
+      focused <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayInspectorImportInput" :: Text)])
+      srSuccess focused `shouldBe` True
+      mapM_ (\key -> dispatch ctx "send_key" (object ["key" .= (key :: Text)]))
+        ["home", "delete"]
+      typed <- dispatch ctx "set_dialog_text" (object
+        ["target" .= ("overlay_import" :: Text), "text" .= ("not-json" :: Text)])
+      srSuccess typed `shouldBe` True
+      invalid <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayInspectorValidate" :: Text)])
+      srSuccess invalid `shouldBe` True
+      importUi <- getUiSnapshot uiH
+      oimView (uiOverlayInspector importUi) `shouldBe` Just OverlayInspectorImportView
+      oimLocalDiagnostics (uiOverlayInspector importUi) `shouldSatisfy` (not . null)
+      oimImportValidation (uiOverlayInspector importUi) `shouldBe` Nothing
 
     it "uses the currently injected AppService for nested overlay work" $ withCtx $ \ctx -> do
       showLeftViewWidgets ctx

@@ -39,6 +39,7 @@ import Seer.Config.SliderSpec (SliderId(..))
 import Seer.Config.Snapshot (presetCatalogueMatches)
 import Seer.Draw.Dialog (presetListLabel)
 import Seer.Editor.Types (EditorState(..), EditorTool(..))
+import Seer.OverlayInspector.Model
 import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Test.Hspec
 import Topo.Pipeline.Stage (allBuiltinStageIds)
@@ -86,6 +87,7 @@ spec = describe "UI.WidgetTree" $ do
           , WidgetDataResourceSelect "@catalog" ""
           , WidgetDataFieldToggle "profile:name:%"
           , WidgetEditorTool 8
+          , WidgetOverlayInspectorItem 7
           ]
         encoded = map widgetIdToText ids
     map widgetIdFromText encoded `shouldBe` map Just ids
@@ -148,6 +150,45 @@ spec = describe "UI.WidgetTree" $ do
       `shouldBe` [WidgetWorldSaveOk, WidgetWorldSaveCancel]
     idsFor MenuWorldLoad emptyUiState
       `shouldBe` [WidgetWorldLoadOk, WidgetWorldLoadCancel]
+    let inspector = openOverlayInspectorView OverlayInspectorExportView
+          emptyOverlayInspectorModel
+            { oimSelectedOverlay = Just "roads"
+            , oimExportPayload = Just (Object mempty)
+            }
+        overlayUi = emptyUiState
+          { uiMenuMode = MenuOverlayInspector
+          , uiOverlayInspector = inspector
+          }
+    idsFor MenuOverlayInspector overlayUi `shouldBe`
+      [ WidgetOverlayInspectorClose
+      , WidgetOverlayInspectorCopy
+      , WidgetOverlayInspectorSave
+      ]
+    map (wcSupport . widgetCapability overlayUi)
+      [WidgetOverlayInspectorCopy, WidgetOverlayInspectorSave]
+      `shouldBe` [WidgetClickable, WidgetClickable]
+
+  it "exposes manager rows and import controls through modal hit testing" $ do
+    let manager = openOverlayInspectorView OverlayInspectorManagerView
+          emptyOverlayInspectorModel { oimOverlayNames = ["roads", "climate"] }
+        managerWidgets = buildOverlayInspectorWidgets manager wideWidgetLayout
+    hitTest managerWidgets (rectHitPoint (overlayInspectorRowRect 1 wideWidgetLayout))
+      `shouldBe` Just (WidgetOverlayInspectorItem 1)
+    let longManager = manager
+          { oimOverlayNames = ["overlay-" <> Text.pack (show index) | index <- [0 :: Int .. 30]]
+          , oimScroll = 20
+          }
+        longIds = map widgetId (buildOverlayInspectorWidgets longManager wideWidgetLayout)
+    longIds `shouldContain` [WidgetOverlayInspectorItem 20]
+    longIds `shouldNotContain` [WidgetOverlayInspectorItem 0, WidgetOverlayInspectorItem 19]
+    length longIds `shouldSatisfy` (< 20)
+    let importer = openOverlayInspectorView OverlayInspectorImportView manager
+        importWidgets = buildOverlayInspectorWidgets importer wideWidgetLayout
+    map widgetId importWidgets `shouldBe`
+      [ WidgetOverlayInspectorClose
+      , WidgetOverlayInspectorImportInput
+      , WidgetOverlayInspectorValidate
+      ]
 
   it "exposes saved-world deletion only for a valid selection and barriers confirmation" $ do
     let manifest = WorldSaveManifest

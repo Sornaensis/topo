@@ -6,6 +6,8 @@ module Seer.OverlayInspector.Model
   ( OverlayInspectorOperation(..)
   , overlayInspectorOperationText
   , OverlayInspectorAction(..)
+  , OverlayInspectorView(..)
+  , OverlayInspectorFocus(..)
   , OverlayInspectorRequestId(..)
   , OverlayInspectorRequest(..)
   , OverlayInspectorPending(..)
@@ -19,15 +21,28 @@ module Seer.OverlayInspector.Model
   , completeOverlayInspectorRequest
   , selectOverlayInspectorOverlay
   , setOverlayInspectorImportDraft
+  , openOverlayInspectorView
+  , closeOverlayInspectorView
+  , setOverlayInspectorFocus
+  , setOverlayInspectorScroll
+  , moveOverlayInspectorSelection
+  , setOverlayInspectorImportText
+  , prepareOverlayInspectorValidation
+  , applyOverlayInspectorValidationPreparation
+  , setOverlayInspectorNotice
+  , overlayInspectorPayloadText
   , overlayInspectorLoading
   , overlayInspectorPendingValue
   , overlayInspectorAsyncErrorValue
   , overlayInspectorModelValue
   ) where
 
-import Data.Aeson (Value(..), object, (.=), (.:?))
+import Data.Aeson (Value(..), eitherDecodeStrict', encode, object, (.=), (.:?))
 import qualified Data.Aeson.Types as Aeson
+import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Text (Text)
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 
 -- | Stable action names shared by widget responses and inspector state.
@@ -53,6 +68,25 @@ data OverlayInspectorAction
   | OverlayInspectorInspectProvenance
   | OverlayInspectorExportSelected
   | OverlayInspectorValidateDraft
+  deriving (Eq, Show)
+
+-- | Observable presentation selected by one of the retained overlay widgets.
+data OverlayInspectorView
+  = OverlayInspectorManagerView
+  | OverlayInspectorSchemaView
+  | OverlayInspectorProvenanceView
+  | OverlayInspectorExportView
+  | OverlayInspectorImportView
+  deriving (Eq, Show)
+
+-- | Keyboard focus inside the modal. Manager rows carry their stable index.
+data OverlayInspectorFocus
+  = OverlayInspectorCloseFocus
+  | OverlayInspectorManagerFocus !Int
+  | OverlayInspectorCopyFocus
+  | OverlayInspectorSaveFocus
+  | OverlayInspectorImportInputFocus
+  | OverlayInspectorValidateFocus
   deriving (Eq, Show)
 
 newtype OverlayInspectorRequestId = OverlayInspectorRequestId
@@ -112,6 +146,13 @@ data OverlayInspectorModel = OverlayInspectorModel
   , oimValidationDiagnostics :: ![Value]
   , oimPending :: !(Maybe OverlayInspectorPending)
   , oimAsyncError :: !(Maybe OverlayInspectorAsyncError)
+  , oimView :: !(Maybe OverlayInspectorView)
+  , oimFocus :: !OverlayInspectorFocus
+  , oimScroll :: !Int
+  , oimImportText :: !Text
+  , oimImportCursor :: !Int
+  , oimLocalDiagnostics :: ![Text]
+  , oimNotice :: !(Maybe Text)
   } deriving (Eq, Show)
 
 emptyOverlayInspectorModel :: OverlayInspectorModel
@@ -122,15 +163,24 @@ emptyOverlayInspectorModel = OverlayInspectorModel
   , oimSchemaPayload = Nothing
   , oimProvenancePayload = Nothing
   , oimExportPayload = Nothing
-  , oimImportDraft = object
-      [ "schema" .= object []
-      , "payload" .= object []
-      ]
+  , oimImportDraft = defaultDraft
   , oimImportValidation = Nothing
   , oimValidationDiagnostics = []
   , oimPending = Nothing
   , oimAsyncError = Nothing
+  , oimView = Nothing
+  , oimFocus = OverlayInspectorCloseFocus
+  , oimScroll = 0
+  , oimImportText = overlayInspectorPayloadText defaultDraft
+  , oimImportCursor = Text.length (overlayInspectorPayloadText defaultDraft)
+  , oimLocalDiagnostics = []
+  , oimNotice = Nothing
   }
+  where
+    defaultDraft = object
+      [ "schema" .= object []
+      , "payload" .= object []
+      ]
 
 beginOverlayInspectorAction
   :: OverlayInspectorRequestId
@@ -163,17 +213,19 @@ completeOverlayInspectorRequest completion model = case oimPending model of
     | otherwise -> (applyOutcome pending (oicOutcome completion) model, True)
 
 selectOverlayInspectorOverlay :: Maybe Text -> OverlayInspectorModel -> OverlayInspectorModel
-selectOverlayInspectorOverlay requested model =
-  let selected = case requested of
-        Just name | name `elem` oimOverlayNames model -> Just name
-        _ -> Nothing
-  in if selected == oimSelectedOverlay model
-       then model
-       else clearSelectedPayloads model
-          { oimSelectedOverlay = selected
-          , oimPending = Nothing
-          , oimAsyncError = Nothing
-          }
+selectOverlayInspectorOverlay requested model
+  | managerRefreshPending model = model
+  | otherwise =
+      let selected = case requested of
+            Just name | name `elem` oimOverlayNames model -> Just name
+            _ -> Nothing
+      in if selected == oimSelectedOverlay model
+           then model
+           else clearSelectedPayloads model
+              { oimSelectedOverlay = selected
+              , oimPending = Nothing
+              , oimAsyncError = Nothing
+              }
 
 setOverlayInspectorImportDraft :: Value -> OverlayInspectorModel -> OverlayInspectorModel
 setOverlayInspectorImportDraft draft model = model
@@ -185,6 +237,115 @@ setOverlayInspectorImportDraft draft model = model
       other -> other
   , oimAsyncError = Nothing
   }
+
+openOverlayInspectorView :: OverlayInspectorView -> OverlayInspectorModel -> OverlayInspectorModel
+openOverlayInspectorView view model = (clearStalePayload view model)
+  { oimView = Just view
+  , oimFocus = initialFocus view
+  , oimScroll = 0
+  , oimLocalDiagnostics = []
+  , oimNotice = Nothing
+  }
+  where
+    initialFocus OverlayInspectorManagerView = OverlayInspectorManagerFocus 0
+    initialFocus OverlayInspectorExportView = OverlayInspectorCopyFocus
+    initialFocus OverlayInspectorImportView = OverlayInspectorImportInputFocus
+    initialFocus _ = OverlayInspectorCloseFocus
+    clearStalePayload OverlayInspectorManagerView current = current { oimManagerPayload = Nothing }
+    clearStalePayload OverlayInspectorSchemaView current = current { oimSchemaPayload = Nothing }
+    clearStalePayload OverlayInspectorProvenanceView current = current { oimProvenancePayload = Nothing }
+    clearStalePayload OverlayInspectorExportView current = current { oimExportPayload = Nothing }
+    clearStalePayload OverlayInspectorImportView current = current
+
+closeOverlayInspectorView :: OverlayInspectorModel -> OverlayInspectorModel
+closeOverlayInspectorView model = model
+  { oimView = Nothing
+  , oimFocus = OverlayInspectorCloseFocus
+  , oimScroll = 0
+  , oimNotice = Nothing
+  }
+
+setOverlayInspectorFocus :: OverlayInspectorFocus -> OverlayInspectorModel -> OverlayInspectorModel
+setOverlayInspectorFocus focus model = model { oimFocus = focus }
+
+setOverlayInspectorScroll :: Int -> OverlayInspectorModel -> OverlayInspectorModel
+setOverlayInspectorScroll scroll model = model { oimScroll = max 0 scroll }
+
+moveOverlayInspectorSelection :: Int -> OverlayInspectorModel -> OverlayInspectorModel
+moveOverlayInspectorSelection delta model
+  | managerRefreshPending model = model
+  | otherwise =
+      case oimOverlayNames model of
+        [] -> model { oimFocus = OverlayInspectorManagerFocus 0 }
+        names ->
+          let current = case oimSelectedOverlay model of
+                Just selected -> maybe 0 id (indexOf selected names)
+                Nothing -> 0
+              nextIndex = max 0 (min (length names - 1) (current + delta))
+              next = selectOverlayInspectorOverlay (Just (names !! nextIndex)) model
+          in next
+            { oimFocus = OverlayInspectorManagerFocus nextIndex
+            , oimScroll = nextIndex
+            }
+  where
+    indexOf target = go 0
+      where
+        go _ [] = Nothing
+        go index (value:rest)
+          | value == target = Just index
+          | otherwise = go (index + 1) rest
+
+managerRefreshPending :: OverlayInspectorModel -> Bool
+managerRefreshPending model = case oimPending model of
+  Just OverlayInspectorPending{ oipRequest = OverlayInspectorManagerRequest } -> True
+  _ -> False
+
+setOverlayInspectorImportText :: Text -> Int -> OverlayInspectorModel -> OverlayInspectorModel
+setOverlayInspectorImportText input cursor model = model
+  { oimImportText = input
+  , oimImportCursor = max 0 (min (Text.length input) cursor)
+  , oimImportValidation = Nothing
+  , oimValidationDiagnostics = []
+  , oimLocalDiagnostics = []
+  , oimPending = case oimPending model of
+      Just OverlayInspectorPending{ oipRequest = OverlayInspectorImportValidationRequest _ } -> Nothing
+      other -> other
+  , oimAsyncError = Nothing
+  , oimNotice = Nothing
+  }
+
+-- | Parse the raw editor text without adopting data. A successful parse only
+-- replaces the draft that the validation AppService operation will inspect.
+prepareOverlayInspectorValidation
+  :: OverlayInspectorModel
+  -> (OverlayInspectorModel, Either Text Value)
+prepareOverlayInspectorValidation model =
+  let parsed = case eitherDecodeStrict' (TextEncoding.encodeUtf8 (oimImportText model)) of
+        Left parseError -> Left ("Invalid JSON: " <> Text.pack parseError)
+        Right draft -> Right draft
+  in (applyOverlayInspectorValidationPreparation parsed model, parsed)
+
+applyOverlayInspectorValidationPreparation
+  :: Either Text Value
+  -> OverlayInspectorModel
+  -> OverlayInspectorModel
+applyOverlayInspectorValidationPreparation parsed model = case parsed of
+  Left message -> model
+    { oimLocalDiagnostics = [message]
+    , oimImportValidation = Nothing
+    , oimValidationDiagnostics = []
+    , oimNotice = Nothing
+    }
+  Right draft -> (setOverlayInspectorImportDraft draft model)
+    { oimLocalDiagnostics = []
+    , oimNotice = Just "JSON parsed; validating only — no data will be adopted."
+    }
+
+setOverlayInspectorNotice :: Maybe Text -> OverlayInspectorModel -> OverlayInspectorModel
+setOverlayInspectorNotice notice model = model { oimNotice = notice }
+
+overlayInspectorPayloadText :: Value -> Text
+overlayInspectorPayloadText = TextEncoding.decodeUtf8 . LazyByteString.toStrict . encode
 
 overlayInspectorLoading :: OverlayInspectorModel -> Bool
 overlayInspectorLoading = maybe False (const True) . oimPending
@@ -218,7 +379,32 @@ overlayInspectorModelValue model = object
   , "import_draft" .= oimImportDraft model
   , "import_validation" .= oimImportValidation model
   , "validation_diagnostics" .= oimValidationDiagnostics model
+  , "view" .= fmap overlayInspectorViewText (oimView model)
+  , "focus" .= overlayInspectorFocusText (oimFocus model)
+  , "scroll" .= oimScroll model
+  , "import_text" .= oimImportText model
+  , "import_cursor" .= oimImportCursor model
+  , "local_diagnostics" .= oimLocalDiagnostics model
+  , "notice" .= oimNotice model
   ]
+
+
+overlayInspectorViewText :: OverlayInspectorView -> Text
+overlayInspectorViewText view = case view of
+  OverlayInspectorManagerView -> "manager"
+  OverlayInspectorSchemaView -> "schema"
+  OverlayInspectorProvenanceView -> "provenance"
+  OverlayInspectorExportView -> "export"
+  OverlayInspectorImportView -> "import_validation"
+
+overlayInspectorFocusText :: OverlayInspectorFocus -> Text
+overlayInspectorFocusText focus = case focus of
+  OverlayInspectorCloseFocus -> "close"
+  OverlayInspectorManagerFocus index -> "manager:" <> Text.pack (show index)
+  OverlayInspectorCopyFocus -> "copy"
+  OverlayInspectorSaveFocus -> "save"
+  OverlayInspectorImportInputFocus -> "import_input"
+  OverlayInspectorValidateFocus -> "validate"
 
 requestForAction :: OverlayInspectorAction -> OverlayInspectorModel -> Either Text OverlayInspectorRequest
 requestForAction action model = case action of
@@ -279,10 +465,15 @@ applySuccess request payload model = case request of
         reconciled = if selected == oimSelectedOverlay model
           then model
           else clearSelectedPayloads model
+        selectedIndex = selected >>= (`indexIn` names)
+        focus = maybe OverlayInspectorCloseFocus OverlayInspectorManagerFocus selectedIndex
+        scroll = maybe 0 id selectedIndex
     in reconciled
       { oimOverlayNames = names
       , oimSelectedOverlay = selected
       , oimManagerPayload = Just payload
+      , oimFocus = if oimView model == Just OverlayInspectorManagerView then focus else oimFocus reconciled
+      , oimScroll = if oimView model == Just OverlayInspectorManagerView then scroll else oimScroll reconciled
       }
   OverlayInspectorSchemaRequest _ -> model { oimSchemaPayload = Just payload }
   OverlayInspectorProvenanceRequest _ -> model { oimProvenancePayload = Just payload }
@@ -291,6 +482,14 @@ applySuccess request payload model = case request of
     { oimImportValidation = Just payload
     , oimValidationDiagnostics = validationDiagnostics payload
     }
+
+indexIn :: Eq a => a -> [a] -> Maybe Int
+indexIn target = go 0
+  where
+    go _ [] = Nothing
+    go index (value:rest)
+      | target == value = Just index
+      | otherwise = go (index + 1) rest
 
 clearSelectedPayloads :: OverlayInspectorModel -> OverlayInspectorModel
 clearSelectedPayloads model = model

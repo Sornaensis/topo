@@ -89,6 +89,12 @@ import Actor.UI.Setters
   , setUiWorldDeleteTarget
   , setUiWorldDeleteError
   , setUiOverlayFields
+  , openUiOverlayInspector
+  , closeUiOverlayInspector
+  , applyUiOverlayInspectorValidationPreparation
+  , setUiOverlayInspectorFocus
+  , selectUiOverlayInspectorOverlay
+  , setUiOverlayInspectorNotice
   )
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
@@ -96,6 +102,8 @@ import Seer.DataBrowser.Executor (submitDataBrowserAction)
 import Seer.OverlayInspector.Executor (submitOverlayInspectorAction)
 import Seer.OverlayInspector.Model
   ( OverlayInspectorAction(..)
+  , OverlayInspectorView(..)
+  , OverlayInspectorFocus(..)
   , OverlayInspectorBeginResult(..)
   , OverlayInspectorModel(..)
   , OverlayInspectorPending(..)
@@ -103,7 +111,10 @@ import Seer.OverlayInspector.Model
   , overlayInspectorLoading
   , overlayInspectorModelValue
   , overlayInspectorOperationText
+  , overlayInspectorPayloadText
+  , prepareOverlayInspectorValidation
   )
+import Seer.OverlayInspector.Storage (saveOverlayExport)
 import qualified Seer.Command.Handlers.Data as HData
 import qualified Seer.Command.Handlers.Editor as HEditor
 import qualified Seer.Command.Handlers.Presets as HPresets
@@ -488,6 +499,7 @@ data WidgetInvocation = WidgetInvocation
 
 data WidgetActionResult
   = WidgetActionCompleted !Text !Bool
+  | WidgetActionClipboard !Text !Text !Bool
   | WidgetActionAccepted !DataBrowserPendingEnvelope
   | WidgetOverlayActionAccepted !OverlayInspectorPending
   deriving (Eq, Show)
@@ -528,6 +540,13 @@ handleClickWidgetWithRunner runService ctx reqId params =
               , "status" .= ("completed" :: Text)
               , "changed" .= changed
               , "info" .= info
+              ]
+            Right (WidgetActionClipboard info clipboard changed) -> okResponse reqId $ object
+              [ "widget_id" .= widgetIdToText wid
+              , "status" .= ("completed" :: Text)
+              , "changed" .= changed
+              , "info" .= info
+              , "clipboard" .= clipboard
               ]
             Right (WidgetActionAccepted envelope) -> okResponse reqId $ object
               [ "widget_id" .= widgetIdToText wid
@@ -583,6 +602,8 @@ executeWidgetInvocationWithRunner runService ctx invocation =
               accepted@WidgetOverlayActionAccepted{} -> accepted
               WidgetActionCompleted info domainChanged -> WidgetActionCompleted info
                 (domainChanged || uiAfter /= uiBefore || logAfter /= logBefore)
+              WidgetActionClipboard info clipboard domainChanged -> WidgetActionClipboard
+                info clipboard (domainChanged || uiAfter /= uiBefore || logAfter /= logBefore)
   where
     handles = ccActorHandles ctx
 
@@ -649,6 +670,7 @@ executeWidgetClick runService ctx uiSnap invocation = do
   let wid = wiWidgetId invocation
   let handles = ccActorHandles ctx
       uiH = ahUiHandle handles
+      inspector = uiOverlayInspector uiSnap
       logH = ahLogHandle handles
       pluginH = ahPluginManagerHandle handles
   let dataBrowserResult message action = do
@@ -665,6 +687,21 @@ executeWidgetClick runService ctx uiSnap invocation = do
         pure $ case result of
           OverlayInspectorBeginRejected message -> Left message
           OverlayInspectorBeginAccepted pending -> Right (WidgetOverlayActionAccepted pending)
+      openSelectedOverlayView view action = do
+        openUiOverlayInspector uiH view
+        case oimSelectedOverlay inspector of
+          Nothing -> do
+            let message = "No overlay is selected. Open Overlay Manager to choose one."
+            setUiOverlayInspectorNotice uiH (Just message)
+            pure $ completed message
+          Just _ -> overlayInspectorResult action
+      validateOverlayDraft uiHandle = do
+        let (_, parsed) = prepareOverlayInspectorValidation (uiOverlayInspector uiSnap)
+        applyUiOverlayInspectorValidationPreparation uiHandle parsed
+        setUiOverlayInspectorFocus uiHandle OverlayInspectorValidateFocus
+        case parsed of
+          Left message -> pure (Right (WidgetActionCompleted message False))
+          Right _ -> overlayInspectorResult OverlayInspectorValidateDraft
       setBase baseMode = do
         submitAction ctx (UiActionSetBaseViewMode baseMode)
         pure $ Right "base view set"
@@ -791,11 +828,56 @@ executeWidgetClick runService ctx uiSnap invocation = do
     WidgetViewOverlayNext -> cycleLayeredOverlay ctx uiSnap 1
     WidgetViewFieldPrev   -> cycleLayeredOverlayField ctx uiSnap (-1)
     WidgetViewFieldNext   -> cycleLayeredOverlayField ctx uiSnap 1
-    WidgetOverlayManager -> overlayInspectorResult OverlayInspectorRefreshManager
-    WidgetOverlaySchema -> overlayInspectorResult OverlayInspectorInspectSchema
-    WidgetOverlayProvenance -> overlayInspectorResult OverlayInspectorInspectProvenance
-    WidgetOverlayExport -> overlayInspectorResult OverlayInspectorExportSelected
-    WidgetOverlayImportValidate -> overlayInspectorResult OverlayInspectorValidateDraft
+    WidgetOverlayManager ->
+      openUiOverlayInspector uiH OverlayInspectorManagerView >>
+        overlayInspectorResult OverlayInspectorRefreshManager
+    WidgetOverlaySchema -> openSelectedOverlayView
+      OverlayInspectorSchemaView OverlayInspectorInspectSchema
+    WidgetOverlayProvenance -> openSelectedOverlayView
+      OverlayInspectorProvenanceView OverlayInspectorInspectProvenance
+    WidgetOverlayExport -> openSelectedOverlayView
+      OverlayInspectorExportView OverlayInspectorExportSelected
+    WidgetOverlayImportValidate -> do
+      openUiOverlayInspector uiH OverlayInspectorImportView
+      result <- validateOverlayDraft uiH
+      setUiOverlayInspectorFocus uiH OverlayInspectorImportInputFocus
+      pure result
+    WidgetOverlayInspectorClose -> do
+      closeUiOverlayInspector uiH
+      pure $ Right "overlay inspector closed"
+    WidgetOverlayInspectorItem index ->
+      case drop index (oimOverlayNames (uiOverlayInspector uiSnap)) of
+        overlayName:_ -> do
+          selectUiOverlayInspectorOverlay uiH (Just overlayName)
+          setUiOverlayInspectorFocus uiH (OverlayInspectorManagerFocus index)
+          pure $ completed ("selected overlay: " <> overlayName)
+        [] -> pure $ Left "overlay inspector item index is out of range"
+    WidgetOverlayInspectorCopy ->
+      case oimExportPayload (uiOverlayInspector uiSnap) of
+        Nothing -> pure $ Left "export payload is not loaded"
+        Just payload -> do
+          setUiOverlayInspectorFocus uiH OverlayInspectorCopyFocus
+          pure $ Right (WidgetActionClipboard "overlay export copy requested"
+            (overlayInspectorPayloadText payload) False)
+    WidgetOverlayInspectorSave ->
+      case (oimSelectedOverlay inspector, oimExportPayload inspector) of
+        (Just overlayName, Just payload) -> do
+          setUiOverlayInspectorFocus uiH OverlayInspectorSaveFocus
+          saved <- saveOverlayExport overlayName payload
+          case saved of
+            Left err -> do
+              setUiOverlayInspectorNotice uiH (Just ("Save failed: " <> err))
+              pure (Left err)
+            Right path -> do
+              setUiOverlayInspectorNotice uiH (Just ("Saved exact export JSON: " <> Text.pack path))
+              pure $ completed ("overlay export saved: " <> Text.pack path)
+        _ -> pure $ Left "select and export an overlay before saving"
+    WidgetOverlayInspectorImportInput -> do
+      setUiOverlayInspectorFocus uiH OverlayInspectorImportInputFocus
+      pure $ Right "overlay import validation editor focused"
+    WidgetOverlayInspectorValidate -> do
+      setUiOverlayInspectorFocus uiH OverlayInspectorValidateFocus
+      validateOverlayDraft uiH
 
     -- ----- Slider +/- buttons -----
     WidgetSliderMinus sid -> bumpSlider ctx uiSnap sid SliderPartMinus
@@ -1471,11 +1553,24 @@ widgetPreconditions :: UiState -> WidgetId -> [Text]
 widgetPreconditions uiSnap wid = case wid of
   WidgetOverlayManager
     | overlayInspectorLoading inspector -> ["an overlay inspector request is already pending"]
-  WidgetOverlaySchema -> overlaySelectionConditions
-  WidgetOverlayProvenance -> overlaySelectionConditions
-  WidgetOverlayExport -> overlaySelectionConditions
+  WidgetOverlaySchema
+    | overlayInspectorLoading inspector -> ["an overlay inspector request is already pending"]
+  WidgetOverlayProvenance
+    | overlayInspectorLoading inspector -> ["an overlay inspector request is already pending"]
+  WidgetOverlayExport
+    | overlayInspectorLoading inspector -> ["an overlay inspector request is already pending"]
   WidgetOverlayImportValidate
     | overlayInspectorLoading inspector -> ["an overlay inspector request is already pending"]
+  WidgetOverlayInspectorCopy
+    | oimExportPayload inspector == Nothing -> ["export payload is not loaded"]
+  WidgetOverlayInspectorSave
+    | oimExportPayload inspector == Nothing -> ["export payload is not loaded"]
+  WidgetOverlayInspectorValidate
+    | overlayInspectorLoading inspector -> ["an overlay inspector request is already pending"]
+  WidgetOverlayInspectorItem _
+    | overlayInspectorLoading inspector -> ["overlay manager refresh is pending"]
+  WidgetOverlayInspectorItem index
+    | index < 0 || index >= length (oimOverlayNames inspector) -> ["overlay item is no longer available"]
   WidgetGenerate | uiGenerating uiSnap -> ["world generation is already in progress"]
   WidgetConfigReset | uiGenerating uiSnap -> ["world generation is in progress"]
   WidgetConfigRevert | uiGenerating uiSnap -> ["world generation is in progress"]
@@ -1733,6 +1828,12 @@ widgetCategory wid = case wid of
   WidgetWorldDelete -> "menu"
   WidgetWorldDeleteConfirm -> "menu"
   WidgetWorldDeleteCancel -> "menu"
+  WidgetOverlayInspectorClose -> "overlay_inspector"
+  WidgetOverlayInspectorItem _ -> "overlay_inspector"
+  WidgetOverlayInspectorCopy -> "overlay_inspector"
+  WidgetOverlayInspectorSave -> "overlay_inspector"
+  WidgetOverlayInspectorImportInput -> "overlay_inspector"
+  WidgetOverlayInspectorValidate -> "overlay_inspector"
   WidgetLogDebug -> "log"
   WidgetLogInfo -> "log"
   WidgetLogWarn -> "log"
@@ -2114,6 +2215,12 @@ isOverlayInspectorWidget wid = case wid of
   WidgetOverlayProvenance -> True
   WidgetOverlayExport -> True
   WidgetOverlayImportValidate -> True
+  WidgetOverlayInspectorClose -> True
+  WidgetOverlayInspectorItem _ -> True
+  WidgetOverlayInspectorCopy -> True
+  WidgetOverlayInspectorSave -> True
+  WidgetOverlayInspectorImportInput -> True
+  WidgetOverlayInspectorValidate -> True
   _ -> False
 
 isDataBrowserWidget :: WidgetId -> Bool

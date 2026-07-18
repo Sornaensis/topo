@@ -154,6 +154,18 @@ import Seer.OverlayInspector.Model
   , beginOverlayInspectorAction
   , completeOverlayInspectorRequest
   , emptyOverlayInspectorModel
+  , openOverlayInspectorView
+  , closeOverlayInspectorView
+  , setOverlayInspectorFocus
+  , setOverlayInspectorScroll
+  , moveOverlayInspectorSelection
+  , selectOverlayInspectorOverlay
+  , setOverlayInspectorImportText
+  , setOverlayInspectorImportDraft
+  , applyOverlayInspectorValidationPreparation
+  , setOverlayInspectorNotice
+  , OverlayInspectorView
+  , OverlayInspectorFocus
   )
 import Seer.Render.ZoomStage (maxCameraZoom)
 import Seer.World.Persist.Types (WorldSaveManifest)
@@ -1333,6 +1345,7 @@ data UiMenuMode
   | MenuPresetLoad
   | MenuWorldSave
   | MenuWorldLoad
+  | MenuOverlayInspector
   deriving (Eq, Show)
 
 data PipelineStageRunState = PipelineStageRunState
@@ -1951,6 +1964,16 @@ data UiUpdate
   | SetOverlayNames ![Text]
   | SetOverlayFields ![(Text, OverlayFieldType)]
   | SetOverlayInspector !OverlayInspectorModel
+  | OpenOverlayInspector !OverlayInspectorView
+  | CloseOverlayInspector
+  | SetOverlayInspectorFocus !OverlayInspectorFocus
+  | SetOverlayInspectorScroll !Int
+  | MoveOverlayInspectorSelection !Int
+  | SelectOverlayInspectorOverlay !(Maybe Text)
+  | SetOverlayInspectorImportText !Text !Int
+  | SetOverlayInspectorImportDraft !Value
+  | ApplyOverlayInspectorValidationPreparation !(Either Text Value)
+  | SetOverlayInspectorNotice !(Maybe Text)
   | SetDataBrowser !DataBrowserState
   | SetDataResources !(Map Text [DataResourceSchema])
   | SetEditor !EditorState
@@ -2022,6 +2045,32 @@ applyUpdate upd st = case upd of
   SetOverlayNames v -> st { uiOverlayNames = v }
   SetOverlayFields v -> st { uiOverlayFields = v }
   SetOverlayInspector v -> st { uiOverlayInspector = v }
+  OpenOverlayInspector v -> st
+    { uiMenuMode = MenuOverlayInspector
+    , uiSeedEditing = False
+    , uiDataBrowser = (uiDataBrowser st) { dbsFocusedField = Nothing }
+    , uiOverlayInspector = openOverlayInspectorView v (uiOverlayInspector st)
+    }
+  CloseOverlayInspector -> st
+    { uiMenuMode = MenuNone
+    , uiOverlayInspector = closeOverlayInspectorView (uiOverlayInspector st)
+    }
+  SetOverlayInspectorFocus v -> st
+    { uiOverlayInspector = setOverlayInspectorFocus v (uiOverlayInspector st) }
+  SetOverlayInspectorScroll v -> st
+    { uiOverlayInspector = setOverlayInspectorScroll v (uiOverlayInspector st) }
+  MoveOverlayInspectorSelection v -> st
+    { uiOverlayInspector = moveOverlayInspectorSelection v (uiOverlayInspector st) }
+  SelectOverlayInspectorOverlay v -> st
+    { uiOverlayInspector = selectOverlayInspectorOverlay v (uiOverlayInspector st) }
+  SetOverlayInspectorImportText text cursor -> st
+    { uiOverlayInspector = setOverlayInspectorImportText text cursor (uiOverlayInspector st) }
+  SetOverlayInspectorImportDraft draft -> st
+    { uiOverlayInspector = setOverlayInspectorImportDraft draft (uiOverlayInspector st) }
+  ApplyOverlayInspectorValidationPreparation parsed -> st
+    { uiOverlayInspector = applyOverlayInspectorValidationPreparation parsed (uiOverlayInspector st) }
+  SetOverlayInspectorNotice notice -> st
+    { uiOverlayInspector = setOverlayInspectorNotice notice (uiOverlayInspector st) }
   SetDataBrowser v -> st { uiDataBrowser = v }
   SetDataResources v -> st { uiDataResources = v }
   SetEditor v -> st { uiEditor = v }

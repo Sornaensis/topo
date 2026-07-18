@@ -83,6 +83,7 @@ data InputContext = InputContext
   , icMousePosRef :: !(IORef (Int, Int))
   , icDragRef :: !(IORef (Maybe DragState))
   , icTooltipHoverRef :: !(IORef TooltipHover)
+  , icOverlayModalLatchRef :: !(IORef Bool)
   , icActionDispatcher :: !InputActionDispatcher
   }
 
@@ -94,9 +95,10 @@ mkInputContext
   -> IORef (Int, Int)
   -> IORef (Maybe DragState)
   -> IORef TooltipHover
+  -> IORef Bool
   -> InputActionDispatcher
   -> InputContext
-mkInputContext window inputEnv quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef actionDispatcher =
+mkInputContext window inputEnv quitRef lineHeightRef mousePosRef dragRef tooltipHoverRef overlayModalLatchRef actionDispatcher =
   InputContext
     { icWindow = window
     , icInputEnv = inputEnv
@@ -105,5 +107,6 @@ mkInputContext window inputEnv quitRef lineHeightRef mousePosRef dragRef tooltip
     , icMousePosRef = mousePosRef
     , icDragRef = dragRef
     , icTooltipHoverRef = tooltipHoverRef
+    , icOverlayModalLatchRef = overlayModalLatchRef
     , icActionDispatcher = actionDispatcher
     }

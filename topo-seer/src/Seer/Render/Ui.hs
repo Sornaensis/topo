@@ -25,6 +25,7 @@ import Seer.Draw
   , drawTooltip
   , drawUiLabels
   )
+import Seer.Draw.OverlayInspector (drawOverlayInspector)
 import UI.Font (FontCache)
 import UI.Layout
 import UI.Theme
@@ -66,3 +67,4 @@ drawUiOverlay renderer fontCache snapshot terrainSnap layout logFilters (V2 winW
       SDL.P (V2 mx my) <- SDL.getAbsoluteMouseLocation
       drawTooltip renderer fontCache (V2 winW winH) (V2 (fromIntegral mx) (fromIntegral my)) tipText
     _ -> pure ()
+  drawOverlayInspector renderer fontCache ui layout

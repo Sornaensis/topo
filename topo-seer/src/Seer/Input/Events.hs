@@ -25,16 +25,22 @@ import Actor.UI
   , setUiHoverWidget
   , setUiZoom
   , setUiLeftViewScroll
+  , setUiOverlayInspectorScroll
+  , setUiOverlayInspectorNotice
   )
 import Control.Applicative ((<|>))
+import Control.Exception (SomeException, try)
 import Control.Monad (when)
 import Data.Aeson (object, (.=))
 import Data.IORef (IORef, readIORef, writeIORef)
+import qualified Data.Text as Text
 import Data.Word (Word32)
 import Linear (V2(..))
 import qualified SDL
+import qualified SDL.Raw.Types as Raw
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.Draw (seedMaxDigits)
+import Seer.Draw.OverlayInspector (overlayInspectorViewScrollLimit)
 import Seer.Input.ConfigScroll
   ( computeScrollUpdates
   , defaultScrollSettings
@@ -44,6 +50,7 @@ import Seer.Input.Context
   , InputContext(..)
   , TooltipHover
   , enqueueInputAction
+  , enqueueInputMainThreadAction
   )
 import Seer.Input.Intent
   ( InputIntentEnv(..)
@@ -62,16 +69,22 @@ import Seer.Input.ViewControls
   )
 import Seer.DataBrowser.Executor (submitDataBrowserAction)
 import Seer.DataBrowser.Model (DataBrowserBeginResult(..))
+import Seer.OverlayInspector.Model
+  ( OverlayInspectorFocus(..)
+  , OverlayInspectorModel(..)
+  , OverlayInspectorView(..)
+  )
 import UI.Layout
 import UI.WidgetTree (Widget(..), WidgetId(..), buildEditorWidgets, buildEditorReopenWidget, buildViewModeWidgets, buildSliderRowWidgets, hitTest)
 import UI.WidgetId (widgetIdToText)
-import UI.Widgets (containsPoint)
+import UI.Widgets (Rect(..), containsPoint)
 import Seer.Input.Actions (InputEnv(..), runInputService, submitAction)
 import qualified Seer.Input.Actions as InputActions
 import Seer.Editor.Types (EditorState(..), EditorTool(..))
 import Actor.UiActions (UiAction(..))
 import Actor.UiActions.Handles (ActorHandles(..))
-import Seer.Input.Widgets (handleClick)
+import Seer.Input.Widgets (clipboardFromWidgetResponse, handleClick)
+import Seer.Service.Types (ServiceResponse(..))
 
 -- | Wall-clock delay (milliseconds) the cursor must remain still on a
 -- widget before the tooltip appears.
@@ -92,7 +105,34 @@ handleEvent inputContext event = do
       mousePosRef = icMousePosRef inputContext
       dragRef = icDragRef inputContext
       tooltipHoverRef = icTooltipHoverRef inputContext
+  barrierUi <- getUiSnapshot uiHandle
+  overlayModalLatched <- readIORef (icOverlayModalLatchRef inputContext)
+  let overlayModal = overlayModalLatched
+        || uiMenuMode barrierUi == MenuOverlayInspector
+      overlayModalPending = overlayModal
+        && uiMenuMode barrierUi /= MenuOverlayInspector
   case SDL.eventPayload event of
+    SDL.TextInputEvent _ | overlayModalPending -> pure ()
+    SDL.KeyboardEvent _ | overlayModalPending -> pure ()
+    SDL.MouseMotionEvent motionEvent | overlayModal -> do
+      let SDL.P (V2 mx my) = SDL.mouseMotionEventPos motionEvent
+      writeIORef mousePosRef (fromIntegral mx, fromIntegral my)
+      writeIORef dragRef Nothing
+      writeIORef tooltipHoverRef Nothing
+      setUiHoverWidget uiHandle Nothing
+      setUiHoverHex uiHandle Nothing
+    SDL.MouseWheelEvent wheelEvent | overlayModal -> do
+      let SDL.V2 _ dy = SDL.mouseWheelEventPos wheelEvent
+      when (dy /= 0) $ scrollOverlayInspector barrierUi (fromIntegral dy)
+    SDL.MouseButtonEvent btnEvent | overlayModal -> do
+      writeIORef dragRef Nothing
+      -- A latch may precede the worker-owned modal state in this batch. Never
+      -- hit-test that click against the frozen pre-modal InputEnv snapshot.
+      let cachedModal = uiMenuMode (ieUiSnapshot inputEnv) == MenuOverlayInspector
+      when (cachedModal
+          && SDL.mouseButtonEventMotion btnEvent == SDL.Pressed
+          && SDL.mouseButtonEventButton btnEvent == SDL.ButtonLeft) $
+        handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
     SDL.MouseMotionEvent motionEvent -> do
       let SDL.P (V2 mx my) = SDL.mouseMotionEventPos motionEvent
       writeIORef mousePosRef (fromIntegral mx, fromIntegral my)
@@ -201,20 +241,28 @@ handleEvent inputContext event = do
         (mx, my) <- readIORef mousePosRef
         (V2 winW winH) <- SDL.get (SDL.windowSize window)
         lineHeight <- readIORef (icLineHeightRef inputContext)
-        let (configUpdate, logUpdate, leftViewUpdate) =
+        let logHeight = if lsCollapsed logSnap then 24 else 160
+            seedWidth = max 120 (seedMaxDigits * 10)
+            eventLayout = layoutForSeed (V2 (fromIntegral winW) (fromIntegral winH)) logHeight seedWidth
+            inspector = uiOverlayInspector uiSnap
+            overInspector = uiMenuMode uiSnap == MenuOverlayInspector
+              && containsPoint (overlayInspectorDialogRect eventLayout) (V2 mx my)
+            (configUpdate, logUpdate, leftViewUpdate) =
               computeScrollUpdates defaultScrollSettings uiSnap logSnap lineHeight (V2 (fromIntegral winW) (fromIntegral winH)) (V2 mx my) (fromIntegral dy)
-        case (configUpdate, logUpdate, leftViewUpdate) of
-          (Just newConfigScroll, _, _) ->
-            setUiConfigScroll uiHandle newConfigScroll
-          (Nothing, Just newScroll, _) ->
-            setLogScroll logHandle newScroll
-          (Nothing, Nothing, Just newLVScroll) ->
-            setUiLeftViewScroll uiHandle newLVScroll
-          (Nothing, Nothing, Nothing) -> do
-            let (newZoom, newOffset) = applyZoomAtCursor defaultZoomSettings uiSnap (mx, my) (fromIntegral dy)
-            setUiZoom uiHandle newZoom
-            setUiPanOffset uiHandle newOffset
-            submitAction inputEnv (UiActionRefreshViewport (Just (fromIntegral winW, fromIntegral winH)))
+        if overInspector
+          then scrollOverlayInspector uiSnap (fromIntegral dy)
+          else case (configUpdate, logUpdate, leftViewUpdate) of
+            (Just newConfigScroll, _, _) ->
+              setUiConfigScroll uiHandle newConfigScroll
+            (Nothing, Just newScroll, _) ->
+              setLogScroll logHandle newScroll
+            (Nothing, Nothing, Just newLVScroll) ->
+              setUiLeftViewScroll uiHandle newLVScroll
+            (Nothing, Nothing, Nothing) -> do
+              let (newZoom, newOffset) = applyZoomAtCursor defaultZoomSettings uiSnap (mx, my) (fromIntegral dy)
+              setUiZoom uiHandle newZoom
+              setUiPanOffset uiHandle newOffset
+              submitAction inputEnv (UiActionRefreshViewport (Just (fromIntegral winW, fromIntegral winH)))
     SDL.MouseButtonEvent btnEvent
       | SDL.mouseButtonEventMotion btnEvent == SDL.Pressed ->
           case SDL.mouseButtonEventButton btnEvent of
@@ -306,10 +354,37 @@ handleEvent inputContext event = do
                 else do
                   result <- executeKeyIntent intentEnv (modifiersForSdl (SDL.keysymModifier keysym)) key
                   case result of
-                    Right outcome | iirStopTextInput outcome -> SDL.stopTextInput
+                    Right outcome -> do
+                      when (iirStopTextInput outcome) SDL.stopTextInput
+                      when (iirStartTextInput outcome) $ do
+                        (V2 keyWinW keyWinH) <- SDL.get (SDL.windowSize window)
+                        keyLog <- getLogSnapshot logHandle
+                        let keyLogH = if lsCollapsed keyLog then 24 else 160
+                            keyLayout = layoutForSeed
+                              (V2 (fromIntegral keyWinW) (fromIntegral keyWinH)) keyLogH
+                              (max 120 (seedMaxDigits * 10))
+                            Rect (V2 rx ry, V2 rw rh) = overlayInspectorImportInputRect keyLayout
+                        SDL.startTextInput (Raw.Rect (fromIntegral rx) (fromIntegral ry) (fromIntegral rw) (fromIntegral rh))
+                      case iirClipboard outcome of
+                        Nothing -> pure ()
+                        Just clipboardText -> copyOverlayClipboard clipboardText
+                      case iirDeferredWidget outcome of
+                        Nothing -> pure ()
+                        Just deferred -> enqueueInputAction dispatcher $ do
+                          deferredResult <- runInputService inputEnv "click_widget"
+                            (object ["widget_id" .= widgetIdToText deferred])
+                          case deferredResult of
+                            Right (ServiceResponse response)
+                              | Just clipboardText <- clipboardFromWidgetResponse response ->
+                                  enqueueInputMainThreadAction dispatcher
+                                    (copyOverlayClipboard clipboardText)
+                            _ -> pure ()
                     _ -> pure ()
     _ -> pure ()
   where
+    window :: SDL.Window
+    window = icWindow inputContext
+
     inputEnv :: InputEnv
     inputEnv = icInputEnv inputContext
 
@@ -323,13 +398,42 @@ handleEvent inputContext event = do
 
     dataHandle = ahDataHandle actorHandles
 
+    dispatcher = icActionDispatcher inputContext
+
+    copyOverlayClipboard clipboardText = do
+      copied <- try (SDL.setClipboardText clipboardText) :: IO (Either SomeException ())
+      setUiOverlayInspectorNotice uiHandle $ Just $ case copied of
+        Right () -> "Copied exact export JSON to the clipboard."
+        Left err -> "Clipboard copy failed: " <> Text.pack (show err)
+
     intentEnv = InputIntentEnv
       { iieActorHandles = actorHandles
       , iieGetUi = getUiSnapshot uiHandle
       , iieGetLog = getLogSnapshot logHandle
       , iieRunService = runInputService inputEnv
       , iieApplyDataBrowser = applyDataBrowserIntent
+      , iieDeferBlockingWidgets = True
+      , iieOverlayInspectorScrollLimit = currentInspectorScrollLimit
       }
+
+    scrollOverlayInspector ui dy = do
+      (V2 winW winH) <- SDL.get (SDL.windowSize window)
+      currentLog <- getLogSnapshot logHandle
+      let logHeight = if lsCollapsed currentLog then 24 else 160
+          layout = layoutForSeed (V2 (fromIntegral winW) (fromIntegral winH))
+            logHeight (max 120 (seedMaxDigits * 10))
+          inspector = uiOverlayInspector ui
+          limit = overlayInspectorViewScrollLimit layout inspector
+          next = max 0 (min limit (oimScroll inspector - dy * 3))
+      setUiOverlayInspectorScroll uiHandle next
+
+    currentInspectorScrollLimit inspector = do
+      (V2 winW winH) <- SDL.get (SDL.windowSize window)
+      currentLog <- getLogSnapshot logHandle
+      let logHeight = if lsCollapsed currentLog then 24 else 160
+          layout = layoutForSeed (V2 (fromIntegral winW) (fromIntegral winH))
+            logHeight (max 120 (seedMaxDigits * 10))
+      pure (overlayInspectorViewScrollLimit layout inspector)
 
     applyDataBrowserIntent action = do
       result <- submitDataBrowserAction
@@ -424,8 +528,13 @@ sdlTextInputOwnsKey ui key = isTextKey key && textScope
     dataFieldFocused = case dbsFocusedField dbs of
       Just _ -> dbsEditMode dbs || dbsCreateMode dbs
       Nothing -> False
+    inspector = uiOverlayInspector ui
+    overlayImportFocused = uiMenuMode ui == MenuOverlayInspector
+      && oimView inspector == Just OverlayInspectorImportView
+      && oimFocus inspector == OverlayInspectorImportInputFocus
     textScope = uiSeedEditing ui
       || dataFieldFocused
+      || overlayImportFocused
       || uiMenuMode ui `elem`
           [MenuPresetSave, MenuPresetLoad, MenuWorldSave, MenuWorldLoad]
 

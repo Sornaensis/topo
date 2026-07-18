@@ -3,10 +3,12 @@
 module Seer.Input.Widgets
   ( handleClick
   , submitDataBrowserInputAction
+  , clipboardFromWidgetResponse
   ) where
 
 import Actor.Log (LogSnapshot(..))
-import Data.Aeson (object, (.=))
+import Data.Aeson (Value, object, (.=), (.:?))
+import qualified Data.Aeson.Types as Aeson
 
 import Actor.UI
   ( ConfigTab(..)
@@ -23,8 +25,10 @@ import Actor.UI
   , setUiMenuMode
   , setUiSeedEditing
   , setUiSeedInput
+  , setUiOverlayInspectorNotice
   )
 import Control.Applicative ((<|>))
+import Control.Exception (SomeException, onException, try)
 import Control.Monad (void, when)
 import Data.IORef (writeIORef)
 import Data.Int (Int32)
@@ -70,7 +74,7 @@ import Seer.Input.Context
   , enqueueInputAction
   , enqueueInputMainThreadAction
   )
-import Seer.Service.Types (serviceErrorText)
+import Seer.Service.Types (ServiceResponse(..), serviceErrorText)
 
 -- | Non-blocking Data Browser submission boundary used by SDL widget input.
 -- Completion remains owned by the application-scoped executor.
@@ -81,6 +85,10 @@ submitDataBrowserInputAction
   -> IO ()
 submitDataBrowserInputAction executor runService action =
   void (submitDataBrowserAction executor runService action)
+
+clipboardFromWidgetResponse :: Value -> Maybe Text.Text
+clipboardFromWidgetResponse response =
+  Aeson.parseMaybe (Aeson.withObject "widget response" (.:? "clipboard")) response >>= id
 
 handleClick
   :: InputContext
@@ -206,14 +214,29 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         _ <- getUiSnapshot uiHandle
         writeIORef quitRef True
         pure (Right ())
-      _ -> enqueueInputAction (icActionDispatcher inputContext) $ do
-        result <- runInputService widgetEnv "click_widget" (object $
-          ["widget_id" .= widgetIdToText wid]
-            ++ normalizedArgument currentWidgets clickPoint wid
-            ++ itemIndexArgument currentLayout clickPoint uiState wid)
-        case result of
-          Right _ -> queueLocalHook currentLayout wid
-          Left _ -> pure ()
+      _ -> do
+        when (opensOverlayInspector wid) $
+          writeIORef (icOverlayModalLatchRef inputContext) True
+        enqueueInputAction (icActionDispatcher inputContext) $ do
+          result <- runInputService widgetEnv "click_widget" (object $
+            ["widget_id" .= widgetIdToText wid]
+              ++ normalizedArgument currentWidgets clickPoint wid
+              ++ itemIndexArgument currentLayout clickPoint uiState wid)
+            `onException` when (opensOverlayInspector wid)
+              (writeIORef (icOverlayModalLatchRef inputContext) False)
+          case result of
+            Right (ServiceResponse response) ->
+              queueLocalHook currentLayout wid (clipboardFromWidgetResponse response)
+            Left _ -> when (opensOverlayInspector wid) $
+              writeIORef (icOverlayModalLatchRef inputContext) False
+
+    opensOverlayInspector wid = wid `elem`
+      [ WidgetOverlayManager
+      , WidgetOverlaySchema
+      , WidgetOverlayProvenance
+      , WidgetOverlayExport
+      , WidgetOverlayImportValidate
+      ]
 
     runLocalWidget wid action =
       void (executeLocalWidgetInvocation actorHandles wid action)
@@ -238,17 +261,17 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         in if count <= 0 then [] else ["item_index" .= min (count - 1) (max 0 ((clickY - listY) `div` 28))]
       _ -> []
 
-    queueLocalHook currentLayout wid = case wid of
+    queueLocalHook currentLayout wid clipboard = case wid of
       WidgetDataEditToggle -> do
         latest <- getUiSnapshot uiHandle
         let dbs = uiDataBrowser latest
         when (not (dbsEditMode dbs || dbsCreateMode dbs)) $
           enqueueInputMainThreadAction (icActionDispatcher inputContext) SDL.stopTextInput
       _ -> enqueueInputMainThreadAction (icActionDispatcher inputContext)
-        (runLocalHook currentLayout wid)
+        (runLocalHook currentLayout wid clipboard)
 
     -- These SDL calls are drained by the event pump on its owning thread.
-    runLocalHook currentLayout wid = case wid of
+    runLocalHook currentLayout wid clipboard = case wid of
       WidgetConfigReset -> SDL.stopTextInput
       WidgetConfigPresetSave -> startTextAt (presetSaveInputRect currentLayout)
       WidgetConfigPresetLoad -> startTextAt (presetLoadFilterRect currentLayout)
@@ -266,6 +289,22 @@ handleClick inputContext (SDL.P (V2 x y)) = do
       WidgetDataDetailDismiss -> SDL.stopTextInput
       WidgetDataEditSave -> SDL.stopTextInput
       WidgetDataEditCancel -> SDL.stopTextInput
+      WidgetOverlayInspectorClose -> SDL.stopTextInput
+      WidgetOverlayManager -> SDL.stopTextInput
+      WidgetOverlaySchema -> SDL.stopTextInput
+      WidgetOverlayProvenance -> SDL.stopTextInput
+      WidgetOverlayExport -> SDL.stopTextInput
+      WidgetOverlayImportValidate -> startTextAt (overlayInspectorImportInputRect currentLayout)
+      WidgetOverlayInspectorImportInput -> startTextAt (overlayInspectorImportInputRect currentLayout)
+      WidgetOverlayInspectorValidate -> SDL.stopTextInput
+      WidgetOverlayInspectorCopy ->
+        case clipboard of
+          Just payloadText -> do
+            copied <- try (SDL.setClipboardText payloadText) :: IO (Either SomeException ())
+            setUiOverlayInspectorNotice uiHandle $ Just $ case copied of
+              Right () -> "Copied exact export JSON to the clipboard."
+              Left err -> "Clipboard copy failed: " <> Text.pack (show err)
+          Nothing -> pure ()
       _ -> pure ()
 
     startTextAt (Rect (V2 rx ry, V2 rw rh)) =

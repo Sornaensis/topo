@@ -478,6 +478,7 @@ runMainLoop runtimeCfg actors sdl = do
   mousePosRef <- newIORef (0, 0)
   dragRef <- newIORef Nothing
   tooltipHoverRef <- newIORef Nothing
+  overlayModalLatchRef <- newIORef False
   inputActionDispatcher <- newInputActionDispatcher
   diagnosticStartNs <- getMonotonicTimeNSec
   snapshotAdvanceRef <- newIORef (initialSnapshotAdvanceState diagnosticStartNs)
@@ -513,6 +514,7 @@ runMainLoop runtimeCfg actors sdl = do
         , epeMousePosRef = mousePosRef
         , epeDragRef = dragRef
         , epeTooltipHoverRef = tooltipHoverRef
+        , epeOverlayModalLatchRef = overlayModalLatchRef
         , epeInputActionDispatcher = inputActionDispatcher
         }
       snapshotEnv = SnapshotPollEnv

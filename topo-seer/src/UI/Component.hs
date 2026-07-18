@@ -207,6 +207,12 @@ componentForWidget wid = case wid of
   WidgetWorldDelete -> componentDialogs
   WidgetWorldDeleteConfirm -> componentDialogs
   WidgetWorldDeleteCancel -> componentDialogs
+  WidgetOverlayInspectorClose -> componentDialogs
+  WidgetOverlayInspectorItem _ -> componentDialogs
+  WidgetOverlayInspectorCopy -> componentDialogs
+  WidgetOverlayInspectorSave -> componentDialogs
+  WidgetOverlayInspectorImportInput -> componentDialogs
+  WidgetOverlayInspectorValidate -> componentDialogs
 
   WidgetEditorTool _ -> componentEditor
   WidgetEditorRadiusMinus -> componentEditor

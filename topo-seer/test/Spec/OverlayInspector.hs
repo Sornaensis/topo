@@ -3,12 +3,24 @@
 module Spec.OverlayInspector (spec) where
 
 import Control.Concurrent (newEmptyMVar, putMVar, takeMVar)
-import Data.Aeson (Value(..), object, (.=))
+import Data.Aeson (Value(..), eitherDecodeStrict', object, (.=))
+import qualified Data.ByteString as ByteString
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Seer.OverlayInspector.AppService
 import Seer.OverlayInspector.Executor
 import Seer.OverlayInspector.Model
+import Seer.OverlayInspector.Storage
 import Seer.Service.Types (ServiceError(..))
+import System.Directory
+  ( createDirectoryIfMissing
+  , doesFileExist
+  , getTemporaryDirectory
+  , removeDirectory
+  , removeFile
+  )
+import System.FilePath ((</>))
 import Test.Hspec
 
 spec :: Spec
@@ -109,6 +121,117 @@ spec = describe "OverlayInspector" $ do
             changed
       applied `shouldBe` False
       after `shouldBe` changed
+
+    it "opens useful views and operates clamped manager selection" $ do
+      let manager = openOverlayInspectorView OverlayInspectorManagerView
+            emptyOverlayInspectorModel
+              { oimOverlayNames = ["roads", "climate"]
+              , oimSelectedOverlay = Just "roads"
+              }
+          moved = moveOverlayInspectorSelection 1 manager
+          clamped = moveOverlayInspectorSelection 10 moved
+      oimView manager `shouldBe` Just OverlayInspectorManagerView
+      oimFocus manager `shouldBe` OverlayInspectorManagerFocus 0
+      oimSelectedOverlay moved `shouldBe` Just "climate"
+      oimSelectedOverlay clamped `shouldBe` Just "climate"
+      oimScroll (setOverlayInspectorScroll (-3) manager) `shouldBe` 0
+      oimView (closeOverlayInspectorView manager) `shouldBe` Nothing
+      let stalePayload = object ["old" .= True]
+          stale = manager
+            { oimManagerPayload = Just stalePayload
+            , oimSchemaPayload = Just stalePayload
+            , oimProvenancePayload = Just stalePayload
+            , oimExportPayload = Just stalePayload
+            }
+      oimManagerPayload (openOverlayInspectorView OverlayInspectorManagerView stale)
+        `shouldBe` Nothing
+      oimSchemaPayload (openOverlayInspectorView OverlayInspectorSchemaView stale)
+        `shouldBe` Nothing
+      oimProvenancePayload (openOverlayInspectorView OverlayInspectorProvenanceView stale)
+        `shouldBe` Nothing
+      oimExportPayload (openOverlayInspectorView OverlayInspectorExportView stale)
+        `shouldBe` Nothing
+
+    it "does not let stale manager rows cancel an in-flight refresh" $ do
+      let opened = openOverlayInspectorView OverlayInspectorManagerView
+            emptyOverlayInspectorModel
+              { oimOverlayNames = ["old-a", "old-b"]
+              , oimSelectedOverlay = Just "old-a"
+              }
+          (pendingModel, begun) = beginOverlayInspectorAction
+            (OverlayInspectorRequestId 22)
+            OverlayInspectorRefreshManager
+            opened
+          pending = acceptedPending begun
+      moveOverlayInspectorSelection 1 pendingModel `shouldBe` pendingModel
+      selectOverlayInspectorOverlay (Just "old-b") pendingModel `shouldBe` pendingModel
+      let (completed, applied) = completeOverlayInspectorRequest
+            (successCompletion pending (object
+              [ "overlay_names" .= (["fresh"] :: [String])
+              , "active_overlay" .= ("fresh" :: String)
+              ]))
+            pendingModel
+      applied `shouldBe` True
+      oimOverlayNames completed `shouldBe` ["fresh"]
+      oimSelectedOverlay completed `shouldBe` Just "fresh"
+
+    it "reconciles manager focus and scroll to the service-selected overlay" $ do
+      let names = ["overlay-" <> Text.pack (show index) | index <- [0 :: Int .. 20]]
+          opened = openOverlayInspectorView OverlayInspectorManagerView emptyOverlayInspectorModel
+          completed = completeManager opened $ object
+            [ "overlay_names" .= names
+            , "active_overlay" .= ("overlay-20" :: Text.Text)
+            ]
+      oimSelectedOverlay completed `shouldBe` Just "overlay-20"
+      oimFocus completed `shouldBe` OverlayInspectorManagerFocus 20
+      oimScroll completed `shouldSatisfy` (> 0)
+
+    it "keeps import entry validation-only and reports local JSON errors" $ do
+      let invalid = setOverlayInspectorImportText "{not-json" 9 emptyOverlayInspectorModel
+          (invalidAfter, invalidResult) = prepareOverlayInspectorValidation invalid
+      invalidResult `shouldSatisfy` either (const True) (const False)
+      oimLocalDiagnostics invalidAfter `shouldSatisfy` (not . null)
+      oimImportDraft invalidAfter `shouldBe` oimImportDraft emptyOverlayInspectorModel
+
+      let validText = "{\"schema\":{},\"payload\":{\"roads\":[]}}"
+          valid = setOverlayInspectorImportText validText 999 invalidAfter
+          (validAfter, validResult) = prepareOverlayInspectorValidation valid
+      validResult `shouldBe` Right (object
+        [ "schema" .= object []
+        , "payload" .= object ["roads" .= ([] :: [Value])]
+        ])
+      oimImportCursor valid `shouldBe` Text.length validText
+      oimImportValidation validAfter `shouldBe` Nothing
+      oimNotice validAfter `shouldBe`
+        Just "JSON parsed; validating only — no data will be adopted."
+
+    it "serializes and saves the exact AppService export payload" $ do
+      let payload = object
+            [ "overlay" .= ("roads" :: String)
+            , "schema" .= object ["version" .= (3 :: Int)]
+            , "chunks" .= [object ["id" .= (7 :: Int)]]
+            ]
+      eitherDecodeStrict' (TextEncoding.encodeUtf8 (overlayInspectorPayloadText payload))
+        `shouldBe` Right payload
+      temp <- getTemporaryDirectory
+      let directory = temp </> "topo-overlay-inspector-spec"
+          path = directory </> "roads-main.json"
+      createDirectoryIfMissing True directory
+      let secondPath = directory </> "roads-main-1.json"
+      mapM_ (\candidate -> do
+          existing <- doesFileExist candidate
+          if existing then removeFile candidate else pure ()) [path, secondPath]
+      saved <- saveOverlayExportUnder directory "roads/main" payload
+      savedPath <- expectRight saved
+      bytes <- ByteString.readFile savedPath
+      eitherDecodeStrict' bytes `shouldBe` Right payload
+      second <- saveOverlayExportUnder directory "roads/main" payload
+      savedAgain <- expectRight second
+      savedAgain `shouldNotBe` savedPath
+      ByteString.readFile savedAgain >>= (`shouldSatisfy` (not . ByteString.null))
+      removeFile savedPath
+      removeFile savedAgain
+      removeDirectory directory
 
     it "retains exact schema and validation payloads" $ do
       let schemaPayload = object
@@ -219,6 +342,11 @@ completeAction model action payload =
         (successCompletion pending payload)
         pendingModel
   in if applied then completed else error "expected overlay inspector completion"
+
+expectRight :: Show err => Either err value -> IO value
+expectRight result = case result of
+  Right value -> pure value
+  Left err -> expectationFailure (show err) >> fail "unreachable"
 
 assertRequest :: OverlayInspectorRequest -> String -> Value -> Expectation
 assertRequest request expectedMethod expectedParams = do

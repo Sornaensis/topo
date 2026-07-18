@@ -91,6 +91,12 @@ data WidgetId
     -- ^ Open overlay export action surface.
   | WidgetOverlayImportValidate
     -- ^ Open overlay import validation action surface.
+  | WidgetOverlayInspectorClose
+  | WidgetOverlayInspectorItem !Int
+  | WidgetOverlayInspectorCopy
+  | WidgetOverlayInspectorSave
+  | WidgetOverlayInspectorImportInput
+  | WidgetOverlayInspectorValidate
   | WidgetLogDebug
   | WidgetLogInfo
   | WidgetLogWarn
@@ -255,6 +261,12 @@ widgetIdToText wid = case wid of
   WidgetOverlayProvenance -> "WidgetOverlayProvenance"
   WidgetOverlayExport -> "WidgetOverlayExport"
   WidgetOverlayImportValidate -> "WidgetOverlayImportValidate"
+  WidgetOverlayInspectorClose -> "WidgetOverlayInspectorClose"
+  WidgetOverlayInspectorItem index -> intArg "WidgetOverlayInspectorItem" index
+  WidgetOverlayInspectorCopy -> "WidgetOverlayInspectorCopy"
+  WidgetOverlayInspectorSave -> "WidgetOverlayInspectorSave"
+  WidgetOverlayInspectorImportInput -> "WidgetOverlayInspectorImportInput"
+  WidgetOverlayInspectorValidate -> "WidgetOverlayInspectorValidate"
   WidgetLogDebug -> "WidgetLogDebug"
   WidgetLogInfo -> "WidgetLogInfo"
   WidgetLogWarn -> "WidgetLogWarn"
@@ -348,6 +360,7 @@ widgetIdFromText value
   | Just rest <- prefix "WidgetDataPagePrev" value = uncurry WidgetDataPagePrev <$> decodeTwo rest
   | Just rest <- prefix "WidgetDataPageNext" value = uncurry WidgetDataPageNext <$> decodeTwo rest
   | Just rest <- prefix "WidgetDataRecordSelect" value = WidgetDataRecordSelect <$> readInt rest
+  | Just rest <- prefix "WidgetOverlayInspectorItem" value = WidgetOverlayInspectorItem <$> readInt rest
   | Just rest <- prefix "WidgetDataFieldToggle" value = WidgetDataFieldToggle <$> decodeOne rest
   | Just rest <- prefix "WidgetDataFieldTextClick" value = WidgetDataFieldTextClick <$> decodeOne rest
   | Just rest <- prefix "WidgetDataFieldStepMinus" value = WidgetDataFieldStepMinus <$> decodeOne rest
@@ -387,7 +400,9 @@ nullaryWidgetIds =
   , WidgetViewCloudTypical, WidgetDayNightToggle, WidgetViewOverlayPrev
   , WidgetViewOverlayNext, WidgetViewFieldPrev, WidgetViewFieldNext
   , WidgetOverlayManager, WidgetOverlaySchema, WidgetOverlayProvenance
-  , WidgetOverlayExport, WidgetOverlayImportValidate, WidgetLogDebug
+  , WidgetOverlayExport, WidgetOverlayImportValidate, WidgetOverlayInspectorClose
+  , WidgetOverlayInspectorCopy, WidgetOverlayInspectorSave
+  , WidgetOverlayInspectorImportInput, WidgetOverlayInspectorValidate, WidgetLogDebug
   , WidgetLogInfo, WidgetLogWarn, WidgetLogError, WidgetLogHeader
   , WidgetMenuSave, WidgetMenuLoad, WidgetMenuExit, WidgetPresetSaveOk
   , WidgetPresetSaveCancel, WidgetPresetLoadOk, WidgetPresetLoadCancel
