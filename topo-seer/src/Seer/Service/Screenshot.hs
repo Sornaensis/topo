@@ -63,7 +63,6 @@ newtype ScreenshotTakeRequest = ScreenshotTakeRequest
 -- successful response so callers never have to infer the active runtime.
 data ScreenshotSource
   = ScreenshotSourceRenderer
-  | ScreenshotSourceHeadless
   deriving (Eq, Show)
 
 data ScreenshotTakeResponse = ScreenshotTakeResponse
@@ -83,7 +82,8 @@ screenshotServiceOperationSpecs =
 
 screenshotTakeOperation :: TypedServiceOperation ScreenshotTakeRequest ScreenshotTakeResponse
 screenshotTakeOperation = typedOperation $
-  operationSpec "screenshots.take" "take_screenshot" "Request a screenshot capture."
+  operationSpec "screenshots.take" "take_screenshot"
+    "Request capture from the SDL renderer; unavailable in headless mode."
 
 -- | Parse and normalize the optional sandbox-relative PNG path. A missing
 -- @path@ requests capture only; an explicitly present value must be valid.
@@ -173,7 +173,6 @@ encodeScreenshotTakeResponse response = object
 
 screenshotSourceText :: ScreenshotSource -> Text
 screenshotSourceText ScreenshotSourceRenderer = "renderer"
-screenshotSourceText ScreenshotSourceHeadless = "headless"
 
 screenshotPathValidationError :: ServiceError
 screenshotPathValidationError = ServiceValidationError "validation failed"

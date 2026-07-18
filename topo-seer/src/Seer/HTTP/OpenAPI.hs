@@ -293,7 +293,8 @@ tagDescription "plugins" = "Plugin status, dependency, parameter, and lifecycle 
 tagDescription "data" = "Plugin-owned data-resource discovery and CRUD operations."
 tagDescription "simulation" = "Simulation state, DAG, auto-tick, and tick operations."
 tagDescription "logs" = "Runtime log queries."
-tagDescription "screenshots" = "Screenshot capture operations."
+tagDescription "screenshots" =
+  "SDL renderer screenshot capture; requests are unavailable in headless runtimes."
 tagDescription "camera" = "Viewport camera read and mutation operations."
 tagDescription tag = "Topo HTTP API operations tagged as " <> tag <> "."
 

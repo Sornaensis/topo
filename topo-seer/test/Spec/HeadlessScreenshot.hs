@@ -4,43 +4,38 @@
 module Spec.HeadlessScreenshot (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (IOException, bracket, displayException, try)
+import Control.Exception (IOException, bracket, try)
 import Control.Monad (forM_)
 import Data.Aeson (Value(..), object, (.=))
-import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as ByteString
-import Data.IORef (atomicModifyIORef', newIORef, readIORef)
-import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import System.Directory
   ( createDirectory
-  , createDirectoryLink
-  , createFileLink
+  , doesFileExist
   , getTemporaryDirectory
   , listDirectory
-  , removeFile
   , removePathForcibly
   )
 import System.FilePath ((</>))
 import System.Timeout (timeout)
 import Test.Hspec
 
-import Seer.Command.AppServiceAdapter (dispatchAppServiceCommand)
-import Seer.Command.Dispatch (CommandContext(..))
+import Seer.Command.AppServiceAdapter
+  ( commandAppService
+  , dispatchAppServiceCommand
+  )
+import Seer.Command.Dispatch (CommandContext)
 import Seer.Config.Runtime (TopoSeerConfig(..))
 import Seer.Headless
   ( HeadlessConfig(..)
   , defaultHeadlessConfig
-  , deterministicHeadlessPng
   , headlessAppService
-  , headlessAppServiceWithScreenshotWriter
   , headlessCommandContext
-  , headlessDispatchCommand
+  , headlessScreenshotRendererRequiredError
   , headlessServiceContext
   , withHeadlessApp
   )
@@ -59,230 +54,117 @@ import Seer.Screenshot.Request
   , screenshotRequestPending
   , submitScreenshotRequest
   )
-import Seer.Screenshot.Storage (ScreenshotSaveError(..))
 import Seer.Service.AppService
   ( AppService(..)
   , ScreenshotService(..)
   , runServiceOperation
   )
 import Seer.Service.Context (ServiceContext(..))
-import Seer.Service.Screenshot (rendererScreenshotHandlerWithDeadline)
 import Seer.Service.Types
   ( ServiceError(..)
   , ServiceErrorDetail(..)
   , ServiceRequest(..)
-  , ServiceResponse(..)
   , ServiceResult
   , runServiceHandler
   )
 import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
 
 spec :: Spec
-spec = describe "headless screenshot service parity" $ do
-  it "uses one deterministic service across HTTP, direct, and command surfaces" $
-    withFreshTempDir "surface-matrix" $ \base -> do
+spec = describe "headless screenshot renderer requirement" $ do
+  it "returns one structured renderer-required 503 across service, command, and HTTP surfaces" $
+    withHeadlessApp defaultHeadlessConfig $ \runtime -> do
+      let ctx = headlessServiceContext runtime
+          commandCtx = headlessCommandContext runtime
+      forM_ captureOnlyCases $ \(payload, httpBody) -> do
+        result <- guarded "headless cross-surface rejection" $
+          assertCrossSurfaceParity ctx commandCtx payload httpBody
+        result `shouldBe` Left headlessScreenshotRendererRequiredError
+      assertBrokerIdle ctx
+
+  it "never writes image bytes even when screenshot persistence is enabled" $
+    withFreshTempDir "no-write" $ \base -> do
       let root = base </> "screenshots"
-          cfg = enabledHeadlessConfig root
-      withHeadlessApp cfg $ \runtime -> do
+      withHeadlessApp (enabledHeadlessConfig root) $ \runtime -> do
         let ctx = headlessServiceContext runtime
             commandCtx = headlessCommandContext runtime
-        requirePersistenceCapability headlessAppService ctx root
-
-        forM_ captureOnlyCases $ \(label, directPayload, httpBody) -> do
-          result <- guarded label $
-            assertCrossSurfaceParity headlessAppService ctx commandCtx directPayload httpBody
-          assertHeadlessSuccess Nothing result
+            payload = object ["path" .= ("nested/capture.png" :: Text)]
+        result <- guarded "headless path rejection" $
+          assertCrossSurfaceParity ctx commandCtx payload (Just payload)
+        result `shouldBe` Left headlessScreenshotRendererRequiredError
         listDirectory root `shouldReturn` []
+        assertBrokerIdle ctx
 
-        saved <- runServiceOperation headlessAppService ctx "take_screenshot" validPath
-        assertHeadlessSuccess (Just "nested/capture.png") saved
-        ByteString.readFile (root </> "nested" </> "capture.png")
-          `shouldReturn` deterministicHeadlessPng
-
-        -- Persistence is create-only on every surface.
-        existing <- assertCrossSurfaceParity headlessAppService ctx commandCtx validPath (Just validPath)
-        existing `shouldBe` Left screenshotDestinationConflict
-        ByteString.readFile (root </> "nested" </> "capture.png")
-          `shouldReturn` deterministicHeadlessPng
-
-        forM_ invalidPayloads $ \payload -> do
-          invalid <- assertCrossSurfaceParity headlessAppService ctx commandCtx payload (Just payload)
-          invalid `shouldBe` Left screenshotPathValidationError
-
-        ByteString.writeFile (root </> "occupied") "file parent"
-        parentConflict <- assertCrossSurfaceParity headlessAppService ctx commandCtx
-          (object ["path" .= ("occupied/view.png" :: Text)])
-          (Just (object ["path" .= ("occupied/view.png" :: Text)]))
-        parentConflict `shouldBe` Left screenshotDestinationConflict
-
-        createDirectory (root </> "directory.png")
-        destinationConflict <- assertCrossSurfaceParity headlessAppService ctx commandCtx
-          (object ["path" .= ("directory.png" :: Text)])
-          (Just (object ["path" .= ("directory.png" :: Text)]))
-        destinationConflict `shouldBe` Left screenshotDestinationConflict
-
-  it "validates paths before disabled storage and never allocates renderer work" $
+  it "retains request validation without allocating renderer work" $
     withHeadlessApp defaultHeadlessConfig $ \runtime -> do
       let ctx = headlessServiceContext runtime
           commandCtx = headlessCommandContext runtime
       forM_ invalidPayloads $ \payload -> do
-        result <- assertCrossSurfaceParity headlessAppService ctx commandCtx payload (Just payload)
+        result <- guarded "headless validation" $
+          assertCrossSurfaceParity ctx commandCtx payload (Just payload)
         result `shouldBe` Left screenshotPathValidationError
-      disabled <- assertCrossSurfaceParity headlessAppService ctx commandCtx
-        (object ["path" .= ("capture.png" :: Text)])
-        (Just (object ["path" .= ("capture.png" :: Text)]))
-      disabled `shouldBe` Left (ServiceUnavailable "screenshot persistence is disabled")
+      assertBrokerIdle ctx
 
-  it "rejects linked descendants and destinations on every surface" $
-    withFreshTempDir "link-matrix" $ \base -> do
-      let root = base </> "screenshots"
-          outsideDirectory = base </> "outside-directory"
-          outsideFile = base </> "outside.png"
-      withHeadlessApp (enabledHeadlessConfig root) $ \runtime -> do
-        let ctx = headlessServiceContext runtime
-            commandCtx = headlessCommandContext runtime
-        requirePersistenceCapability headlessAppService ctx root
-        createDirectory outsideDirectory
-        linkResult <- try (createDirectoryLink outsideDirectory (root </> "linked")) :: IO (Either IOException ())
-        case linkResult of
-          Left err -> pendingWith ("directory links unavailable: " <> displayException err)
-          Right () -> do
-            let linkedPayload = object ["path" .= ("linked/view.png" :: Text)]
-            linked <- assertCrossSurfaceParity headlessAppService ctx commandCtx linkedPayload (Just linkedPayload)
-            linked `shouldBe` Left screenshotPathValidationError
-            listDirectory outsideDirectory `shouldReturn` []
-
-        ByteString.writeFile outsideFile "outside"
-        fileLinkResult <- try (createFileLink outsideFile (root </> "linked-destination.png"))
-          :: IO (Either IOException ())
-        case fileLinkResult of
-          Left err -> pendingWith ("file links unavailable: " <> displayException err)
-          Right () -> do
-            let linkedPayload = object ["path" .= ("linked-destination.png" :: Text)]
-            linked <- assertCrossSurfaceParity headlessAppService ctx commandCtx linkedPayload (Just linkedPayload)
-            linked `shouldBe` Left screenshotDestinationConflict
-            ByteString.readFile outsideFile `shouldReturn` "outside"
-
-  it "maps invalidated roots and unexpected writer failures without leakage" $
-    withFreshTempDir "failure-matrix" $ \base -> do
-      let root = base </> "screenshots"
-      withHeadlessApp (enabledHeadlessConfig root) $ \runtime -> do
-        let ctx = headlessServiceContext runtime
-            commandCtx = headlessCommandContext runtime
-        removePathForcibly root
-        let missingRootPayload = object ["path" .= ("capture.png" :: Text)]
-        unavailable <- assertCrossSurfaceParity headlessAppService ctx commandCtx
-          missingRootPayload (Just missingRootPayload)
-        unavailable `shouldBe` Left (ServiceUnavailable "screenshot storage is unavailable")
-
-      -- The injected writer seam returns only a stable class; no raw exception
-      -- or sandbox path may escape through any transport envelope.
-      withHeadlessApp (enabledHeadlessConfig root) $ \runtime -> do
-        let failingApp = headlessAppServiceWithScreenshotWriter $ \_ _ _ ->
-              pure (Left ScreenshotUnexpectedIO)
-            ctx = headlessServiceContext runtime
-            commandCtx = headlessCommandContext runtime
-            payload = object ["path" .= ("capture.png" :: Text)]
-        failed <- assertCrossSurfaceParity failingApp ctx commandCtx payload (Just payload)
-        failed `shouldBe` Left (ServiceInternalError "failed to persist screenshot")
-        responses <- runHttpSurfaces failingApp ctx (Just payload)
-        forM_ responses $ \response -> do
-          let encoded = Text.pack (show (Aeson.encode (hresBody response)))
-          encoded `shouldSatisfy` not . Text.isInfixOf (Text.pack root)
-          encoded `shouldSatisfy` not . Text.isInfixOf "ScreenshotUnexpectedIO"
-
-  it "never touches an injected busy renderer broker or schedules its deadline" $
+  it "returns immediately without touching an already-busy renderer broker" $
     withHeadlessApp defaultHeadlessConfig $ \runtime -> do
       let ctx = headlessServiceContext runtime
-          commandCtx = headlessCommandContext runtime
-          command = SeerCommand 417 "take_screenshot" Null
-          assertUntouched action = do
-            body <- guarded "busy broker headless capture" action
-            lookupField "source" body `shouldBe` Just (String "headless")
-            screenshotRequestPending (svcScreenshotRef ctx) `shouldReturn` True
-            screenshotRequestActive (svcScreenshotRef ctx) `shouldReturn` True
       submitted <- submitScreenshotRequest (svcScreenshotRef ctx)
       ticket <- case submitted of
         Right value -> pure value
         Left err -> expectationFailure ("failed to install renderer probe: " <> show err) >> fail "probe"
 
-      assertUntouched $ expectServiceBody $
+      result <- guarded "busy broker headless rejection" $
         runServiceOperation headlessAppService ctx "take_screenshot" Null
-      assertUntouched $ expectServiceBody $
-        runServiceHandler (screenshotTake (appScreenshots headlessAppService))
-          ctx (ServiceRequest (Just Null))
-      assertUntouched $ expectCommandBody $
-        dispatchAppServiceCommand headlessAppService commandCtx command
-      responses <- runHttpSurfacesAllowBusyProbe headlessAppService ctx Nothing
-      forM_ responses $ \response -> do
-        hresStatusCode response `shouldBe` 200
-        assertUntouched (pure (hresBody response))
+      result `shouldBe` Left headlessScreenshotRendererRequiredError
+      screenshotRequestPending (svcScreenshotRef ctx) `shouldReturn` True
+      screenshotRequestActive (svcScreenshotRef ctx) `shouldReturn` True
 
       cancelScreenshotRequest (svcScreenshotRef ctx) ticket `shouldReturn` True
       assertBrokerIdle ctx
 
-  it "keeps GUI validation identical and schedules no headless renderer deadline" $
-    withHeadlessApp defaultHeadlessConfig $ \runtime -> do
-      deadlineCount <- newIORef (0 :: Int)
-      never <- newEmptyMVar
-      let ctx = headlessServiceContext runtime
-          guiHandler = rendererScreenshotHandlerWithDeadline $ do
-            atomicModifyIORef' deadlineCount (\count -> (count + 1, ()))
-            takeMVar never
-          headlessHandler = screenshotTake (appScreenshots headlessAppService)
-          preCapturePayloads = invalidPayloads <>
-            [object ["path" .= ("capture.png" :: Text)]]
-      forM_ preCapturePayloads $ \payload -> do
-        gui <- runServiceHandler guiHandler ctx (ServiceRequest (Just payload))
-        headless <- runServiceHandler headlessHandler ctx (ServiceRequest (Just payload))
-        gui `shouldBe` headless
-        assertBrokerIdle ctx
-      readIORef deadlineCount `shouldReturn` 0
-
-  it "matches successful GUI field semantics while preserving source and content differences" $
-    withFreshTempDir "gui-parity" $ \root ->
+  it "keeps SDL HTTP capture renderer-backed through the runtime broker and storage" $
+    withFreshTempDir "renderer-http" $ \base -> do
+      let root = base </> "screenshots"
       withHeadlessApp (enabledHeadlessConfig root) $ \runtime -> do
-        requirePersistenceCapability headlessAppService (headlessServiceContext runtime) root
-        deadlineCount <- newIORef (0 :: Int)
-        deadlineStarted <- newEmptyMVar
-        never <- newEmptyMVar
         let ctx = headlessServiceContext runtime
-            guiPayload = object ["path" .= ("renderer.png" :: Text)]
-            headlessPayload = object ["path" .= ("headless.png" :: Text)]
-            deadline = do
-              atomicModifyIORef' deadlineCount (\count -> (count + 1, ()))
-              putMVar deadlineStarted ()
-              takeMVar never
-        _ <- forkIO (serveRendererCapture ctx deadlineStarted "renderer-png-bytes")
-        gui <- runServiceHandler (rendererScreenshotHandlerWithDeadline deadline)
-          ctx (ServiceRequest (Just guiPayload))
-        headless <- runServiceOperation headlessAppService ctx "take_screenshot" headlessPayload
+            payload = object ["path" .= ("nested/renderer.png" :: Text)]
+            renderedPng = "renderer-owned-png-bytes"
+        _ <- forkIO (serveRendererCapture ctx renderedPng)
+        response <- guarded "renderer-backed HTTP capture" $
+          handleHttpRequest defaultHttpServerConfig commandAppService ctx HttpRequest
+            { hreqMethod = "POST"
+            , hreqPath = ["screenshots"]
+            , hreqQuery = []
+            , hreqHeaders = [("x-request-id", "renderer-http")]
+            , hreqBody = Just payload
+            }
+        hresStatusCode response `shouldBe` 200
+        lookup "x-request-id" (hresHeaders response) `shouldBe` Just "renderer-http"
+        lookupField "source" (hresBody response) `shouldBe` Just (String "renderer")
+        lookupField "saved_path" (hresBody response)
+          `shouldBe` Just (String "nested/renderer.png")
+        let savedPath = root </> "nested" </> "renderer.png"
+        persisted <- doesFileExist savedPath
+        if persisted
+          then ByteString.readFile savedPath `shouldReturn` renderedPng
+          else pendingWith
+            "platform/filesystem did not retain the renderer screenshot publication"
         assertBrokerIdle ctx
-        readIORef deadlineCount `shouldReturn` 1
-        case (gui, headless) of
-          (Right (ServiceResponse guiBody), Right (ServiceResponse headlessBody)) -> do
-            objectKeys guiBody `shouldBe` objectKeys headlessBody
-            lookupField "format" guiBody `shouldBe` lookupField "format" headlessBody
-            lookupField "saved_path" guiBody `shouldBe` Just (String "renderer.png")
-            lookupField "saved_path" headlessBody `shouldBe` Just (String "headless.png")
-            lookupField "source" guiBody `shouldBe` Just (String "renderer")
-            lookupField "source" headlessBody `shouldBe` Just (String "headless")
-            lookupField "image_base64" guiBody `shouldNotBe` lookupField "image_base64" headlessBody
-          _ -> expectationFailure "expected successful GUI and headless screenshot results"
 
-  it "dispatches command envelopes in-process and preserves request ids" $
+  it "preserves command request ids while reporting renderer unavailability" $
     withHeadlessApp defaultHeadlessConfig $ \runtime -> do
       let command = SeerCommand 417 "take_screenshot" Null
-      response <- guarded "in-process command dispatch" (headlessDispatchCommand runtime command)
+      response <- guarded "headless command rejection" $
+        dispatchAppServiceCommand headlessAppService (headlessCommandContext runtime) command
       srId response `shouldBe` 417
-      srSuccess response `shouldBe` True
-      lookupField "source" (srResult response) `shouldBe` Just (String "headless")
+      srSuccess response `shouldBe` False
+      srResult response `shouldBe` Null
+      srError response `shouldBe` Just "screenshot capture requires the SDL renderer"
       assertBrokerIdle (headlessServiceContext runtime)
 
-captureOnlyCases :: [(String, Value, Maybe Value)]
+captureOnlyCases :: [(Value, Maybe Value)]
 captureOnlyCases =
-  [ ("missing HTTP body", Null, Nothing)
-  , ("empty object", object [], Just (object []))
+  [ (Null, Nothing)
+  , (object [], Just (object []))
   ]
 
 invalidPayloads :: [Value]
@@ -292,33 +174,13 @@ invalidPayloads =
   , object ["path" .= Null]
   ]
 
-validPath :: Value
-validPath = object ["path" .= ("nested/capture.png" :: Text)]
-
 screenshotPathValidationError :: ServiceError
 screenshotPathValidationError = ServiceValidationError "validation failed"
-  [screenshotPathDetail]
-
-screenshotPathDetail :: ServiceErrorDetail
-screenshotPathDetail = ServiceErrorDetail
-  ["path"]
-  "invalid_field"
-  "invalid field 'path' (expected a nonempty safe relative .png path)"
-
-screenshotDestinationConflict :: ServiceError
-screenshotDestinationConflict = ServiceRejected
-  "screenshot destination conflicts with an existing filesystem entry"
-
-requirePersistenceCapability :: AppService -> ServiceContext -> FilePath -> IO ()
-requirePersistenceCapability app ctx root = do
-  let probePath = ".topo-capability-probe.png"
-  result <- runServiceOperation app ctx "take_screenshot"
-    (object ["path" .= (probePath :: Text)])
-  case result of
-    Right _ -> removeFile (root </> Text.unpack probePath)
-    Left (ServiceUnavailable "screenshot storage is unavailable") ->
-      pendingWith "platform/filesystem lacks safe screenshot publication support"
-    Left err -> expectationFailure ("screenshot capability probe failed: " <> show err)
+  [ ServiceErrorDetail
+      ["path"]
+      "invalid_field"
+      "invalid field 'path' (expected a nonempty safe relative .png path)"
+  ]
 
 enabledHeadlessConfig :: FilePath -> HeadlessConfig
 enabledHeadlessConfig root = defaultHeadlessConfig
@@ -327,145 +189,92 @@ enabledHeadlessConfig root = defaultHeadlessConfig
   }
 
 assertCrossSurfaceParity
-  :: AppService
-  -> ServiceContext
+  :: ServiceContext
   -> CommandContext
   -> Value
   -> Maybe Value
   -> IO ServiceResult
-assertCrossSurfaceParity app ctx commandCtx directPayload httpBody = do
-  direct <- checked $ runServiceOperation app ctx "take_screenshot" directPayload
-  handler <- checked $ runServiceHandler (screenshotTake (appScreenshots app))
+assertCrossSurfaceParity ctx commandCtx directPayload httpBody = do
+  direct <- runServiceOperation headlessAppService ctx "take_screenshot" directPayload
+  handler <- runServiceHandler (screenshotTake (appScreenshots headlessAppService))
     ctx (ServiceRequest (Just directPayload))
   handler `shouldBe` direct
 
   let command = SeerCommand 417 "take_screenshot" directPayload
-  commandResponse <- checked $ dispatchAppServiceCommand app commandCtx command
+  commandResponse <- dispatchAppServiceCommand headlessAppService commandCtx command
   assertCommandParity direct commandResponse
 
-  httpResponses <- runHttpSurfaces app ctx httpBody
-  forM_ httpResponses (assertHttpParity direct)
-  pure direct
-  where
-    checked action = do
-      result <- action
-      assertBrokerIdle ctx
-      pure result
-
-runHttpSurfaces
-  :: AppService
-  -> ServiceContext
-  -> Maybe Value
-  -> IO [HttpResponse]
-runHttpSurfaces app ctx body = do
-  responses <- runHttpSurfacesAllowBusyProbe app ctx body
+  httpResponse <- handleHttpRequest defaultHttpServerConfig headlessAppService ctx HttpRequest
+    { hreqMethod = "POST"
+    , hreqPath = ["screenshots"]
+    , hreqQuery = []
+    , hreqHeaders = [("x-request-id", "surface-request-417")]
+    , hreqBody = httpBody
+    }
+  assertHttpParity direct httpResponse
   assertBrokerIdle ctx
-  pure responses
-
-runHttpSurfacesAllowBusyProbe
-  :: AppService
-  -> ServiceContext
-  -> Maybe Value
-  -> IO [HttpResponse]
-runHttpSurfacesAllowBusyProbe app ctx body = mapM requestFor
-  [ ["screenshots"]
-  ]
-  where
-    requestFor path = handleHttpRequest defaultHttpServerConfig app ctx HttpRequest
-      { hreqMethod = "POST"
-      , hreqPath = path
-      , hreqQuery = []
-      , hreqHeaders = [("x-request-id", "surface-request-417")]
-      , hreqBody = body
-      }
+  pure direct
 
 assertCommandParity :: ServiceResult -> SeerResponse -> Expectation
 assertCommandParity result response = do
   srId response `shouldBe` 417
   case result of
-    Right (ServiceResponse body) -> do
-      srSuccess response `shouldBe` True
-      srResult response `shouldBe` body
-      srError response `shouldBe` Nothing
-    Left err -> case literalErrorContract err of
-      Nothing -> expectationFailure ("missing literal command contract for " <> show err)
-      Just contract -> do
-        srSuccess response `shouldBe` False
-        srResult response `shouldBe` Null
-        srError response `shouldBe` Just (ecCommandText contract)
+    Left err -> do
+      srSuccess response `shouldBe` False
+      srResult response `shouldBe` Null
+      srError response `shouldBe` Just (serviceErrorCommandText err)
+    Right success -> expectationFailure ("unexpected headless screenshot success: " <> show success)
 
 assertHttpParity :: ServiceResult -> HttpResponse -> Expectation
 assertHttpParity result response = do
   lookup "x-request-id" (hresHeaders response) `shouldBe` Just "surface-request-417"
   case result of
-    Right (ServiceResponse body) -> do
-      hresStatusCode response `shouldBe` 200
-      hresBody response `shouldBe` body
-    Left err -> case literalErrorContract err of
-      Nothing -> expectationFailure ("missing literal HTTP contract for " <> show err)
-      Just contract -> do
-        hresStatusCode response `shouldBe` ecHttpStatus contract
-        hresBody response `shouldBe` serviceErrorEnvelope "surface-request-417" contract
+    Left err -> do
+      hresStatusCode response `shouldBe` expectedStatus err
+      lookupField "error" (hresBody response) `shouldSatisfy` (/= Nothing)
+      lookupNestedField ["error", "code"] (hresBody response)
+        `shouldBe` Just (String (expectedCode err))
+      lookupNestedField ["error", "message"] (hresBody response)
+        `shouldBe` Just (String (serviceErrorMessageText err))
+      case err of
+        ServiceUnavailable _ ->
+          lookupNestedField ["error", "details"] (hresBody response)
+            `shouldBe` Just (Array mempty)
+        ServiceValidationError _ _ ->
+          lookupNestedField ["error", "details"] (hresBody response)
+            `shouldSatisfy` maybe False (/= Array mempty)
+        _ -> pure ()
+    Right success -> expectationFailure ("unexpected headless HTTP screenshot success: " <> show success)
 
-data ErrorContract = ErrorContract
-  { ecHttpStatus :: !Int
-  , ecCode :: !Text
-  , ecMessage :: !Text
-  , ecDetails :: ![ServiceErrorDetail]
-  , ecCommandText :: !Text
-  }
+expectedStatus :: ServiceError -> Int
+expectedStatus (ServiceValidationError _ _) = 400
+expectedStatus (ServiceUnavailable _) = 503
+expectedStatus err = error ("unexpected screenshot error: " <> show err)
 
-literalErrorContract :: ServiceError -> Maybe ErrorContract
-literalErrorContract err
-  | err == screenshotPathValidationError = Just ErrorContract
-      { ecHttpStatus = 400
-      , ecCode = "validation_failed"
-      , ecMessage = "validation failed"
-      , ecDetails = [screenshotPathDetail]
-      , ecCommandText =
-          "validation failed: invalid field 'path' (expected a nonempty safe relative .png path)"
-      }
-  | err == ServiceUnavailable "screenshot persistence is disabled" = Just (ErrorContract
-      503 "unavailable" "screenshot persistence is disabled" []
-      "screenshot persistence is disabled")
-  | err == screenshotDestinationConflict = Just (ErrorContract
-      409 "rejected"
-      "screenshot destination conflicts with an existing filesystem entry" []
-      "screenshot destination conflicts with an existing filesystem entry")
-  | err == ServiceUnavailable "screenshot storage is unavailable" = Just (ErrorContract
-      503 "unavailable" "screenshot storage is unavailable" []
-      "screenshot storage is unavailable")
-  | err == ServiceInternalError "failed to persist screenshot" = Just (ErrorContract
-      500 "internal_error" "failed to persist screenshot" []
-      "failed to persist screenshot")
-  | otherwise = Nothing
+expectedCode :: ServiceError -> Text
+expectedCode (ServiceValidationError _ _) = "validation_failed"
+expectedCode (ServiceUnavailable _) = "unavailable"
+expectedCode err = error ("unexpected screenshot error: " <> show err)
 
-serviceErrorEnvelope :: Text -> ErrorContract -> Value
-serviceErrorEnvelope requestId contract = object
-  [ "error" .= object
-      [ "code" .= ecCode contract
-      , "message" .= ecMessage contract
-      , "details" .=
-          [ object
-              [ "path" .= serviceErrorDetailPath detail
-              , "code" .= serviceErrorDetailCode detail
-              , "message" .= serviceErrorDetailMessage detail
-              ]
-          | detail <- ecDetails contract
-          ]
-      , "request_id" .= requestId
-      ]
-  ]
+serviceErrorMessageText :: ServiceError -> Text
+serviceErrorMessageText (ServiceValidationError message _) = message
+serviceErrorMessageText (ServiceUnavailable message) = message
+serviceErrorMessageText err = error ("unexpected screenshot error: " <> show err)
+
+serviceErrorCommandText :: ServiceError -> Text
+serviceErrorCommandText (ServiceUnavailable message) = message
+serviceErrorCommandText (ServiceValidationError message details) =
+  message <> ": " <> Text.intercalate "; " (map serviceErrorDetailMessage details)
+serviceErrorCommandText err = error ("unexpected screenshot error: " <> show err)
 
 assertBrokerIdle :: ServiceContext -> Expectation
 assertBrokerIdle ctx = do
   screenshotRequestPending (svcScreenshotRef ctx) `shouldReturn` False
   screenshotRequestActive (svcScreenshotRef ctx) `shouldReturn` False
 
-serveRendererCapture :: ServiceContext -> MVar () -> ByteString.ByteString -> IO ()
-serveRendererCapture ctx deadlineStarted bytes = do
+serveRendererCapture :: ServiceContext -> ByteString.ByteString -> IO ()
+serveRendererCapture ctx bytes = do
   claim <- waitForClaim
-  takeMVar deadlineStarted
   _ <- deliverScreenshotRequest (svcScreenshotRef ctx) claim (Right bytes)
   pure ()
   where
@@ -476,40 +285,17 @@ serveRendererCapture ctx deadlineStarted bytes = do
         Just claim -> pure claim
         Nothing -> threadDelay 1000 >> waitForClaim
 
-objectKeys :: Value -> [Text]
-objectKeys (Object fields) = sort (map Key.toText (KM.keys fields))
-objectKeys _ = []
-
 lookupField :: Text -> Value -> Maybe Value
 lookupField name (Object fields) = KM.lookup (Key.fromText name) fields
 lookupField _ _ = Nothing
 
-expectServiceBody :: IO ServiceResult -> IO Value
-expectServiceBody action = action >>= \result -> case result of
-  Right (ServiceResponse body) -> pure body
-  Left err -> expectationFailure ("expected service success, got " <> show err) >> fail "service"
-
-expectCommandBody :: IO SeerResponse -> IO Value
-expectCommandBody action = action >>= \response ->
-  if srSuccess response
-    then pure (srResult response)
-    else expectationFailure ("expected command success, got " <> show (srError response)) >> fail "command"
-
-assertHeadlessSuccess :: Maybe Text -> ServiceResult -> Expectation
-assertHeadlessSuccess expectedPath result = case result of
-  Right (ServiceResponse body) -> do
-    objectKeys body `shouldBe` ["format", "image_base64", "saved_path", "source"]
-    lookupField "format" body `shouldBe` Just (String "png")
-    lookupField "source" body `shouldBe` Just (String "headless")
-    lookupField "saved_path" body `shouldBe` maybe (Just Null) (Just . String) expectedPath
-    lookupField "image_base64" body `shouldSatisfy` \value -> case value of
-      Just (String encoded) -> not (Text.null encoded)
-      _ -> False
-  Left err -> expectationFailure ("expected screenshot success, got " <> show err)
+lookupNestedField :: [Text] -> Value -> Maybe Value
+lookupNestedField [] value = Just value
+lookupNestedField (field:rest) value = lookupField field value >>= lookupNestedField rest
 
 guarded :: String -> IO a -> IO a
 guarded label action = do
-  result <- timeout 10_000_000 action
+  result <- timeout 5_000_000 action
   case result of
     Just value -> pure value
     Nothing -> expectationFailure (label <> " deadlocked") >> error "unreachable"

@@ -2017,7 +2017,10 @@ screenshotTakeResponseSchema = objectSchema "ScreenshotTakeResponse"
   [ "image_base64", "format", "source", "saved_path" ]
   [ ("image_base64", stringSchema)
   , ("format", enumStringSchema ["png"])
-  , ("source", enumStringSchema ["renderer", "headless"])
+  , ( "source"
+    , describedSchema "Successful captures are produced by the SDL renderer."
+        (enumStringSchema ["renderer"])
+    )
   , ("saved_path", nullableSchema stringSchema)
   ]
 

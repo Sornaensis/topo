@@ -468,7 +468,7 @@ spec = describe "AppService surface" $ do
     map logEntrySummaryMessage (logGetResponseEntries logResponseContract) `shouldBe` ["queued"]
     screenshotTakeSavePath screenshotRequestContract `shouldBe` Just "capture.png"
     screenshotTakeFormat screenshotResponseContract `shouldBe` "png"
-    screenshotTakeSource screenshotResponseContract `shouldBe` ScreenshotSourceHeadless
+    screenshotTakeSource screenshotResponseContract `shouldBe` ScreenshotSourceRenderer
     worldGenerationInProgress worldGenerationStatusContract `shouldBe` True
     asyncStatusCurrent (worldGenerationAsyncStatus worldGenerationStatusContract) `shouldBe` Just 3
     simulationTickCount simulationStateContract `shouldBe` 9
@@ -723,7 +723,7 @@ screenshotResponseContract = ScreenshotTakeResponse
   { screenshotTakeImageBase64 = "iVBORw0KGgo="
   , screenshotTakeFormat = "png"
   , screenshotTakeSavedPath = Just "capture.png"
-  , screenshotTakeSource = ScreenshotSourceHeadless
+  , screenshotTakeSource = ScreenshotSourceRenderer
   }
 
 worldGenerationStatusContract :: WorldGenerationStatusResponse

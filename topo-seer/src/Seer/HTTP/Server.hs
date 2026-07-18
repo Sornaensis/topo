@@ -1046,7 +1046,9 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
         , optionalQueryWithSchema "offset" "Entries to skip after filtering." queryIntegerSchema
         ]
   , withSchemas screenshotTakeRequestSchema screenshotTakeResponseSchema $
-      service "POST" ["screenshots"] "screenshots.take" "screenshots" "take_screenshot" "Capture a screenshot." OptionalJsonRequestBody
+      service "POST" ["screenshots"] "screenshots.take" "screenshots" "take_screenshot"
+        "Capture via the SDL renderer; headless runtimes return 503 unavailable."
+        OptionalJsonRequestBody
 
   , service "POST" ["ui", "seed"] "ui.seed.set" "ui" "set_seed" "Set seed." RequiredJsonRequestBody
   , service "POST" ["ui", "view-mode"] "ui.viewMode.set" "ui" "set_view_mode" "Set view mode." RequiredJsonRequestBody

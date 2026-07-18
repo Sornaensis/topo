@@ -14,8 +14,7 @@ module Seer.Headless
   , defaultHeadlessConfig
   , HeadlessApp
   , headlessAppService
-  , headlessAppServiceWithScreenshotWriter
-  , deterministicHeadlessPng
+  , headlessScreenshotRendererRequiredError
   , headlessCommandContext
   , headlessServiceContext
   , headlessDispatchCommand
@@ -107,9 +106,8 @@ import Seer.OverlayInspector.Executor
   )
 import Seer.Service.Context (ServiceContext(..), unavailableNestedServiceRunner)
 import Seer.Service.Headless
-  ( deterministicHeadlessPng
-  , headlessAppService
-  , headlessAppServiceWithScreenshotWriter
+  ( headlessAppService
+  , headlessScreenshotRendererRequiredError
   )
 import Seer.Service.Events (ServiceEventBus, newDefaultServiceEventBus)
 import Seer.Editor.History (EditHistory, emptyHistory)

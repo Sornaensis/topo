@@ -166,11 +166,9 @@ import System.Directory
   , getTemporaryDirectory
   , listDirectory
   , removeDirectoryRecursive
-  , removeFile
   )
 import System.Environment (lookupEnv, setEnv, unsetEnv, withArgs)
 import System.FilePath ((</>), takeDirectory, takeExtension)
-import System.IO.Error (isDoesNotExistError)
 import Topo (WorldConfig(..), chunkIdFromCoord, emptyTerrainChunk)
 import Topo.Overlay (emptyOverlayStore, insertOverlay, OverlayProvenance(..))
 import Topo.Plugin.RPC.DataService (DataResourceErrorCode(..), dataResourceErrorCodeText)
@@ -239,11 +237,12 @@ spec = describe "Seer.HTTP.Server" $ do
       pluginsExposeSurfaceKeys (hresBody plugins) `shouldBe` True
 
       screenshot <- request app (mkRequest "POST" ["screenshots"])
-      hresStatusCode screenshot `shouldBe` 200
-      lookupText "format" (hresBody screenshot) `shouldBe` Just "png"
-      lookupText "source" (hresBody screenshot) `shouldBe` Just "headless"
-      lookupNestedValue ["saved_path"] (hresBody screenshot) `shouldBe` Just Null
-      lookupText "image_base64" (hresBody screenshot) `shouldSatisfy` maybe False (not . Text.null)
+      hresStatusCode screenshot `shouldBe` 503
+      lookupNestedText ["error", "code"] (hresBody screenshot)
+        `shouldBe` Just "unavailable"
+      lookupNestedText ["error", "message"] (hresBody screenshot)
+        `shouldBe` Just "screenshot capture requires the SDL renderer"
+      objectHasKey "image_base64" (hresBody screenshot) `shouldBe` False
 
   it "lists and loads all built-in presets through HTTP" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -283,40 +282,24 @@ spec = describe "Seer.HTTP.Server" $ do
       hresStatusCode response `shouldBe` 503
       lookupNestedText ["error", "code"] (hresBody response)
         `shouldBe` Just "unavailable"
+      lookupNestedText ["error", "message"] (hresBody response)
+        `shouldBe` Just "screenshot capture requires the SDL renderer"
 
-  it "persists normalized screenshot paths through POST /screenshots" $
+  it "does not persist screenshot paths in headless mode" $
     withScreenshotHttpRoot $ \root -> do
       let runtimeConfig = (hcRuntimeConfig defaultHeadlessConfig)
             { cfgScreenshotSaveDirectory = Just root }
           headlessConfig = defaultHeadlessConfig
             { hcRuntimeConfig = runtimeConfig }
       withHeadlessApp headlessConfig $ \app -> do
-        requireScreenshotPersistence app root
-        captureOnly <- request app (mkRequest "POST" ["screenshots"])
-        hresStatusCode captureOnly `shouldBe` 200
-        lookupNestedValue ["saved_path"] (hresBody captureOnly) `shouldBe` Just Null
-        listDirectory root `shouldReturn` []
-
         let body = object ["path" .= ("nested/capture.png" :: Text)]
-        friendly <- request app (mkRequest "POST" ["screenshots"])
+        response <- request app (mkRequest "POST" ["screenshots"])
           { hreqBody = Just body }
-        hresStatusCode friendly `shouldBe` 200
-        map (`objectHasKey` hresBody friendly)
-          ["image_base64", "format", "source", "saved_path"]
-          `shouldBe` replicate 4 True
-        lookupText "format" (hresBody friendly) `shouldBe` Just "png"
-        lookupText "source" (hresBody friendly) `shouldBe` Just "headless"
-        lookupText "saved_path" (hresBody friendly)
-          `shouldBe` Just "nested/capture.png"
-        saved <- BS.readFile (root </> "nested" </> "capture.png")
-        saved `shouldSatisfy` not . BS.null
-
-        createDirectory (root </> "conflict.png")
-        conflict <- request app (mkRequest "POST" ["screenshots"])
-          { hreqBody = Just (object ["path" .= ("conflict.png" :: Text)]) }
-        hresStatusCode conflict `shouldBe` 409
-        lookupNestedText ["error", "code"] (hresBody conflict)
-          `shouldBe` Just "rejected"
+        hresStatusCode response `shouldBe` 503
+        lookupNestedText ["error", "message"] (hresBody response)
+          `shouldBe` Just "screenshot capture requires the SDL renderer"
+        objectHasKey "image_base64" (hresBody response) `shouldBe` False
+        listDirectory root `shouldReturn` []
 
   it "serves layered view state and legacy view aliases in headless mode" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -378,7 +361,7 @@ spec = describe "Seer.HTTP.Server" $ do
       lookupNestedText ["view", "base_mode"] (hresBody clear) `shouldBe` Just "elevation"
       lookupNestedValue ["view", "overlay_mode"] (hresBody clear) `shouldBe` Just Null
 
-  it "keeps headless screenshot responses stable while a layered view is active" $
+  it "keeps headless renderer errors side-effect free while a layered view is active" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       setView <- request app (mkRequest "POST" ["ui", "view"])
         { hreqBody = Just (object
@@ -392,13 +375,10 @@ spec = describe "Seer.HTTP.Server" $ do
       before <- request app (mkRequest "GET" ["ui", "state"])
       screenshot <- request app (mkRequest "POST" ["screenshots"])
       after <- request app (mkRequest "GET" ["ui", "state"])
-      hresStatusCode screenshot `shouldBe` 200
-      map (`objectHasKey` hresBody screenshot) ["image_base64", "format", "source"]
-        `shouldBe` replicate 3 True
-      objectHasKey "view" (hresBody screenshot) `shouldBe` False
-      lookupText "format" (hresBody screenshot) `shouldBe` Just "png"
-      lookupText "source" (hresBody screenshot) `shouldBe` Just "headless"
-      lookupText "image_base64" (hresBody screenshot) `shouldSatisfy` maybe False (not . Text.null)
+      hresStatusCode screenshot `shouldBe` 503
+      lookupNestedText ["error", "message"] (hresBody screenshot)
+        `shouldBe` Just "screenshot capture requires the SDL renderer"
+      objectHasKey "image_base64" (hresBody screenshot) `shouldBe` False
       lookupValue "view" (hresBody after) `shouldBe` lookupValue "view" (hresBody before)
 
   describe "public headless widget automation parity" $ do
@@ -1355,11 +1335,11 @@ spec = describe "Seer.HTTP.Server" $ do
               )
             , ( "optional-empty"
               , mkRequest "POST" ["screenshots"]
-              , ExpectBodyPolicySuccess
+              , ExpectBodyPolicyServiceError 503 "unavailable"
               )
             , ( "optional-object"
               , (mkRequest "POST" ["screenshots"]) { hreqBody = Just (object []) }
-              , ExpectBodyPolicySuccess
+              , ExpectBodyPolicyServiceError 503 "unavailable"
               )
             , ( "optional-non-object"
               , (mkRequest "POST" ["screenshots"]) { hreqBody = Just (String "not-object") }
@@ -1423,14 +1403,15 @@ spec = describe "Seer.HTTP.Server" $ do
         assertHttpServiceSuccess directSeed seedRsp
 
         directNoArg <- runServiceOperation headlessAppService ctx "take_screenshot" Null
-        screenshotNoArg <- request app (mkRequest "POST" ["screenshots"])
-        assertHttpServiceSuccess directNoArg screenshotNoArg
+        screenshotNoArg <- request app (withRequestIdHeader "parity-screenshot-null" $
+          mkRequest "POST" ["screenshots"])
+        assertHttpServiceError "parity-screenshot-null" directNoArg screenshotNoArg
 
         let screenshotBody = object []
         directObject <- runServiceOperation headlessAppService ctx "take_screenshot" screenshotBody
-        screenshotObject <- request app (mkRequest "POST" ["screenshots"])
-          { hreqBody = Just screenshotBody }
-        assertHttpServiceSuccess directObject screenshotObject
+        screenshotObject <- request app (withRequestIdHeader "parity-screenshot-object" $
+          (mkRequest "POST" ["screenshots"]) { hreqBody = Just screenshotBody })
+        assertHttpServiceError "parity-screenshot-object" directObject screenshotObject
 
     it "keeps viewport commands and friendly routes on identical responses and state" $ do
       forM_
@@ -1969,7 +1950,9 @@ spec = describe "Seer.HTTP.Server" $ do
     componentPropertyNullable doc "ScreenshotTakeResponse" "saved_path"
       `shouldBe` Just True
     componentPropertyEnum doc "ScreenshotTakeResponse" "source"
-      `shouldBe` Just ["renderer", "headless"]
+      `shouldBe` Just ["renderer"]
+    componentPropertyDescription doc "ScreenshotTakeResponse" "source"
+      `shouldSatisfy` maybe False (Text.isInfixOf "SDL renderer")
     componentPropertyDescription doc "ScreenshotTakeRequest" "path"
       `shouldSatisfy` maybe False (Text.isInfixOf "sandbox-relative")
     componentPropertyNames doc "WidgetClickRequest"
@@ -2677,26 +2660,6 @@ pluginParamValue pluginName paramName body = do
 request :: HeadlessApp -> HttpRequest -> IO HttpResponse
 request app req = handleHttpRequest defaultHttpServerConfig headlessAppService (headlessServiceContext app) req
 
-requireScreenshotPersistence :: HeadlessApp -> FilePath -> IO ()
-requireScreenshotPersistence app root = do
-  let probeName = ".topo-capability-probe.png"
-  response <- request app (mkRequest "POST" ["screenshots"])
-    { hreqBody = Just (object ["path" .= Text.pack probeName]) }
-  case hresStatusCode response of
-    200 -> do
-      let probePath = root </> probeName
-      persisted <- doesFileExist probePath
-      if persisted
-        then removeFile probePath `catch` \err ->
-          if isDoesNotExistError err then pure () else throwIO err
-        else pendingWith "platform/filesystem did not retain the screenshot capability probe"
-    503
-      | lookupNestedText ["error", "message"] (hresBody response)
-          == Just "screenshot storage is unavailable" ->
-          pendingWith "platform/filesystem lacks safe screenshot publication support"
-    status -> expectationFailure
-      ("screenshot capability probe returned HTTP " <> show status)
-
 withScreenshotHttpRoot :: (FilePath -> IO a) -> IO a
 withScreenshotHttpRoot action = do
   temporary <- getTemporaryDirectory
@@ -2858,6 +2821,7 @@ assertQueryParserCase app appService (caseName, req, expected) = do
 
 data BodyPolicyExpectation
   = ExpectBodyPolicySuccess
+  | ExpectBodyPolicyServiceError Int Text
   | ExpectBodyPolicyError Int Text Text
   deriving (Eq, Show)
 
@@ -2895,6 +2859,10 @@ assertBodyPolicyResponse requestId expected response = do
   case expected of
     ExpectBodyPolicySuccess ->
       hresStatusCode response `shouldBe` 200
+    ExpectBodyPolicyServiceError expectedStatus expectedCode -> do
+      hresStatusCode response `shouldBe` expectedStatus
+      lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just expectedCode
+      lookupNestedText ["error", "request_id"] (hresBody response) `shouldBe` Just requestId
     ExpectBodyPolicyError expectedStatus expectedCode expectedDetailCode -> do
       hresStatusCode response `shouldBe` expectedStatus
       lookupNestedText ["error", "code"] (hresBody response) `shouldBe` Just expectedCode
@@ -4159,7 +4127,8 @@ assertWaiRequestBodySizeLimits :: Manager -> IO ()
 assertWaiRequestBodySizeLimits manager = do
   let underRequestId = "wai-body-limit-under"
   under <- waiJsonRequest manager underRequestId "POST" "http://127.0.0.1:7378/screenshots" "{}" []
-  assertBodyPolicyResponse underRequestId ExpectBodyPolicySuccess under
+  assertBodyPolicyResponse underRequestId
+    (ExpectBodyPolicyServiceError 503 "unavailable") under
 
   let exactRequestId = "wai-body-limit-exact"
   exact <- waiJsonRequest manager exactRequestId "POST" "http://127.0.0.1:7378/ui/seed" "{\"seed\":1}" []
@@ -4235,7 +4204,7 @@ assertWaiRouteBodyPolicyMatrix manager = do
           , "POST"
           , "http://127.0.0.1:7376/screenshots"
           , ""
-          , ExpectBodyPolicySuccess
+          , ExpectBodyPolicyServiceError 503 "unavailable"
           )
         , ( "optional-malformed"
           , "POST"
@@ -4247,7 +4216,7 @@ assertWaiRouteBodyPolicyMatrix manager = do
           , "POST"
           , "http://127.0.0.1:7376/screenshots"
           , "{}"
-          , ExpectBodyPolicySuccess
+          , ExpectBodyPolicyServiceError 503 "unavailable"
           )
         , ( "optional-non-object"
           , "POST"
@@ -4332,10 +4301,12 @@ assertWaiJsonContentTypePolicy manager = do
 
   optionalWithParams <- waiRawRequest manager "wai-content-type-optional-params" "POST" optionalUrl "{}"
     [("Content-Type", "Application/JSON; Charset=utf-8")]
-  assertBodyPolicyResponse "wai-content-type-optional-params" ExpectBodyPolicySuccess optionalWithParams
+  assertBodyPolicyResponse "wai-content-type-optional-params"
+    (ExpectBodyPolicyServiceError 503 "unavailable") optionalWithParams
 
   optionalEmpty <- waiRawRequest manager "wai-content-type-optional-empty" "POST" optionalUrl "" []
-  assertBodyPolicyResponse "wai-content-type-optional-empty" ExpectBodyPolicySuccess optionalEmpty
+  assertBodyPolicyResponse "wai-content-type-optional-empty"
+    (ExpectBodyPolicyServiceError 503 "unavailable") optionalEmpty
 
   requiredMissing <- waiRawRequest manager "wai-content-type-required-missing" "POST" requiredUrl "{\"seed\":987}" []
   assertUnsupportedMediaTypeResponse "wai-content-type-required-missing" requiredMissing
