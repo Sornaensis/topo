@@ -34,7 +34,7 @@ import Seer.Input.ViewControls
   , pickTerrainHex
   , zoomStepCount
   )
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 
 -- --------------------------------------------------------------------------
 -- Handlers

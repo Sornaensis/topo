@@ -43,7 +43,7 @@ import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..), Falloff(..))
 import Topo.Biome.Name (biomeDisplayName)
-import Topo.Command.Types (SeerResponse, errResponse, okResponse)
+import Seer.Command.Types (SeerResponse, errResponse, okResponse)
 import Topo.Hex (axialToCube, cubeToAxial, hexDistance)
 import Topo.Math (clamp01, lerp)
 import Topo.Types

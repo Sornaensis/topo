@@ -14,7 +14,7 @@ import Data.Text (Text)
 
 import Actor.Log (LogLevel(..), LogEntry(..), LogSnapshot(..), LogSnapshotRef, readLogSnapshotRef)
 import Seer.Command.Context (CommandContext(..))
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 
 -- | Handle @get_logs@ — return recent log entries.
 --

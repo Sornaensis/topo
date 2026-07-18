@@ -88,7 +88,7 @@ import Seer.Draw.Overlay
   )
 import Topo.Biome.Name (biomeDisplayName)
 import Topo.Calendar (WorldTime(..))
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Plugin.DataResource (DataOperations(..), DataPagination(..), DataResourceSchema(..))
 import Topo.Grid.HexDirection (traceIndexInDirection)
 import Topo.Hex (HexDirection(..))

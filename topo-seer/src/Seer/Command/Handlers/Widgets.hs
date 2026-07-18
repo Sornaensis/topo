@@ -132,7 +132,7 @@ import Seer.Config.SliderUi (sliderValueForId)
 import Seer.Service.Types (ServiceError(..), ServiceResponse(..), ServiceResult)
 import Seer.World.Persist (listWorlds)
 import Seer.World.Persist.Types (WorldSaveManifest(..))
-import Topo.Command.Types (SeerResponse(..), okResponse, errResponse)
+import Seer.Command.Types (SeerResponse(..), okResponse, errResponse)
 import Topo.Pipeline.Stage (parseStageId, stageCanonicalName, allBuiltinStageIds)
 import qualified Seer.DataBrowser.AppService as DataBrowser
 import Seer.DataBrowser.Model

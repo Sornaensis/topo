@@ -62,7 +62,7 @@ import Topo
   , setClimateChunk
   , setTerrainChunk
   )
-import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
+import Seer.Command.Types (SeerCommand(..), SeerResponse(..))
 import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), insertOverlay, lookupOverlay)
 import Topo.Overlay.Schema
   ( OverlayDeps(..)

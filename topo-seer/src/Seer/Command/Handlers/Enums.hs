@@ -16,7 +16,7 @@ import Actor.UI.State (ConfigTab(..), allBuiltinViewModes, viewModeToText)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Config.SliderRegistry (SliderTab(..))
 import Topo.Biome.Name (biomeDisplayName)
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Types
   ( BiomeId
   , TerrainForm

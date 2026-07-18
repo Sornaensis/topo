@@ -21,7 +21,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 
-import Topo.Command.Types (SeerCommand(..), SeerResponse(..), errResponse, okResponse)
+import Seer.Command.Types (SeerCommand(..), SeerResponse(..), errResponse, okResponse)
 
 import Actor.Log (getLogSnapshot)
 import Actor.SnapshotReceiver (publishChangedUiAndLog)

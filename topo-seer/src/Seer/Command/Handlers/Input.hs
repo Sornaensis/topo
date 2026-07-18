@@ -62,7 +62,7 @@ import Seer.Input.Intent
   )
 import Seer.OverlayInspector.Model (overlayInspectorModelValue)
 import Seer.Service.Types (ServiceError(..), ServiceResult)
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 import UI.Layout (layoutForSeed)
 
 -- --------------------------------------------------------------------------

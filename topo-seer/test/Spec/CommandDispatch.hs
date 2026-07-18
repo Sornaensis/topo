@@ -208,7 +208,7 @@ import Topo
   , weatherNormalsOverlaySchema
   )
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
-import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
+import Seer.Command.Types (SeerCommand(..), SeerResponse(..))
 import Topo.Overlay (Overlay(..), OverlayData(..), OverlayProvenance(..), emptyOverlayStore, insertOverlay)
 import Topo.Pipeline.Stage (StageId(..))
 import Topo.Plugin.RPC.Manifest

@@ -72,7 +72,7 @@ import Actor.SnapshotReceiver
   )
 import Actor.UI.Setters (setUiSeed, setUiSeedInput, setUiViewMode, setUiViewSelection, setUiConfigScroll, setUiConfigTab, setUiContextHex, setUiHexTooltipPinned, setUiOverlayFields)
 import Seer.Command.Context (CommandContext(..))
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Overlay (Overlay(..), lookupOverlay, overlayNames)
 import Topo.Overlay.Schema (OverlayFieldDef(..), OverlayFieldType(..), OverlaySchema(..))
 

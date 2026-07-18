@@ -10,6 +10,16 @@ data-files:
   - test/golden/openapi-routes.txt
   - test/golden/view-mode-legends.txt
 
+internal-libraries:
+  topo-seer-command-internal:
+    source-dirs: internal
+    exposed-modules:
+      - Seer.Command.Types
+    dependencies:
+      - aeson
+      - base >=4.18 && <5
+      - text
+
 library:
   source-dirs: src
   c-sources:
@@ -228,6 +238,7 @@ library:
     - linear
     - vector
     - topo
+    - topo-seer-command-internal
     - hyperspace
     - http-types
     - text
@@ -315,6 +326,7 @@ tests:
       - time
       - topo
       - topo-seer
+      - topo-seer-command-internal
       - hspec
       - http-client
       - http-types

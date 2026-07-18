@@ -61,7 +61,6 @@ import qualified Spec.DataResource
 import qualified Spec.DataResourceValidation
 import qualified Spec.DataService
 import qualified Spec.WorldBundle
-import qualified Spec.CommandTypes
 import qualified Spec.WritSmoke
 import qualified Spec.WorldGenValidation
 import qualified WorldProperty
@@ -131,7 +130,6 @@ main = do
     Spec.DataResourceValidation.spec
     Spec.DataService.spec
     Spec.WorldBundle.spec
-    Spec.CommandTypes.spec
     Spec.WritSmoke.spec
     Spec.WorldGenValidation.spec
     WorldProperty.spec

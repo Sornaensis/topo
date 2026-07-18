@@ -6,7 +6,7 @@ module Seer.Command.Dispatch
   , dispatchCommandMethods
   ) where
 
-import Topo.Command.Types (SeerCommand, SeerResponse)
+import Seer.Command.Types (SeerCommand, SeerResponse)
 import Data.Text (Text)
 
 import Seer.Command.Context (CommandContext(..))

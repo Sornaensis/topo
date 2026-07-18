@@ -52,7 +52,7 @@ import Actor.UiActions.Handles (ActorHandles(..), publishLogMutation)
 import Seer.Command.Context (CommandContext(..))
 import Seer.Render.ZoomStage (orderedZoomStagesForZoom)
 import Topo.Calendar (WorldTime(..))
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 
 -- | Handle @get_sim_state@ — return current simulation state.
 handleGetSimState :: CommandContext -> Int -> Value -> IO SeerResponse

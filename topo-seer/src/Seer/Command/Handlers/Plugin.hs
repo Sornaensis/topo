@@ -57,7 +57,7 @@ import Seer.Service.Types
   , ServiceResult
   , serviceErrorText
   )
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Plugin.DataResource (DataFieldDef(..), DataOperations(..), DataPagination(..), DataResourceSchema(..))
 import Topo.Plugin.RPC.Manifest
   ( RPCManifest(..)

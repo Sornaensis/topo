@@ -127,7 +127,7 @@ import Seer.System.AutoTick
   , stopAutoTickScheduler
   )
 import System.IO (Handle, hClose)
-import Topo.Command.Types (SeerCommand, SeerResponse)
+import Seer.Command.Types (SeerCommand, SeerResponse)
 import Topo.Overlay (emptyOverlayStore)
 
 -- | Options for constructing a headless topo-seer runtime.

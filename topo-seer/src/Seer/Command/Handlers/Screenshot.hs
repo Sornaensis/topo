@@ -18,7 +18,7 @@ import Seer.Service.Types
   , runServiceHandler
   , serviceErrorText
   )
-import Topo.Command.Types (SeerResponse, errResponse, okResponse)
+import Seer.Command.Types (SeerResponse, errResponse, okResponse)
 
 handleTakeScreenshot :: CommandContext -> Int -> Value -> IO SeerResponse
 handleTakeScreenshot ctx requestId params = do

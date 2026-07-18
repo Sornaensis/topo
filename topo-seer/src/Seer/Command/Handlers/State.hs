@@ -61,7 +61,7 @@ import Seer.DataBrowser.Model
   , dataBrowserPendingEnvelopeValue
   )
 import Seer.Editor.Types (EditorState(..), EditorTool(..))
-import Topo.Command.Types (SeerResponse, okResponse)
+import Seer.Command.Types (SeerResponse, okResponse)
 import Topo.Overlay (overlayNames)
 
 -- | Handle @get_state@ — return high-level application state.

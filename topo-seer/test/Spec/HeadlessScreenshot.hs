@@ -67,7 +67,7 @@ import Seer.Service.Types
   , ServiceResult
   , runServiceHandler
   )
-import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
+import Seer.Command.Types (SeerCommand(..), SeerResponse(..))
 
 spec :: Spec
 spec = describe "headless screenshot renderer requirement" $ do

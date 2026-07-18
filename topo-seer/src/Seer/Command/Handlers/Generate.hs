@@ -18,7 +18,7 @@ import Actor.UiActions
   )
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
-import Topo.Command.Types (SeerResponse, okResponse)
+import Seer.Command.Types (SeerResponse, okResponse)
 
 -- | Handle @generate@ — trigger terrain generation using the current
 -- seed and slider values.

@@ -45,7 +45,7 @@ import Seer.Config.SliderConversion
   , sliderFromDomainFloat
   )
 import Seer.Command.Context (CommandContext(..))
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 -- | Handle @get_sliders@ — return all sliders or sliders for a specific tab.
 handleGetSliders :: CommandContext -> Int -> Value -> IO SeerResponse
 handleGetSliders ctx reqId params = do

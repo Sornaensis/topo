@@ -51,7 +51,7 @@ import Seer.DataBrowser.Model
   ( dataBrowserAsyncErrorValue
   , dataBrowserPendingEnvelopeValue
   )
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 import Topo.Plugin.DataResource
   ( DataResourceSchema(..)
   , DataFieldDef(..)

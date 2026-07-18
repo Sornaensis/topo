@@ -37,7 +37,7 @@ import Seer.Headless
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy(..))
 import Seer.Service.Context (ServiceContext(..))
 import Seer.Service.Types (ServiceResponse(..))
-import Topo.Command.Types (SeerCommand(..), SeerResponse(..))
+import Seer.Command.Types (SeerCommand(..), SeerResponse(..))
 import UI.DrawCommand (clearClip, clipTo, fillRect, line, strokeRect, textCentered)
 import UI.DrawCommand.SDL (interpretDrawCommands)
 import UI.Widgets (Rect(..))

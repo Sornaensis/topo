@@ -23,7 +23,7 @@ import Actor.UiActions.Handles (ActorHandles(..), publishLogMutation, publishUiM
 import Actor.UI.State (ConfigTab(..), LeftTab(..), UiState(..), readUiSnapshotRef)
 import Actor.UI.Setters (setUiShowLeftPanel, setUiLeftTab, setUiShowConfig)
 import Seer.Command.Context (CommandContext(..))
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 
 -- | Handle @set_left_panel@ — show or hide the left panel.
 --

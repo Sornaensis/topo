@@ -112,7 +112,6 @@ library
       Topo.Plugin.RPC.Scope
       Topo.Plugin.RPC.Stream
       Topo.Plugin.RPC.Transport
-      Topo.Command.Types
       Topo.Config
       Topo.Config.JSON
       Topo.TerrainForm.Modifiers
@@ -187,7 +186,6 @@ test-suite topo-test
       Spec.Calendar
       Spec.Climate
       Spec.ClimateAlignment
-      Spec.CommandTypes
       Spec.ConfigJSON
       Spec.ConfigProperty
       Spec.DataResource

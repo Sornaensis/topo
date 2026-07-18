@@ -25,7 +25,7 @@ import Seer.Config.Snapshot
   , applySnapshotToUi
   )
 import Seer.Persistence.Name (validatePersistenceName)
-import Topo.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Command.Types (SeerResponse, okResponse, errResponse)
 
 -- | Handle @list_presets@ — return the built-in and user preset catalogue.
 handleListPresets :: CommandContext -> Int -> Value -> IO SeerResponse
