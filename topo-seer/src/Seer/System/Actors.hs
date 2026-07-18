@@ -101,12 +101,17 @@ import Seer.DataBrowser.Executor
   , shutdownDataBrowserExecutor
   )
 import Seer.Editor.History (emptyHistory)
+import Seer.OverlayInspector.Executor
+  ( OverlayInspectorExecutor
+  , newOverlayInspectorExecutor
+  , shutdownOverlayInspectorExecutor
+  )
 import Seer.HTTP.Server
   ( HttpServerHandle
   , shutdownHttpServer
   , startHttpServer
   )
-import Seer.Service.Context (ServiceContext(..))
+import Seer.Service.Context (ServiceContext(..), unavailableNestedServiceRunner)
 import Seer.Service.Events (newDefaultServiceEventBus)
 import Seer.Screenshot.Request
   ( ScreenshotRequestRef
@@ -148,6 +153,7 @@ data AppActors = AppActors
   , aaScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , aaAutoTickScheduler :: !AutoTickScheduler
   , aaDataBrowserExecutor :: !DataBrowserExecutor
+  , aaOverlayInspectorExecutor :: !OverlayInspectorExecutor
   , aaCommandChannelControl :: !CommandChannelControl
   , aaHttpServerHandle :: !(MVar (Maybe HttpServerHandle))
   , aaIngressThreads :: !(MVar [(ThreadId, MVar ())])
@@ -219,6 +225,7 @@ initialiseAppActors runtimeCfg = do
   historyRef <- newIORef (emptyHistory 50)
   actorHandles <- mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
   dataBrowserExecutor <- newDataBrowserExecutor uiHandle
+  overlayInspectorExecutor <- newOverlayInspectorExecutor actorHandles
   commandChannelControl <- newCommandChannelControl
   httpServerHandle <- newMVar Nothing
   ingressThreads <- newMVar []
@@ -243,6 +250,7 @@ initialiseAppActors runtimeCfg = do
     , aaScreenshotStoragePolicy = screenshotStoragePolicy
     , aaAutoTickScheduler = autoTickScheduler
     , aaDataBrowserExecutor = dataBrowserExecutor
+    , aaOverlayInspectorExecutor = overlayInspectorExecutor
     , aaCommandChannelControl = commandChannelControl
     , aaHttpServerHandle = httpServerHandle
     , aaIngressThreads = ingressThreads
@@ -291,6 +299,7 @@ shutdownAppActors actors = do
   -- begins. Worker completion still has live plugin and actor dependencies.
   stopIngressThreads actors
   shutdownDataBrowserExecutor (aaDataBrowserExecutor actors)
+  shutdownOverlayInspectorExecutor (aaOverlayInspectorExecutor actors)
   waitForSimIdle <- beginSimShutdown (ahSimulationHandle (aaActorHandles actors))
   stopAutoTickScheduler (aaAutoTickScheduler actors)
   waitForSimIdle
@@ -299,13 +308,15 @@ shutdownAppActors actors = do
 
 commandContextForActors :: AppActors -> CommandContext
 commandContextForActors actors = CommandContext
-  { ccActorHandles = aaActorHandles actors
+  { ccNestedServiceRunner = unavailableNestedServiceRunner
+  , ccActorHandles = aaActorHandles actors
   , ccUiSnapshotRef = aaUiSnapshotRef actors
   , ccUiActionsHandle = aaUiActionsHandle actors
   , ccScreenshotRef = aaScreenshotRef actors
   , ccScreenshotStoragePolicy = aaScreenshotStoragePolicy actors
   , ccLogSnapshotRef = Just (aaLogSnapshotRef actors)
   , ccDataBrowserExecutor = aaDataBrowserExecutor actors
+  , ccOverlayInspectorExecutor = aaOverlayInspectorExecutor actors
   }
 
 commandEnvForActors :: AppActors -> CommandChannelEnv
@@ -318,4 +329,5 @@ commandEnvForActors actors = CommandChannelEnv
   , cceScreenshotStoragePolicy = aaScreenshotStoragePolicy actors
   , cceLogSnapshotRef = Just (aaLogSnapshotRef actors)
   , cceDataBrowserExecutor = aaDataBrowserExecutor actors
+  , cceOverlayInspectorExecutor = aaOverlayInspectorExecutor actors
   }

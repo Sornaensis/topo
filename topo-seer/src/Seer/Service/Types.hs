@@ -36,6 +36,7 @@ module Seer.Service.Types
   , serviceErrorCode
   , serviceErrorMessage
   , serviceErrorDetails
+  , serviceErrorValue
   , serviceErrorText
   , serviceErrorHTTPStatus
   , validationError
@@ -75,7 +76,7 @@ module Seer.Service.Types
   , serviceOperationMethods
   ) where
 
-import Data.Aeson (Value(..))
+import Data.Aeson (Value(..), object, (.=))
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Types as Aeson
@@ -243,6 +244,21 @@ unknownMethodDetail method = ServiceErrorDetail
   , serviceErrorDetailCode = "unknown_method"
   , serviceErrorDetailMessage = "service method is not registered: " <> method
   }
+
+serviceErrorValue :: ServiceError -> Value
+serviceErrorValue err = object
+  [ "code" .= serviceErrorCode err
+  , "message" .= serviceErrorMessage err
+  , "details" .=
+      [ object
+          [ "path" .= serviceErrorDetailPath detail
+          , "code" .= serviceErrorDetailCode detail
+          , "message" .= serviceErrorDetailMessage detail
+          ]
+      | detail <- serviceErrorDetails err
+      ]
+  , "http_status" .= serviceErrorHTTPStatus err
+  ]
 
 serviceErrorText :: ServiceError -> Text
 serviceErrorText err = case serviceErrorDetails err of

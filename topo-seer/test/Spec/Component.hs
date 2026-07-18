@@ -33,6 +33,15 @@ spec = describe "component reducers and draw commands" $ do
   it "keeps config toggle routing inside the config component boundary" $ do
     componentForWidget WidgetConfigToggle `shouldBe` componentConfigPanel
 
+  it "routes every overlay inspector action through the View component" $ do
+    map componentForWidget
+      [ WidgetOverlayManager
+      , WidgetOverlaySchema
+      , WidgetOverlayProvenance
+      , WidgetOverlayExport
+      , WidgetOverlayImportValidate
+      ] `shouldBe` replicate 5 componentViewPanel
+
   it "exposes component hit regions for pure routing" $ do
     let component = logFilterComponent logRects
         regions = componentRegions component (LogFilterModel LogInfo)

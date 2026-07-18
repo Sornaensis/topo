@@ -20,6 +20,8 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import qualified SDL
 import Seer.DataBrowser.Executor (DataBrowserExecutor)
+import Seer.OverlayInspector.Executor.Types (OverlayInspectorExecutor)
+import Seer.Service.AppService (AppService)
 import Seer.Input (handleEvent, isQuit, tickTooltipHover)
 import Seer.Input.Actions (mkInputEnv)
 import Seer.Input.Context
@@ -38,6 +40,7 @@ import Seer.Timing (nsToMs)
 -- update actor-backed state, while SDL rendering remains on the main thread.
 data EventPumpEnv = EventPumpEnv
   { epeWindow :: !SDL.Window
+  , epeAppService :: !AppService
   , epeActorHandles :: !ActorHandles
   , epeUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , epeUiSnapshotRef :: !UiSnapshotRef
@@ -45,6 +48,7 @@ data EventPumpEnv = EventPumpEnv
   , epeScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , epeLogSnapshotRef :: !(Maybe LogSnapshotRef)
   , epeDataBrowserExecutor :: !DataBrowserExecutor
+  , epeOverlayInspectorExecutor :: !OverlayInspectorExecutor
   , epeQuitRef :: !(IORef Bool)
   , epeLineHeightRef :: !(IORef Int)
   , epeMousePosRef :: !(IORef (Int, Int))
@@ -83,6 +87,7 @@ processEvents env _timingLogThresholdMs events renderSnap = do
       let coalescedEvents = coalesceMouseMotion events
           actorHandles = epeActorHandles env
           inputEnv = mkInputEnv
+            (epeAppService env)
             actorHandles
             (epeUiActionsHandle env)
             (epeUiSnapshotRef env)
@@ -90,6 +95,7 @@ processEvents env _timingLogThresholdMs events renderSnap = do
             (epeScreenshotStoragePolicy env)
             (epeLogSnapshotRef env)
             (epeDataBrowserExecutor env)
+            (epeOverlayInspectorExecutor env)
             (rsUi renderSnap)
             (rsLog renderSnap)
             (rsData renderSnap)

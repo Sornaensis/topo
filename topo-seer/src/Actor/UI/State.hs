@@ -101,6 +101,8 @@ module Actor.UI.State
   , newUiSnapshotRef
   , beginUiDataBrowserAction
   , completeUiDataBrowserRequest
+  , beginUiOverlayInspectorAction
+  , completeUiOverlayInspectorRequest
   ) where
 
 import Actor.PluginManager.Types (PluginLifecycleSnapshot)
@@ -143,6 +145,16 @@ import Seer.DataBrowser.Model
   , dataBrowserRequestIsMutation
   )
 import Seer.Editor.Types (EditorState(..), defaultEditorState)
+import Seer.OverlayInspector.Model
+  ( OverlayInspectorAction
+  , OverlayInspectorBeginResult(..)
+  , OverlayInspectorCompletion
+  , OverlayInspectorModel
+  , OverlayInspectorRequestId(..)
+  , beginOverlayInspectorAction
+  , completeOverlayInspectorRequest
+  , emptyOverlayInspectorModel
+  )
 import Seer.Render.ZoomStage (maxCameraZoom)
 import Seer.World.Persist.Types (WorldSaveManifest)
 import Topo.Calendar (WorldTime(..), simulationTickSeconds)
@@ -1583,6 +1595,7 @@ data UiState = UiState
   , uiWorldFilter :: !Text
   , uiOverlayNames :: ![Text]
   , uiOverlayFields :: ![(Text, OverlayFieldType)]
+  , uiOverlayInspector :: !OverlayInspectorModel
   , uiDataBrowser :: !DataBrowserState
   , uiDataResources :: !(Map Text [DataResourceSchema])
   , uiEditor :: !EditorState
@@ -1841,6 +1854,7 @@ emptyUiState = UiState
   , uiWorldFilter = Text.empty
   , uiOverlayNames = []
   , uiOverlayFields = []
+  , uiOverlayInspector = emptyOverlayInspectorModel
   , uiDataBrowser = emptyDataBrowserState
   , uiDataResources = Map.empty
   , uiEditor = defaultEditorState
@@ -1927,6 +1941,7 @@ data UiUpdate
   | SetWorldFilter !Text
   | SetOverlayNames ![Text]
   | SetOverlayFields ![(Text, OverlayFieldType)]
+  | SetOverlayInspector !OverlayInspectorModel
   | SetDataBrowser !DataBrowserState
   | SetDataResources !(Map Text [DataResourceSchema])
   | SetEditor !EditorState
@@ -1994,6 +2009,7 @@ applyUpdate upd st = case upd of
   SetWorldFilter v -> st { uiWorldFilter = v }
   SetOverlayNames v -> st { uiOverlayNames = v }
   SetOverlayFields v -> st { uiOverlayFields = v }
+  SetOverlayInspector v -> st { uiOverlayInspector = v }
   SetDataBrowser v -> st { uiDataBrowser = v }
   SetDataResources v -> st { uiDataResources = v }
   SetEditor v -> st { uiEditor = v }
@@ -2237,6 +2253,7 @@ data UiActorState = UiActorState
   { uasUi :: !UiState
   , uasSnapshotRef :: !(Maybe UiSnapshotRef)
   , uasNextDataBrowserRequestId :: !Word64
+  , uasNextOverlayInspectorRequestId :: !Word64
   }
 
 emptyUiActorState :: UiActorState
@@ -2244,6 +2261,7 @@ emptyUiActorState = UiActorState
   { uasUi = emptyUiState
   , uasSnapshotRef = Nothing
   , uasNextDataBrowserRequestId = 1
+  , uasNextOverlayInspectorRequestId = 1
   }
 
 -- | Publish the current UI snapshot to the shared 'IORef', if registered.
@@ -2347,6 +2365,8 @@ actor Ui
   call snapshot :: () -> UiState
   call dataBrowserBegin :: DataBrowserAppAction -> DataBrowserBeginResult
   call dataBrowserComplete :: DataBrowserCompletion -> Bool
+  call overlayInspectorBegin :: OverlayInspectorAction -> OverlayInspectorBeginResult
+  call overlayInspectorComplete :: OverlayInspectorCompletion -> Bool
 
   initial emptyUiActorState
   on_ update = \upd st -> do
@@ -2383,6 +2403,26 @@ actor Ui
         st' = st { uasUi = ui' }
     when applied (publishUiSnapshot st')
     pure (st', applied)
+  on overlayInspectorBegin = \action st -> do
+    let requestId = OverlayInspectorRequestId (uasNextOverlayInspectorRequestId st)
+        (next, result) = beginOverlayInspectorAction requestId action (uiOverlayInspector (uasUi st))
+        consumed = case result of
+          OverlayInspectorBeginAccepted {} -> True
+          _ -> False
+        ui' = (uasUi st) { uiOverlayInspector = next }
+        st' = st
+          { uasUi = ui'
+          , uasNextOverlayInspectorRequestId =
+              if consumed then uasNextOverlayInspectorRequestId st + 1 else uasNextOverlayInspectorRequestId st
+          }
+    when (ui' /= uasUi st) (publishUiSnapshot st')
+    pure (st', result)
+  on overlayInspectorComplete = \completion st -> do
+    let (next, applied) = completeOverlayInspectorRequest completion (uiOverlayInspector (uasUi st))
+        ui' = (uasUi st) { uiOverlayInspector = next }
+        st' = st { uasUi = ui' }
+    when applied (publishUiSnapshot st')
+    pure (st', applied)
 |]
 
 getUiSnapshot :: ActorHandle Ui (Protocol Ui) -> IO UiState
@@ -2402,6 +2442,20 @@ completeUiDataBrowserRequest
   -> IO Bool
 completeUiDataBrowserRequest handle completion =
   call @"dataBrowserComplete" handle #dataBrowserComplete completion
+
+beginUiOverlayInspectorAction
+  :: ActorHandle Ui (Protocol Ui)
+  -> OverlayInspectorAction
+  -> IO OverlayInspectorBeginResult
+beginUiOverlayInspectorAction handle action =
+  call @"overlayInspectorBegin" handle #overlayInspectorBegin action
+
+completeUiOverlayInspectorRequest
+  :: ActorHandle Ui (Protocol Ui)
+  -> OverlayInspectorCompletion
+  -> IO Bool
+completeUiOverlayInspectorRequest handle completion =
+  call @"overlayInspectorComplete" handle #overlayInspectorComplete completion
 
 requestUiSnapshot :: ActorHandle Ui (Protocol Ui) -> ReplyTo UiSnapshotReply -> IO ()
 requestUiSnapshot handle replyTo =

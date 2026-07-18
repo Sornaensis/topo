@@ -26,22 +26,26 @@ import Actor.UiActions (UiAction, UiActionRequest(..), UiActions, submitUiAction
 import Data.Aeson (Value)
 import Data.Text (Text)
 import Hyperspace.Actor (ActorHandle, Protocol, replyTo)
-import Seer.Command.AppServiceAdapter (commandAppService, runServiceOperation)
+import Seer.Command.AppServiceAdapter (runServiceOperation)
 import Seer.DataBrowser.Executor (DataBrowserExecutor)
+import Seer.OverlayInspector.Executor.Types (OverlayInspectorExecutor)
+import Seer.Service.AppService (AppService)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
-import Seer.Service.Context (ServiceContext(..))
+import Seer.Service.Context (ServiceContext(..), unavailableNestedServiceRunner)
 import Seer.Service.Types (ServiceResult)
 
 -- | Cached actor handles and render snapshots used while routing a single input event.
 data InputEnv = InputEnv
-  { ieActorHandles :: !ActorHandles
+  { ieAppService :: !AppService
+  , ieActorHandles :: !ActorHandles
   , ieUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , ieUiSnapshotRef :: !UiSnapshotRef
   , ieScreenshotRef :: !ScreenshotRequestRef
   , ieScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , ieLogSnapshotRef :: !(Maybe LogSnapshotRef)
   , ieDataBrowserExecutor :: !DataBrowserExecutor
+  , ieOverlayInspectorExecutor :: !OverlayInspectorExecutor
   , ieUiSnapshot :: !UiState
   , ieLogSnapshot :: !LogSnapshot
   , ieDataSnapshot :: !DataSnapshot
@@ -50,27 +54,31 @@ data InputEnv = InputEnv
 
 -- | Build an 'InputEnv' from the current input actors and cached snapshots.
 mkInputEnv
-  :: ActorHandles
+  :: AppService
+  -> ActorHandles
   -> ActorHandle UiActions (Protocol UiActions)
   -> UiSnapshotRef
   -> ScreenshotRequestRef
   -> ScreenshotStoragePolicy
   -> Maybe LogSnapshotRef
   -> DataBrowserExecutor
+  -> OverlayInspectorExecutor
   -> UiState
   -> LogSnapshot
   -> DataSnapshot
   -> TerrainSnapshot
   -> InputEnv
-mkInputEnv actorHandles uiActionsHandle uiSnapshotRef screenshotRef screenshotStoragePolicy logSnapshotRef dataBrowserExecutor uiSnapshot logSnapshot dataSnapshot terrainSnapshot =
+mkInputEnv appService actorHandles uiActionsHandle uiSnapshotRef screenshotRef screenshotStoragePolicy logSnapshotRef dataBrowserExecutor overlayInspectorExecutor uiSnapshot logSnapshot dataSnapshot terrainSnapshot =
   InputEnv
-    { ieActorHandles = actorHandles
+    { ieAppService = appService
+    , ieActorHandles = actorHandles
     , ieUiActionsHandle = uiActionsHandle
     , ieUiSnapshotRef = uiSnapshotRef
     , ieScreenshotRef = screenshotRef
     , ieScreenshotStoragePolicy = screenshotStoragePolicy
     , ieLogSnapshotRef = logSnapshotRef
     , ieDataBrowserExecutor = dataBrowserExecutor
+    , ieOverlayInspectorExecutor = overlayInspectorExecutor
     , ieUiSnapshot = uiSnapshot
     , ieLogSnapshot = logSnapshot
     , ieDataSnapshot = dataSnapshot
@@ -109,7 +117,8 @@ submitAction env action =
 
 inputServiceContext :: InputEnv -> ServiceContext
 inputServiceContext env = ServiceContext
-  { svcActorHandles = ieActorHandles env
+  { svcNestedServiceRunner = unavailableNestedServiceRunner
+  , svcActorHandles = ieActorHandles env
   , svcUiSnapshotRef = ieUiSnapshotRef env
   , svcUiActionsHandle = ieUiActionsHandle env
   , svcScreenshotRef = ieScreenshotRef env
@@ -117,10 +126,11 @@ inputServiceContext env = ServiceContext
   , svcLogSnapshotRef = ieLogSnapshotRef env
   , svcEventBus = Nothing
   , svcDataBrowserExecutor = ieDataBrowserExecutor env
+  , svcOverlayInspectorExecutor = ieOverlayInspectorExecutor env
   }
 
 -- | Invoke the app service from the UI/input path without constructing a
 -- command envelope.
 runInputService :: InputEnv -> Text -> Value -> IO ServiceResult
 runInputService env =
-  runServiceOperation commandAppService (inputServiceContext env)
+  runServiceOperation (ieAppService env) (inputServiceContext env)

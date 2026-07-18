@@ -472,6 +472,7 @@ channelEnv app ctx = CommandChannelEnv
   , cceScreenshotStoragePolicy = ccScreenshotStoragePolicy ctx
   , cceLogSnapshotRef = ccLogSnapshotRef ctx
   , cceDataBrowserExecutor = ccDataBrowserExecutor ctx
+  , cceOverlayInspectorExecutor = ccOverlayInspectorExecutor ctx
   }
 
 assertBrokerIdle :: ServiceContext -> Expectation

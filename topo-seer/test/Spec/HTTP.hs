@@ -98,6 +98,7 @@ import Seer.HTTP.Server
   , parseHttpBind
   )
 import Seer.Command.Dispatch (CommandContext(..))
+import Seer.OverlayInspector.Executor (waitOverlayInspectorExecutorIdle)
 import Seer.Config.Runtime (TopoSeerConfig(..))
 import Seer.Config.Snapshot (ConfigSnapshot(..), defaultSnapshot)
 import Seer.Editor.Types (EditorState(..), EditorTool(..))
@@ -672,19 +673,47 @@ spec = describe "Seer.HTTP.Server" $ do
           ] $ \widgetId -> do
             capability <- getWidgetStateHttp app widgetId
             lookupValue "support" (hresBody capability)
-              `shouldBe` Just (String "non_clickable")
-            rejected <- clickWidgetHttp app widgetId Nothing Nothing
-            assertWidgetError 400 "invalid_request" rejected
-        hresStatusCode <$> request app (mkRequest "GET" ["overlays"]) `shouldReturn` 200
-        hresStatusCode <$> request app (mkRequest "GET" ["overlays", "schema"])
-          { hreqQuery = [("overlay", Just "weather")] } `shouldReturn` 200
-        hresStatusCode <$> request app (mkRequest "GET" ["overlays", "provenance"])
-          { hreqQuery = [("overlay", Just "weather")] } `shouldReturn` 200
-        exported <- request app $ withBody "POST" ["overlays", "export"]
+              `shouldBe` Just (String "clickable")
+
+        directManager <- request app (mkRequest "GET" ["overlays"])
+        managerClick <- clickWidgetHttp app "WidgetOverlayManager" Nothing Nothing
+        hresStatusCode managerClick `shouldBe` 200
+        waitOverlayInspector app
+        managerState <- getWidgetStateHttp app "WidgetOverlayManager"
+        inspectorField "manager" (hresBody managerState) `shouldBe` Just (hresBody directManager)
+
+        directSchema <- request app (mkRequest "GET" ["overlays", "schema"])
+          { hreqQuery = [("overlay", Just "weather")] }
+        schemaClick <- clickWidgetHttp app "WidgetOverlaySchema" Nothing Nothing
+        hresStatusCode schemaClick `shouldBe` 200
+        waitOverlayInspector app
+        schemaState <- getWidgetStateHttp app "WidgetOverlaySchema"
+        inspectorField "schema" (hresBody schemaState) `shouldBe` Just (hresBody directSchema)
+
+        directProvenance <- request app (mkRequest "GET" ["overlays", "provenance"])
+          { hreqQuery = [("overlay", Just "weather")] }
+        provenanceClick <- clickWidgetHttp app "WidgetOverlayProvenance" Nothing Nothing
+        hresStatusCode provenanceClick `shouldBe` 200
+        waitOverlayInspector app
+        provenanceState <- getWidgetStateHttp app "WidgetOverlayProvenance"
+        inspectorField "provenance" (hresBody provenanceState) `shouldBe` Just (hresBody directProvenance)
+
+        directExport <- request app $ withBody "POST" ["overlays", "export"]
           (object ["overlay" .= ("weather" :: Text)])
-        hresStatusCode exported `shouldBe` 200
-        validated <- request app $ withBody "POST" ["overlays", "import", "validate"] badDenseOverlayImport
-        hresStatusCode validated `shouldBe` 200
+        exportClick <- clickWidgetHttp app "WidgetOverlayExport" Nothing Nothing
+        hresStatusCode exportClick `shouldBe` 200
+        waitOverlayInspector app
+        exportState <- getWidgetStateHttp app "WidgetOverlayExport"
+        inspectorField "export" (hresBody exportState) `shouldBe` Just (hresBody directExport)
+
+        directValidation <- request app $ withBody "POST" ["overlays", "import", "validate"]
+          (object ["schema" .= object [], "payload" .= object []])
+        validationClick <- clickWidgetHttp app "WidgetOverlayImportValidate" Nothing Nothing
+        hresStatusCode validationClick `shouldBe` 200
+        waitOverlayInspector app
+        validationState <- getWidgetStateHttp app "WidgetOverlayImportValidate"
+        inspectorField "import_validation" (hresBody validationState)
+          `shouldBe` Just (hresBody directValidation)
 
       withHttpSmokeTempHome $ \home -> withTemporaryTopoHome home $
         withHeadlessApp defaultHeadlessConfig $ \app -> do
@@ -742,10 +771,14 @@ spec = describe "Seer.HTTP.Server" $ do
         viewProjection app `shouldReturn` beforeBasis
 
         manager <- getWidgetStateHttp app "WidgetOverlayManager"
-        lookupValue "support" (hresBody manager) `shouldBe` Just (String "non_clickable")
-        lookupValue "alternative" (hresBody manager) `shouldBe` Just (String "get_overlays")
-        unsupported <- clickWidgetHttp app "WidgetOverlayManager" Nothing Nothing
-        assertWidgetError 400 "invalid_request" unsupported
+        lookupValue "support" (hresBody manager) `shouldBe` Just (String "clickable")
+        lookupValue "alternative" (hresBody manager) `shouldBe` Just Null
+        accepted <- clickWidgetHttp app "WidgetOverlayManager" Nothing Nothing
+        hresStatusCode accepted `shouldBe` 200
+        waitOverlayInspector app
+        schema <- getWidgetStateHttp app "WidgetOverlaySchema"
+        lookupValue "support" (hresBody schema) `shouldBe` Just (String "clickable")
+        lookupValue "enabled" (hresBody schema) `shouldBe` Just (Bool False)
         hresStatusCode <$> request app (mkRequest "GET" ["overlays"]) `shouldReturn` 200
 
         _ <- clickWidgetHttp app "WidgetLeftTabTopo" Nothing Nothing
@@ -2564,6 +2597,15 @@ clickWidgetHttp app widgetId normalizedPosition itemIndex =
 getWidgetStateHttp :: HeadlessApp -> Text -> IO HttpResponse
 getWidgetStateHttp app widgetId = request app (mkRequest "GET" ["ui", "widget-state"])
   { hreqQuery = [("widget_id", Just widgetId)] }
+
+waitOverlayInspector :: HeadlessApp -> IO ()
+waitOverlayInspector app =
+  waitOverlayInspectorExecutorIdle
+    (ccOverlayInspectorExecutor (headlessCommandContext app))
+
+inspectorField :: Text -> Value -> Maybe Value
+inspectorField field body =
+  lookupValue "overlay_inspector" body >>= lookupValue field
 
 assertCompletedWidgetClick :: Text -> Bool -> HttpResponse -> Expectation
 assertCompletedWidgetClick widgetId changed response = do

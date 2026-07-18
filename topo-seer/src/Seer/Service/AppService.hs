@@ -112,8 +112,15 @@ appServiceOperationMethods = serviceOperationMethods appServiceOperationSpecs
 runServiceOperation :: AppService -> ServiceContext -> Text -> Value -> IO ServiceResult
 runServiceOperation app ctx method params =
   case lookup method (appServiceHandlersByMethod app) of
-    Just handler -> handler ctx (ServiceRequest (Just params))
+    Just handler -> handler contextWithRunner (ServiceRequest (Just params))
     Nothing -> pure (Left (ServiceUnknownMethod method))
+  where
+    contextWithRunner = ctx { svcNestedServiceRunner = nestedRunner }
+    nestedRunner nestedMethod nestedParams = do
+      result <- runServiceOperation app ctx nestedMethod nestedParams
+      pure $ case result of
+        Left err -> Left (serviceErrorValue err)
+        Right response -> Right (serviceResponseBody response)
 
 -- | Concrete operations in the same order as 'appServiceOperationSpecs'.
 appServiceOperations :: AppService -> [AppServiceOperation]

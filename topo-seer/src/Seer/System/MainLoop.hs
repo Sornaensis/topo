@@ -37,6 +37,7 @@ import qualified Data.Text as Text
 import Data.Word (Word32, Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import qualified SDL
+import Seer.Command.AppServiceAdapter (commandAppService)
 import Seer.Config.Runtime (TopoSeerConfig(..))
 import Seer.Draw (logLineHeight)
 import Seer.System.Actors (AppActors(..))
@@ -498,6 +499,7 @@ runMainLoop runtimeCfg actors sdl = do
       initialCacheState    = initialRenderCacheState (cfgAtlasCacheEntries runtimeCfg)
       eventPumpEnv = EventPumpEnv
         { epeWindow = srWindow sdl
+        , epeAppService = commandAppService
         , epeActorHandles = aaActorHandles actors
         , epeUiActionsHandle = aaUiActionsHandle actors
         , epeUiSnapshotRef = aaUiSnapshotRef actors
@@ -505,6 +507,7 @@ runMainLoop runtimeCfg actors sdl = do
         , epeScreenshotStoragePolicy = aaScreenshotStoragePolicy actors
         , epeLogSnapshotRef = Just (aaLogSnapshotRef actors)
         , epeDataBrowserExecutor = aaDataBrowserExecutor actors
+        , epeOverlayInspectorExecutor = aaOverlayInspectorExecutor actors
         , epeQuitRef = quitRef
         , epeLineHeightRef = lineHeightRef
         , epeMousePosRef = mousePosRef

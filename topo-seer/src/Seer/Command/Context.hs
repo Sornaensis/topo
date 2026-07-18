@@ -15,19 +15,22 @@ import Actor.UiActions.Handles (ActorHandles)
 import Actor.UI.State (UiSnapshotRef)
 import Hyperspace.Actor (ActorHandle, Protocol)
 import Seer.DataBrowser.Executor (DataBrowserExecutor)
-import Seer.Service.Context (ServiceContext(..))
+import Seer.OverlayInspector.Executor.Types (OverlayInspectorExecutor)
+import Seer.Service.Context (NestedServiceRunner, ServiceContext(..))
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 
 -- | Context shared by all command handlers.
 data CommandContext = CommandContext
-  { ccActorHandles    :: !ActorHandles
+  { ccNestedServiceRunner :: !NestedServiceRunner
+  , ccActorHandles    :: !ActorHandles
   , ccUiSnapshotRef   :: !UiSnapshotRef
   , ccUiActionsHandle :: !(ActorHandle UiActions (Protocol UiActions))
   , ccScreenshotRef   :: !ScreenshotRequestRef
   , ccScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , ccLogSnapshotRef  :: !(Maybe LogSnapshotRef)
   , ccDataBrowserExecutor :: !DataBrowserExecutor
+  , ccOverlayInspectorExecutor :: !OverlayInspectorExecutor
     -- ^ Log snapshot for @get_logs@.  'Nothing' only in tests.
   }
 
@@ -37,7 +40,8 @@ data CommandContext = CommandContext
 -- AppService operations with this transport-neutral context.
 commandServiceContext :: CommandContext -> ServiceContext
 commandServiceContext ctx = ServiceContext
-  { svcActorHandles = ccActorHandles ctx
+  { svcNestedServiceRunner = ccNestedServiceRunner ctx
+  , svcActorHandles = ccActorHandles ctx
   , svcUiSnapshotRef = ccUiSnapshotRef ctx
   , svcUiActionsHandle = ccUiActionsHandle ctx
   , svcScreenshotRef = ccScreenshotRef ctx
@@ -45,6 +49,7 @@ commandServiceContext ctx = ServiceContext
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
   , svcEventBus = Nothing
   , svcDataBrowserExecutor = ccDataBrowserExecutor ctx
+  , svcOverlayInspectorExecutor = ccOverlayInspectorExecutor ctx
   }
 
 -- | Adapt service-layer context back into the legacy command-handler context.
@@ -53,11 +58,13 @@ commandServiceContext ctx = ServiceContext
 -- while focused service implementations are extracted from command handlers.
 serviceCommandContext :: ServiceContext -> CommandContext
 serviceCommandContext ctx = CommandContext
-  { ccActorHandles = svcActorHandles ctx
+  { ccNestedServiceRunner = svcNestedServiceRunner ctx
+  , ccActorHandles = svcActorHandles ctx
   , ccUiSnapshotRef = svcUiSnapshotRef ctx
   , ccUiActionsHandle = svcUiActionsHandle ctx
   , ccScreenshotRef = svcScreenshotRef ctx
   , ccScreenshotStoragePolicy = svcScreenshotStoragePolicy ctx
   , ccLogSnapshotRef = svcLogSnapshotRef ctx
   , ccDataBrowserExecutor = svcDataBrowserExecutor ctx
+  , ccOverlayInspectorExecutor = svcOverlayInspectorExecutor ctx
   }

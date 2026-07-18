@@ -63,7 +63,9 @@ import Topo.Plugin.RPC.Transport (Transport(..), sendMessage, recvMessage)
 import Seer.Command.AppServiceAdapter (dispatchAppServiceCommand)
 import Seer.Command.Context (CommandContext(..))
 import Seer.DataBrowser.Executor (DataBrowserExecutor)
+import Seer.OverlayInspector.Executor.Types (OverlayInspectorExecutor)
 import Seer.Service.AppService (AppService)
+import Seer.Service.Context (unavailableNestedServiceRunner)
 import Seer.Screenshot.Request (ScreenshotRequestRef)
 import Seer.Screenshot.Storage (ScreenshotStoragePolicy)
 import Actor.Log (LogEntry(..), LogLevel(..), LogSnapshotRef, appendLog)
@@ -96,6 +98,7 @@ data CommandChannelEnv = CommandChannelEnv
   , cceScreenshotStoragePolicy :: !ScreenshotStoragePolicy
   , cceLogSnapshotRef  :: !(Maybe LogSnapshotRef)
   , cceDataBrowserExecutor :: !DataBrowserExecutor
+  , cceOverlayInspectorExecutor :: !OverlayInspectorExecutor
   }
 
 data CommandChannelControl = CommandChannelControl !(MVar CommandChannelState)
@@ -307,13 +310,15 @@ dispatchCommandChannel env =
 
 commandContext :: CommandChannelEnv -> CommandContext
 commandContext env = CommandContext
-  { ccActorHandles = cceActorHandles env
+  { ccNestedServiceRunner = unavailableNestedServiceRunner
+  , ccActorHandles = cceActorHandles env
   , ccUiSnapshotRef = cceUiSnapshotRef env
   , ccUiActionsHandle = cceUiActionsHandle env
   , ccScreenshotRef = cceScreenshotRef env
   , ccScreenshotStoragePolicy = cceScreenshotStoragePolicy env
   , ccLogSnapshotRef = cceLogSnapshotRef env
   , ccDataBrowserExecutor = cceDataBrowserExecutor env
+  , ccOverlayInspectorExecutor = cceOverlayInspectorExecutor env
   }
 
 -- | Handle a single client connection.

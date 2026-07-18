@@ -76,6 +76,9 @@ library
       Seer.DataBrowser.Executor
       Seer.DataBrowser.Lifecycle
       Seer.DataBrowser.Model
+      Seer.OverlayInspector.AppService
+      Seer.OverlayInspector.Executor
+      Seer.OverlayInspector.Model
       Seer.System
       Seer.System.Cache
       Seer.System.Snapshot
@@ -160,6 +163,7 @@ library
       Actor.UiActions.Handles
       Seer.Command.Handlers.Camera
       Seer.DataBrowser.Executor.Types
+      Seer.OverlayInspector.Executor.Types
       Seer.Command.Handlers.Data
       Seer.Command.Handlers.Editor
       Seer.Command.Handlers.Enums
@@ -292,6 +296,7 @@ test-suite topo-seer-test
       Spec.HTTP
       Spec.Layout
       Spec.LogActor
+      Spec.OverlayInspector
       Spec.PipelineControls
       Spec.PipelineIntegrator
       Spec.PluginManager

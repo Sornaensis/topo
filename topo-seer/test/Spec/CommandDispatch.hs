@@ -106,11 +106,20 @@ import Actor.UI.Setters
 import Actor.UiActions (ActorHandles(..), UiActions)
 import Actor.UiActions.Command (UiAction(..), UiActionRequest(..), runUiAction)
 
-import Seer.Command.AppServiceAdapter (commandAppService, runAppServiceOperation)
+import Seer.Command.AppServiceAdapter
+  ( commandAppService
+  , dispatchAppServiceCommand
+  , runAppServiceOperation
+  )
 import Seer.Command.Dispatch (CommandContext(..), dispatchCommand)
 import Seer.DataBrowser.Executor
   ( newDataBrowserExecutor
   , shutdownDataBrowserExecutor
+  )
+import Seer.OverlayInspector.Executor
+  ( newOverlayInspectorExecutor
+  , shutdownOverlayInspectorExecutor
+  , waitOverlayInspectorExecutorIdle
   )
 import Seer.Config.Snapshot (ConfigSnapshot(..), snapshotDir)
 import Seer.Editor.History (emptyHistory)
@@ -137,6 +146,7 @@ import Seer.Service.AppService
   , ConfigListPresetsRequest(..)
   , ConfigListPresetsResponse(..)
   , ConfigService(..)
+  , TerrainService(..)
   , WorldGenerateRequest(..)
   , WorldGenerateResponse(..)
   , WorldListRequest(..)
@@ -147,12 +157,13 @@ import Seer.Service.AppService
   , appServiceOperationMethods
   , appUi
   , configListPresetsOperation
+  , terrainGetOverlaysOperation
   , uiSetSeed
   , uiSetSeedOperation
   , worldGenerateOperation
   , worldListOperation
   )
-import Seer.Service.Context (ServiceContext(..))
+import Seer.Service.Context (ServiceContext(..), unavailableNestedServiceRunner)
 import Seer.Service.Types
   ( ServiceError(..)
   , ServiceErrorDetail(..)
@@ -161,6 +172,7 @@ import Seer.Service.Types
   , ServiceResponse(..)
   , ServiceResult
   , adaptTypedServiceHandler
+  , rawServiceHandler
   , runServiceHandler
   , serviceErrorCode
   , serviceErrorDetails
@@ -1170,6 +1182,56 @@ spec = describe "CommandDispatch" $ do
           KM.member "overlay_count" o `shouldBe` True
           KM.member "overlay_names" o `shouldBe` True
         _ -> expectationFailure "expected JSON object in result"
+
+    it "routes overlay widgets through AppService into the inspector model" $ withCtx $ \ctx -> do
+      _ <- writeSingleChunkTerrainWithNormals ctx
+      showLeftViewWidgets ctx
+      directManager <- dispatch ctx "get_overlays" Null
+      managerClick <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlayManager" :: Text)])
+      srSuccess managerClick `shouldBe` True
+      lookupKey "status" (srResult managerClick) `shouldBe` Just (String "accepted")
+      waitOverlayInspectorExecutorIdle (ccOverlayInspectorExecutor ctx)
+      managerState <- dispatch ctx "get_widget_state"
+        (object ["widget_id" .= ("WidgetOverlayManager" :: Text)])
+      inspectorPayload "manager" (srResult managerState)
+        `shouldBe` Just (srResult directManager)
+
+      directSchema <- dispatch ctx "get_overlay_schema"
+        (object ["overlay" .= ("weather_normals" :: Text)])
+      schemaClick <- dispatch ctx "click_widget"
+        (object ["widget_id" .= ("WidgetOverlaySchema" :: Text)])
+      srSuccess schemaClick `shouldBe` True
+      waitOverlayInspectorExecutorIdle (ccOverlayInspectorExecutor ctx)
+      schemaState <- dispatch ctx "get_widget_state"
+        (object ["widget_id" .= ("WidgetOverlaySchema" :: Text)])
+      inspectorPayload "schema" (srResult schemaState)
+        `shouldBe` Just (srResult directSchema)
+
+    it "uses the currently injected AppService for nested overlay work" $ withCtx $ \ctx -> do
+      showLeftViewWidgets ctx
+      let sentinel = object
+            [ "overlay_names" .= ([] :: [Text])
+            , "source" .= ("injected" :: Text)
+            ]
+          terrainService = (appTerrain commandAppService)
+            { terrainGetOverlays = rawServiceHandler terrainGetOverlaysOperation $ \_ _ ->
+                pure (Right (ServiceResponse sentinel))
+            }
+          app = commandAppService { appTerrain = terrainService }
+      clicked <- dispatchAppServiceCommand app ctx SeerCommand
+        { scId = 1
+        , scMethod = "click_widget"
+        , scParams = object ["widget_id" .= ("WidgetOverlayManager" :: Text)]
+        }
+      srSuccess clicked `shouldBe` True
+      waitOverlayInspectorExecutorIdle (ccOverlayInspectorExecutor ctx)
+      state <- dispatchAppServiceCommand app ctx SeerCommand
+        { scId = 2
+        , scMethod = "get_widget_state"
+        , scParams = object ["widget_id" .= ("WidgetOverlayManager" :: Text)]
+        }
+      inspectorPayload "manager" (srResult state) `shouldBe` Just sentinel
 
   -- -------------------------------------------------------------------
   -- get_chunks (empty terrain)
@@ -2856,16 +2918,21 @@ withCtx action = bracket newActorSystem shutdownActorSystem $ \system -> do
         , ahHistoryRef            = historyRef
         , ahWidgetActionLock      = widgetActionLock
         }
-      ctx = CommandContext
-        { ccActorHandles    = handles
+  overlayInspectorExecutor <- newOverlayInspectorExecutor handles
+  let ctx = CommandContext
+        { ccNestedServiceRunner = unavailableNestedServiceRunner
+        , ccActorHandles    = handles
         , ccUiSnapshotRef   = uiSnapRef
         , ccUiActionsHandle = uiActionsH
         , ccScreenshotRef   = screenshotRef
         , ccScreenshotStoragePolicy = ScreenshotStorageDisabled
         , ccLogSnapshotRef  = Just logSnapRef
         , ccDataBrowserExecutor = dataBrowserExecutor
+        , ccOverlayInspectorExecutor = overlayInspectorExecutor
         }
-  action ctx `finally` shutdownDataBrowserExecutor dataBrowserExecutor
+  action ctx `finally` do
+    shutdownOverlayInspectorExecutor overlayInspectorExecutor
+    shutdownDataBrowserExecutor dataBrowserExecutor
 
 withPluginCtx :: (CommandContext -> IO a) -> IO a
 withPluginCtx action = withIsolatedPluginDir $ \_pluginRoot ->
@@ -3134,7 +3201,8 @@ writeReadyTerrainData ctx = do
 -- using request id 1.
 commandTestServiceContext :: CommandContext -> ServiceContext
 commandTestServiceContext ctx = ServiceContext
-  { svcActorHandles = ccActorHandles ctx
+  { svcNestedServiceRunner = ccNestedServiceRunner ctx
+  , svcActorHandles = ccActorHandles ctx
   , svcUiSnapshotRef = ccUiSnapshotRef ctx
   , svcUiActionsHandle = ccUiActionsHandle ctx
   , svcScreenshotRef = ccScreenshotRef ctx
@@ -3142,6 +3210,7 @@ commandTestServiceContext ctx = ServiceContext
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
   , svcEventBus = Nothing
   , svcDataBrowserExecutor = ccDataBrowserExecutor ctx
+  , svcOverlayInspectorExecutor = ccOverlayInspectorExecutor ctx
   }
 
 isServiceFailureWithStatus :: Int -> ServiceResult -> Bool
@@ -3211,7 +3280,8 @@ serviceHarnessApp = commandAppService
 
 serviceContextFromCommand :: CommandContext -> ServiceContext
 serviceContextFromCommand ctx = ServiceContext
-  { svcActorHandles = ccActorHandles ctx
+  { svcNestedServiceRunner = ccNestedServiceRunner ctx
+  , svcActorHandles = ccActorHandles ctx
   , svcUiSnapshotRef = ccUiSnapshotRef ctx
   , svcUiActionsHandle = ccUiActionsHandle ctx
   , svcScreenshotRef = ccScreenshotRef ctx
@@ -3219,6 +3289,7 @@ serviceContextFromCommand ctx = ServiceContext
   , svcLogSnapshotRef = ccLogSnapshotRef ctx
   , svcEventBus = Nothing
   , svcDataBrowserExecutor = ccDataBrowserExecutor ctx
+  , svcOverlayInspectorExecutor = ccOverlayInspectorExecutor ctx
   }
 
 data ExpectedServiceOutcome
@@ -3380,6 +3451,11 @@ shouldReturnSatisfying action predicate = action >>= (`shouldSatisfy` predicate)
 lookupKey :: Key -> Value -> Maybe Value
 lookupKey k (Object o) = KM.lookup k o
 lookupKey _ _          = Nothing
+
+inspectorPayload :: Key -> Value -> Maybe Value
+inspectorPayload key value = do
+  inspector <- lookupKey "overlay_inspector" value
+  lookupKey key inspector
 
 expectServiceBody :: ServiceResult -> IO Value
 expectServiceBody (Right (ServiceResponse body)) = pure body

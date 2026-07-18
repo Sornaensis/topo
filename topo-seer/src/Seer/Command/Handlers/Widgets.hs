@@ -7,9 +7,11 @@
 -- @click_widget@, @list_widgets@, @get_widget_state@.
 module Seer.Command.Handlers.Widgets
   ( handleClickWidget
+  , handleClickWidgetWithRunner
   , WidgetInvocation(..)
   , WidgetActionResult(..)
   , executeWidgetInvocation
+  , executeWidgetInvocationWithRunner
   , executeLocalWidgetInvocation
   , handleListWidgets
   , handleGetWidgetState
@@ -88,6 +90,17 @@ import Actor.UI.Setters
 import Hyperspace.Actor (replyTo)
 import Seer.Command.Context (CommandContext(..))
 import Seer.DataBrowser.Executor (submitDataBrowserAction)
+import Seer.OverlayInspector.Executor (submitOverlayInspectorAction)
+import Seer.OverlayInspector.Model
+  ( OverlayInspectorAction(..)
+  , OverlayInspectorBeginResult(..)
+  , OverlayInspectorModel(..)
+  , OverlayInspectorPending(..)
+  , OverlayInspectorRequestId(..)
+  , overlayInspectorLoading
+  , overlayInspectorModelValue
+  , overlayInspectorOperationText
+  )
 import qualified Seer.Command.Handlers.Data as HData
 import qualified Seer.Command.Handlers.Editor as HEditor
 import qualified Seer.Command.Handlers.Presets as HPresets
@@ -467,23 +480,34 @@ data WidgetInvocation = WidgetInvocation
 data WidgetActionResult
   = WidgetActionCompleted !Text !Bool
   | WidgetActionAccepted !DataBrowserPendingEnvelope
+  | WidgetOverlayActionAccepted !OverlayInspectorPending
   deriving (Eq, Show)
+
+type WidgetServiceRunner = CommandContext -> Text -> Value -> IO (Either Value Value)
 
 instance IsString WidgetActionResult where
   -- String-form results describe UI/log transitions; the coordinator derives
   -- their changed flag from fresh before/after snapshots.
   fromString value = WidgetActionCompleted (Text.pack value) False
 
--- | Handle @click_widget@ through the shared serialized semantic interpreter.
+-- | Handle a click with the nested runner installed by the current AppService.
 handleClickWidget :: CommandContext -> Int -> Value -> IO SeerResponse
-handleClickWidget ctx reqId params =
+handleClickWidget = handleClickWidgetWithRunner (\ctx -> ccNestedServiceRunner ctx)
+
+handleClickWidgetWithRunner
+  :: WidgetServiceRunner
+  -> CommandContext
+  -> Int
+  -> Value
+  -> IO SeerResponse
+handleClickWidgetWithRunner runService ctx reqId params =
   case Aeson.parseMaybe parseWidgetParam params of
     Nothing -> pure $ errResponse reqId "missing or invalid widget invocation"
     Just (widText, normalizedPosition, itemIndex) ->
       case widgetIdFromText widText of
         Nothing -> pure $ errResponse reqId ("unknown widget_id: " <> widText)
         Just wid -> do
-          result <- executeWidgetInvocation ctx WidgetInvocation
+          result <- executeWidgetInvocationWithRunner runService ctx WidgetInvocation
             { wiWidgetId = wid
             , wiNormalizedPosition = normalizedPosition
             , wiItemIndex = itemIndex
@@ -502,13 +526,27 @@ handleClickWidget ctx reqId params =
               , "request_id" .= unDataBrowserRequestId (dbpeRequestId envelope)
               , "operation" .= dataBrowserOperationText (dbpeOperation envelope)
               ]
+            Right (WidgetOverlayActionAccepted pending) -> okResponse reqId $ object
+              [ "widget_id" .= widgetIdToText wid
+              , "status" .= ("accepted" :: Text)
+              , "request_id" .= unOverlayInspectorRequestId (oipRequestId pending)
+              , "operation" .= overlayInspectorOperationText (oipOperation pending)
+              ]
   where
     parseWidgetParam = Aeson.withObject "widget invocation" $ \o ->
       (,,) <$> o .: "widget_id" <*> o .:? "normalized_position" <*> o .:? "item_index"
 
--- | Single per-application owner for all SDL and remote widget semantics.
+-- | Execute with the nested runner installed by the current AppService.
 executeWidgetInvocation :: CommandContext -> WidgetInvocation -> IO (Either Text WidgetActionResult)
-executeWidgetInvocation ctx invocation =
+executeWidgetInvocation = executeWidgetInvocationWithRunner (\ctx -> ccNestedServiceRunner ctx)
+
+-- | Single per-application owner for all SDL and remote widget semantics.
+executeWidgetInvocationWithRunner
+  :: WidgetServiceRunner
+  -> CommandContext
+  -> WidgetInvocation
+  -> IO (Either Text WidgetActionResult)
+executeWidgetInvocationWithRunner runService ctx invocation =
   withMVar (ahWidgetActionLock handles) $ \_ -> do
     uiBefore <- getUiSnapshot (ahUiHandle handles)
     logBefore <- getLogSnapshot (ahLogHandle handles)
@@ -516,7 +554,7 @@ executeWidgetInvocation ctx invocation =
     case invocationGate uiBefore capability invocation of
       Left err -> pure (Left err)
       Right () -> do
-        result <- executeWidgetClick ctx uiBefore invocation
+        result <- executeWidgetClick runService ctx uiBefore invocation
         case result of
           Left err -> pure (Left err)
           Right success -> do
@@ -533,6 +571,7 @@ executeWidgetInvocation ctx invocation =
               (getLogSnapshot (ahLogHandle handles))
             pure $ Right $ case success of
               accepted@WidgetActionAccepted{} -> accepted
+              accepted@WidgetOverlayActionAccepted{} -> accepted
               WidgetActionCompleted info domainChanged -> WidgetActionCompleted info
                 (domainChanged || uiAfter /= uiBefore || logAfter /= logBefore)
   where
@@ -591,8 +630,13 @@ invocationGate uiSnap capability invocation
       _ -> Left "invalid item_index: expected a non-negative integer"
 
 -- | Execute the action associated with a capability-checked invocation.
-executeWidgetClick :: CommandContext -> UiState -> WidgetInvocation -> IO (Either Text WidgetActionResult)
-executeWidgetClick ctx uiSnap invocation = do
+executeWidgetClick
+  :: WidgetServiceRunner
+  -> CommandContext
+  -> UiState
+  -> WidgetInvocation
+  -> IO (Either Text WidgetActionResult)
+executeWidgetClick runService ctx uiSnap invocation = do
   let wid = wiWidgetId invocation
   let handles = ccActorHandles ctx
       uiH = ahUiHandle handles
@@ -604,6 +648,14 @@ executeWidgetClick ctx uiSnap invocation = do
           Left err -> Left err
           Right Nothing -> Right (WidgetActionCompleted message False)
           Right (Just envelope) -> Right (WidgetActionAccepted envelope)
+      overlayInspectorResult action = do
+        result <- submitOverlayInspectorAction
+          (ccOverlayInspectorExecutor ctx)
+          (runService ctx)
+          action
+        pure $ case result of
+          OverlayInspectorBeginRejected message -> Left message
+          OverlayInspectorBeginAccepted pending -> Right (WidgetOverlayActionAccepted pending)
       setBase baseMode = do
         submitAction ctx (UiActionSetBaseViewMode baseMode)
         pure $ Right "base view set"
@@ -731,11 +783,11 @@ executeWidgetClick ctx uiSnap invocation = do
     WidgetViewOverlayNext -> cycleLayeredOverlay ctx uiSnap 1
     WidgetViewFieldPrev   -> cycleLayeredOverlayField ctx uiSnap (-1)
     WidgetViewFieldNext   -> cycleLayeredOverlayField ctx uiSnap 1
-    WidgetOverlayManager  -> pure $ Right "use 'get_overlays' or GET /overlays for overlay manager metadata"
-    WidgetOverlaySchema   -> pure $ Right "use 'get_overlay_schema' or GET /overlays/schema for schema inspection"
-    WidgetOverlayProvenance -> pure $ Right "use 'get_overlay_provenance' or GET /overlays/provenance for provenance inspection"
-    WidgetOverlayExport   -> pure $ Right "use 'export_overlay_data' or POST /overlays/export for overlay export"
-    WidgetOverlayImportValidate -> pure $ Right "use 'validate_overlay_import' or POST /overlays/import/validate for import diagnostics"
+    WidgetOverlayManager -> overlayInspectorResult OverlayInspectorRefreshManager
+    WidgetOverlaySchema -> overlayInspectorResult OverlayInspectorInspectSchema
+    WidgetOverlayProvenance -> overlayInspectorResult OverlayInspectorInspectProvenance
+    WidgetOverlayExport -> overlayInspectorResult OverlayInspectorExportSelected
+    WidgetOverlayImportValidate -> overlayInspectorResult OverlayInspectorValidateDraft
 
     -- ----- Slider +/- buttons -----
     WidgetSliderMinus sid -> bumpSlider ctx uiSnap sid SliderPartMinus
@@ -1319,16 +1371,16 @@ widgetSupport wid = case wid of
   WidgetMenuExit -> (WidgetLocalOnly, Nothing, Nothing)
   WidgetSeedValue -> localOnly "set_seed"
   WidgetSeedRandom -> localOnly "set_seed"
-  WidgetOverlayManager -> nonClickable "get_overlays"
-  WidgetOverlaySchema -> nonClickable "get_overlay_schema"
-  WidgetOverlayProvenance -> nonClickable "get_overlay_provenance"
-  WidgetOverlayExport -> nonClickable "export_overlay_data"
-  WidgetOverlayImportValidate -> nonClickable "validate_overlay_import"
-  _ -> (WidgetClickable, Nothing, Nothing)
+  WidgetOverlayManager -> clickable
+  WidgetOverlaySchema -> clickable
+  WidgetOverlayProvenance -> clickable
+  WidgetOverlayExport -> clickable
+  WidgetOverlayImportValidate -> clickable
+  _ -> clickable
   where
     compatibility = (WidgetCompatibilityOnly, Nothing, Just "set_view_mode")
     localOnly operation = (WidgetLocalOnly, Nothing, Just operation)
-    nonClickable operation = (WidgetNonClickable, Nothing, Just operation)
+    clickable = (WidgetClickable, Nothing, Nothing)
     normalizedPosition =
       ( WidgetArgumentRequired
       , Just (object
@@ -1354,6 +1406,13 @@ widgetSupport wid = case wid of
 
 widgetPreconditions :: UiState -> WidgetId -> [Text]
 widgetPreconditions uiSnap wid = case wid of
+  WidgetOverlayManager
+    | overlayInspectorLoading inspector -> ["an overlay inspector request is already pending"]
+  WidgetOverlaySchema -> overlaySelectionConditions
+  WidgetOverlayProvenance -> overlaySelectionConditions
+  WidgetOverlayExport -> overlaySelectionConditions
+  WidgetOverlayImportValidate
+    | overlayInspectorLoading inspector -> ["an overlay inspector request is already pending"]
   WidgetGenerate | uiGenerating uiSnap -> ["world generation is already in progress"]
   WidgetConfigReset | uiGenerating uiSnap -> ["world generation is in progress"]
   WidgetConfigRevert | uiGenerating uiSnap -> ["world generation is in progress"]
@@ -1410,6 +1469,11 @@ widgetPreconditions uiSnap wid = case wid of
     | sliderValueForId uiSnap sliderId >= 1 -> ["slider is at its maximum"]
   _ -> []
   where
+    inspector = uiOverlayInspector uiSnap
+    overlaySelectionConditions
+      | overlayInspectorLoading inspector = ["an overlay inspector request is already pending"]
+      | oimSelectedOverlay inspector == Nothing = ["no overlay selected; refresh the overlay manager first"]
+      | otherwise = []
     dbs = uiDataBrowser uiSnap
     editor = uiEditor uiSnap
     filteredPresets = filter (presetCatalogueMatches (uiPresetFilter uiSnap)) (uiPresetList uiSnap)
@@ -1674,6 +1738,7 @@ handleListWidgets ctx reqId _params = do
     , "widget_count" .= length ids
     , "capabilities" .= map widgetCapabilityValue capabilities
     , "data_browser_state" .= object (dataBrowserAsyncStateFields (uiDataBrowser uiSnap))
+    , "overlay_inspector_state" .= overlayInspectorModelValue (uiOverlayInspector uiSnap)
     , "categories" .= object
         [ AesonKey.fromText category .= categoryIds category
         | category <- [ "navigation", "generation", "config", "view_modes"
@@ -1876,7 +1941,7 @@ handleGetWidgetState ctx reqId params = do
 
 -- | Compute state JSON for a widget.
 widgetState :: UiState -> WidgetId -> Value
-widgetState uiSnap wid = object $ base ++ browserState ++ specific
+widgetState uiSnap wid = object $ base ++ browserState ++ inspectorState ++ specific
   where
     dbs = uiDataBrowser uiSnap
     capability = widgetCapability uiSnap wid
@@ -1893,6 +1958,10 @@ widgetState uiSnap wid = object $ base ++ browserState ++ specific
       ] ++ maybe [] (\active -> ["active" .= active]) (wcActive capability)
     browserState
       | isDataBrowserWidget wid = dataBrowserAsyncStateFields dbs
+      | otherwise = []
+    inspectorState
+      | isOverlayInspectorWidget wid =
+          [ "overlay_inspector" .= overlayInspectorModelValue (uiOverlayInspector uiSnap) ]
       | otherwise = []
     specific = case wid of
       WidgetLeftToggle ->
@@ -1958,6 +2027,15 @@ dataBrowserAsyncStateFields dbs =
   , "pending" .= fmap dataBrowserPendingEnvelopeValue (dbsPendingRequest dbs)
   , "async_error" .= fmap dataBrowserAsyncErrorValue (dataBrowserScopedError dbs)
   ]
+
+isOverlayInspectorWidget :: WidgetId -> Bool
+isOverlayInspectorWidget wid = case wid of
+  WidgetOverlayManager -> True
+  WidgetOverlaySchema -> True
+  WidgetOverlayProvenance -> True
+  WidgetOverlayExport -> True
+  WidgetOverlayImportValidate -> True
+  _ -> False
 
 isDataBrowserWidget :: WidgetId -> Bool
 isDataBrowserWidget wid = case wid of

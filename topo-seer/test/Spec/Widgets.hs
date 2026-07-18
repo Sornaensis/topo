@@ -2,10 +2,17 @@
 
 module Spec.Widgets (spec) where
 
+import Actor.UI.State (emptyUiState)
 import qualified Data.Text as Text
+import Seer.Command.Handlers.Widgets
+  ( WidgetCapability(..)
+  , WidgetClickSupport(..)
+  , widgetCapability
+  )
 import Test.Hspec
 import Linear (V2(..))
 import UI.Font (boundedTextWithEllipsis)
+import UI.WidgetId (WidgetId(..))
 import UI.Widgets
 
 spec :: Spec
@@ -29,3 +36,12 @@ spec = describe "UI.Widgets" $ do
 
   it "leaves non-pathological text unchanged when bounding" $ do
     boundedTextWithEllipsis 8 "short" `shouldBe` ("short", False)
+
+  it "classifies every visible overlay action as clickable" $ do
+    map (wcSupport . widgetCapability emptyUiState)
+      [ WidgetOverlayManager
+      , WidgetOverlaySchema
+      , WidgetOverlayProvenance
+      , WidgetOverlayExport
+      , WidgetOverlayImportValidate
+      ] `shouldBe` replicate 5 WidgetClickable

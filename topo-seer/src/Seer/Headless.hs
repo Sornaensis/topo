@@ -116,7 +116,12 @@ import Seer.DataBrowser.Executor
   , newDataBrowserExecutor
   , shutdownDataBrowserExecutor
   )
-import Seer.Service.Context (ServiceContext(..))
+import Seer.OverlayInspector.Executor
+  ( OverlayInspectorExecutor
+  , newOverlayInspectorExecutor
+  , shutdownOverlayInspectorExecutor
+  )
+import Seer.Service.Context (ServiceContext(..), unavailableNestedServiceRunner)
 import Seer.Service.Headless
   ( deterministicHeadlessPng
   , headlessAppService
@@ -207,6 +212,7 @@ data HeadlessApp = HeadlessApp
   , haCommandChannelThread :: !(Maybe (ThreadId, MVar ()))
   , haAutoTickScheduler :: !AutoTickScheduler
   , haDataBrowserExecutor :: !DataBrowserExecutor
+  , haOverlayInspectorExecutor :: !OverlayInspectorExecutor
   }
 
 -- | Command context wired to the headless actor graph. Service and HTTP tests
@@ -313,14 +319,17 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
   eventBus <- newDefaultServiceEventBus
   actorHandles <- mkActorHandles uiHandle logHandle dataHandle terrainHandle atlasManagerHandle dataSnapshotRef terrainSnapshotRef snapshotVersionRef pluginManagerHandle simulationHandle historyRef
   dataBrowserExecutor <- newDataBrowserExecutor uiHandle
+  overlayInspectorExecutor <- newOverlayInspectorExecutor actorHandles
   let commandContext = CommandContext
-        { ccActorHandles = actorHandles
+        { ccNestedServiceRunner = unavailableNestedServiceRunner
+        , ccActorHandles = actorHandles
         , ccUiSnapshotRef = uiSnapshotRef
         , ccUiActionsHandle = uiActionsHandle
         , ccScreenshotRef = screenshotRef
         , ccScreenshotStoragePolicy = screenshotStoragePolicy
         , ccLogSnapshotRef = Just logSnapshotRef
         , ccDataBrowserExecutor = dataBrowserExecutor
+        , ccOverlayInspectorExecutor = overlayInspectorExecutor
         }
       commandEnv = CommandChannelEnv
         { cceAppService = headlessAppService
@@ -331,6 +340,7 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
         , cceScreenshotStoragePolicy = screenshotStoragePolicy
         , cceLogSnapshotRef = Just logSnapshotRef
         , cceDataBrowserExecutor = dataBrowserExecutor
+        , cceOverlayInspectorExecutor = overlayInspectorExecutor
         }
   commandControl <- newCommandChannelControl
   commandThread <- if hcStartCommandChannel cfg
@@ -376,6 +386,7 @@ startHeadlessAppWithSystem cfg screenshotStoragePolicy system = do
     , haCommandChannelThread = commandThread
     , haAutoTickScheduler = autoTickScheduler
     , haDataBrowserExecutor = dataBrowserExecutor
+    , haOverlayInspectorExecutor = overlayInspectorExecutor
     }
 
 -- | Stop a headless runtime and release actor resources.
@@ -386,6 +397,7 @@ stopHeadlessApp app = do
   mapM_ (readMVar . snd) (haCommandChannelThread app)
   shutdownCommandChannelControl (haCommandChannelControl app)
   shutdownDataBrowserExecutor (haDataBrowserExecutor app)
+  shutdownOverlayInspectorExecutor (haOverlayInspectorExecutor app)
   waitForSimIdle <- beginSimShutdown (haSimulationHandle app)
   stopAutoTickScheduler (haAutoTickScheduler app)
   waitForSimIdle
