@@ -27,7 +27,6 @@ library:
     - Topo.Overlay.Schema
     - Topo.Overlay.Provenance
     - Topo.Overlay.Index
-    - Topo.Overlay.Cache
     - Topo.Overlay.Indexed
     - Topo.Overlay.Export
     - Topo.Overlay.JSON

@@ -17,7 +17,6 @@ module Topo
   , module Topo.Overlay
   , module Topo.Overlay.Schema
   , module Topo.Overlay.Index
-  , module Topo.Overlay.Cache
   , module Topo.Overlay.Export
   , module Topo.Overlay.JSON
   , module Topo.Overlay.Storage
@@ -68,7 +67,6 @@ import Topo.Solar
 import Topo.Overlay
 import Topo.Overlay.Schema
 import Topo.Overlay.Index
-import Topo.Overlay.Cache
 import Topo.Overlay.Export
 import Topo.Overlay.JSON
 import Topo.Overlay.Storage

@@ -26,7 +26,6 @@ module Seer.World.Persist
   , saveNamedWorldWithPluginsAndExternalData
   , saveNamedWorldWithPluginsAndExternalDataAndHooks
   , loadNamedWorld
-  , loadNamedSparseOverlayChunk
     -- * Snapshot conversion
   , snapshotToWorld
     -- * Listing
@@ -79,7 +78,6 @@ import Topo.Calendar (defaultPlanetAge)
 import Topo.Metadata (emptyMetadataStore)
 import Topo.Overlay
   ( Overlay(..)
-  , OverlayChunk
   , OverlayData(..)
   , OverlayProvenance(..)
   , OverlayStore
@@ -87,11 +85,6 @@ import Topo.Overlay
   , insertOverlay
   , lookupOverlay
   , overlayNames
-  )
-import Topo.Overlay.Storage
-  ( loadOverlayChunk
-  , overlayDirPath
-  , renderOverlayStorageError
   )
 import Topo.Planet (mkLatitudeMapping)
 import Topo.Units (defaultUnitScales)
@@ -291,38 +284,6 @@ loadNamedWorld name = case validatePersistenceName name of
                           <> Text.pack (show err)))
                   Right (_prov, world) ->
                     pure (Right (manifest, snapshot, world))
-
--- Viewport overlay adoption seam: keep world-level discovery/manifest
--- validation in 'loadWorldBundleWithProvenance' inside 'loadNamedWorld'.
--- Large sparse overlays can be hydrated on demand through
--- 'loadNamedSparseOverlayChunk' without changing save/load semantics.
-
--- | Load one sparse overlay chunk from a saved world sidecar.
---
--- This is an adoption seam for viewport-aware sparse overlay hydration.
--- It does not change the default runtime path, which still loads overlays
--- via world-bundle policy during 'loadNamedWorld'.
-loadNamedSparseOverlayChunk
-  :: Text  -- ^ World name
-  -> Text  -- ^ Overlay name
-  -> Int   -- ^ Chunk id
-  -> IO (Either Text OverlayChunk)
-loadNamedSparseOverlayChunk worldName overlayName chunkId =
-  case validatePersistenceName worldName of
-    Left err -> pure (Left err)
-    Right () -> do
-      dir <- worldDir
-      let worldPath = dir </> Text.unpack worldName
-          topoFile = worldPath </> "world.topo"
-          sidecarDir = overlayDirPath topoFile
-      exists <- doesDirectoryExist worldPath
-      if not exists
-        then pure (Left ("World directory not found: " <> worldName))
-        else do
-          chunkResult <- loadOverlayChunk sidecarDir overlayName chunkId
-          pure $ case chunkResult of
-            Left err -> Left (renderOverlayStorageError err)
-            Right chunk -> Right chunk
 
 -------------------------------------------------------------------------------
 -- Snapshot conversion

@@ -10,7 +10,6 @@ import qualified Spec.Pipeline
 import qualified Spec.Calendar
 import qualified Spec.Solar
 import qualified Spec.Overlay
-import qualified Spec.OverlayCache
 import qualified Spec.Schedule
 import qualified Spec.Simulation
 import qualified Spec.Storage
@@ -79,7 +78,6 @@ main = do
     Spec.Calendar.spec
     Spec.Solar.spec
     Spec.Overlay.spec
-    Spec.OverlayCache.spec
     Spec.Schedule.spec
     Spec.Simulation.spec
     Spec.Storage.spec
