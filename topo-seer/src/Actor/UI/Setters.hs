@@ -240,6 +240,9 @@ module Actor.UI.Setters
   , setUiWorldList
   , setUiWorldSelected
   , setUiWorldFilter
+  , setUiWorldDeleteConfirm
+  , setUiWorldDeleteTarget
+  , setUiWorldDeleteError
   , setUiContextHex
   , setUiContextPos
   , setUiHexTooltipPinned
@@ -562,6 +565,9 @@ setUiWorldSaveInput = sendUnary SetWorldSaveInput
 setUiWorldList = sendUnary SetWorldList
 setUiWorldSelected = sendUnary SetWorldSelected
 setUiWorldFilter = sendUnary SetWorldFilter
+setUiWorldDeleteConfirm = sendUnary SetWorldDeleteConfirm
+setUiWorldDeleteTarget = sendUnary SetWorldDeleteTarget
+setUiWorldDeleteError = sendUnary SetWorldDeleteError
 setUiContextHex = sendUnary SetContextHex
 setUiContextPos = sendUnary SetContextPos
 setUiHexTooltipPinned = sendUnary SetHexTooltipPinned

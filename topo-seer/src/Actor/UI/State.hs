@@ -1593,6 +1593,9 @@ data UiState = UiState
   , uiWorldList :: ![WorldSaveManifest]
   , uiWorldSelected :: !Int
   , uiWorldFilter :: !Text
+  , uiWorldDeleteConfirm :: !Bool
+  , uiWorldDeleteTarget :: !(Maybe Text)
+  , uiWorldDeleteError :: !(Maybe Text)
   , uiOverlayNames :: ![Text]
   , uiOverlayFields :: ![(Text, OverlayFieldType)]
   , uiOverlayInspector :: !OverlayInspectorModel
@@ -1852,6 +1855,9 @@ emptyUiState = UiState
   , uiWorldList = []
   , uiWorldSelected = 0
   , uiWorldFilter = Text.empty
+  , uiWorldDeleteConfirm = False
+  , uiWorldDeleteTarget = Nothing
+  , uiWorldDeleteError = Nothing
   , uiOverlayNames = []
   , uiOverlayFields = []
   , uiOverlayInspector = emptyOverlayInspectorModel
@@ -1939,6 +1945,9 @@ data UiUpdate
   | SetWorldList ![WorldSaveManifest]
   | SetWorldSelected !Int
   | SetWorldFilter !Text
+  | SetWorldDeleteConfirm !Bool
+  | SetWorldDeleteTarget !(Maybe Text)
+  | SetWorldDeleteError !(Maybe Text)
   | SetOverlayNames ![Text]
   | SetOverlayFields ![(Text, OverlayFieldType)]
   | SetOverlayInspector !OverlayInspectorModel
@@ -2007,6 +2016,9 @@ applyUpdate upd st = case upd of
   SetWorldList v -> st { uiWorldList = v }
   SetWorldSelected v -> st { uiWorldSelected = v }
   SetWorldFilter v -> st { uiWorldFilter = v }
+  SetWorldDeleteConfirm v -> st { uiWorldDeleteConfirm = v }
+  SetWorldDeleteTarget v -> st { uiWorldDeleteTarget = v }
+  SetWorldDeleteError v -> st { uiWorldDeleteError = v }
   SetOverlayNames v -> st { uiOverlayNames = v }
   SetOverlayFields v -> st { uiOverlayFields = v }
   SetOverlayInspector v -> st { uiOverlayInspector = v }

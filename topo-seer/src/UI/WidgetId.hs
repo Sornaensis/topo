@@ -109,6 +109,9 @@ data WidgetId
   | WidgetWorldLoadOk
   | WidgetWorldLoadCancel
   | WidgetWorldLoadItem
+  | WidgetWorldDelete
+  | WidgetWorldDeleteConfirm
+  | WidgetWorldDeleteCancel
   | WidgetPipelineToggle !Text
   | WidgetPluginMoveUp !Text
   | WidgetPluginMoveDown !Text
@@ -270,6 +273,9 @@ widgetIdToText wid = case wid of
   WidgetWorldLoadOk -> "WidgetWorldLoadOk"
   WidgetWorldLoadCancel -> "WidgetWorldLoadCancel"
   WidgetWorldLoadItem -> "WidgetWorldLoadItem"
+  WidgetWorldDelete -> "WidgetWorldDelete"
+  WidgetWorldDeleteConfirm -> "WidgetWorldDeleteConfirm"
+  WidgetWorldDeleteCancel -> "WidgetWorldDeleteCancel"
   WidgetPipelineToggle name -> one "WidgetPipelineToggle" name
   WidgetPluginMoveUp name -> one "WidgetPluginMoveUp" name
   WidgetPluginMoveDown name -> one "WidgetPluginMoveDown" name
@@ -387,6 +393,7 @@ nullaryWidgetIds =
   , WidgetPresetSaveCancel, WidgetPresetLoadOk, WidgetPresetLoadCancel
   , WidgetPresetLoadItem, WidgetWorldSaveOk, WidgetWorldSaveCancel
   , WidgetWorldLoadOk, WidgetWorldLoadCancel, WidgetWorldLoadItem
+  , WidgetWorldDelete, WidgetWorldDeleteConfirm, WidgetWorldDeleteCancel
   , WidgetSimTick, WidgetSimAutoTick, WidgetConfigTabData
   , WidgetDataDetailDismiss, WidgetDataEditToggle, WidgetDataEditSave
   , WidgetDataEditCancel, WidgetDataCreateNew, WidgetDataDeleteBtn

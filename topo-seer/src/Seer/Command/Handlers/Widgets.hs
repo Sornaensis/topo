@@ -49,7 +49,7 @@ import Actor.PluginManager
 import Actor.Simulation (SimulationDagSnapshot(..), getSimDagSnapshot, rebindSimNodes)
 import Actor.Terrain (TerrainReplyOps)
 import Actor.UiActions (UiAction(..), UiActionRequest(..), submitUiActionSync)
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Actor.UI.State
   ( BaseViewMode(..)
   , ConfigTab(..)
@@ -85,6 +85,9 @@ import Actor.UI.Setters
   , setUiWorldList
   , setUiWorldSelected
   , setUiWorldFilter
+  , setUiWorldDeleteConfirm
+  , setUiWorldDeleteTarget
+  , setUiWorldDeleteError
   , setUiOverlayFields
   )
 import Hyperspace.Actor (replyTo)
@@ -247,6 +250,9 @@ legacyWidgetIdToText wid = case wid of
   WidgetWorldLoadOk            -> "WidgetWorldLoadOk"
   WidgetWorldLoadCancel        -> "WidgetWorldLoadCancel"
   WidgetWorldLoadItem          -> "WidgetWorldLoadItem"
+  WidgetWorldDelete            -> "WidgetWorldDelete"
+  WidgetWorldDeleteConfirm     -> "WidgetWorldDeleteConfirm"
+  WidgetWorldDeleteCancel      -> "WidgetWorldDeleteCancel"
   WidgetSimTick                -> "WidgetSimTick"
   WidgetSimAutoTick            -> "WidgetSimAutoTick"
   WidgetConfigTabData          -> "WidgetConfigTabData"
@@ -440,6 +446,9 @@ nullaryWidgetMap = Map.fromList
   , ("WidgetWorldLoadOk",       WidgetWorldLoadOk)
   , ("WidgetWorldLoadCancel",   WidgetWorldLoadCancel)
   , ("WidgetWorldLoadItem",     WidgetWorldLoadItem)
+  , ("WidgetWorldDelete",       WidgetWorldDelete)
+  , ("WidgetWorldDeleteConfirm", WidgetWorldDeleteConfirm)
+  , ("WidgetWorldDeleteCancel", WidgetWorldDeleteCancel)
   , ("WidgetSimTick",           WidgetSimTick)
   , ("WidgetSimAutoTick",       WidgetSimAutoTick)
   , ("WidgetConfigTabData",     WidgetConfigTabData)
@@ -812,6 +821,9 @@ executeWidgetClick runService ctx uiSnap invocation = do
       setUiWorldList uiH worlds
       setUiWorldSelected uiH 0
       setUiWorldFilter uiH Text.empty
+      setUiWorldDeleteConfirm uiH False
+      setUiWorldDeleteTarget uiH Nothing
+      setUiWorldDeleteError uiH Nothing
       setUiMenuMode uiH MenuWorldLoad
       pure $ Right "world load dialog opened"
     WidgetMenuExit -> pure $ Left "unsupported local-only widget: WidgetMenuExit"
@@ -836,8 +848,11 @@ executeWidgetClick runService ctx uiSnap invocation = do
     WidgetWorldSaveOk -> confirmWorldDialog ctx uiSnap
     WidgetWorldSaveCancel -> closeDialog uiH "world save cancelled"
     WidgetWorldLoadOk -> confirmWorldDialog ctx uiSnap
-    WidgetWorldLoadCancel -> closeDialog uiH "world load cancelled"
+    WidgetWorldLoadCancel -> closeWorldLoadDialog uiH
     WidgetWorldLoadItem -> selectWorldItem uiH uiSnap (wiItemIndex invocation)
+    WidgetWorldDelete -> requestWorldDeletion uiH uiSnap
+    WidgetWorldDeleteConfirm -> confirmWorldDeletion runService ctx uiSnap
+    WidgetWorldDeleteCancel -> cancelWorldDeletion uiH
 
     -- ----- Pipeline stage toggles -----
     WidgetPipelineToggle name ->
@@ -990,6 +1005,50 @@ closeDialog uiH info = do
   setUiMenuMode uiH MenuNone
   pure (completed info)
 
+closeWorldLoadDialog uiH = do
+  setUiWorldDeleteConfirm uiH False
+  setUiWorldDeleteTarget uiH Nothing
+  setUiWorldDeleteError uiH Nothing
+  closeDialog uiH "world load cancelled"
+
+requestWorldDeletion uiH uiSnap = case selectedWorld uiSnap of
+  Nothing -> pure $ Left "widget rejected: select a filtered world"
+  Just manifest -> do
+    setUiWorldDeleteConfirm uiH True
+    setUiWorldDeleteTarget uiH (Just (wsmName manifest))
+    setUiWorldDeleteError uiH Nothing
+    pure $ completed "world delete confirmation shown"
+
+cancelWorldDeletion uiH = do
+  setUiWorldDeleteConfirm uiH False
+  setUiWorldDeleteTarget uiH Nothing
+  setUiWorldDeleteError uiH Nothing
+  pure $ completed "world delete cancelled"
+
+confirmWorldDeletion runService ctx uiSnap = case uiWorldDeleteTarget uiSnap of
+  Nothing -> pure $ Left "widget rejected: confirmed saved world is no longer available"
+  Just name -> do
+    let handles = ccActorHandles ctx
+        uiH = ahUiHandle handles
+    result <- runService ctx "delete_world" (object ["name" .= name])
+    case result of
+      Right _ -> do
+        setUiWorldDeleteConfirm uiH False
+        setUiWorldDeleteTarget uiH Nothing
+        setUiWorldDeleteError uiH Nothing
+        pure $ completed ("saved world deleted: " <> name)
+      Left errorValue -> do
+        let message = "Delete failed: " <> nestedErrorText errorValue <> " (world: " <> name <> ")"
+        setUiWorldDeleteError uiH (Just message)
+        _ <- publishUiMutation handles
+        pure $ Left message
+
+nestedErrorText value = case Aeson.parseMaybe parser value of
+  Just message -> message
+  Nothing -> "the world.delete service failed"
+  where
+    parser = Aeson.withObject "service error" (.: "message")
+
 confirmPresetDialog ctx uiSnap = case uiMenuMode uiSnap of
   MenuPresetSave -> runDialogCommand ctx "preset saved"
     (HPresets.handleSavePreset ctx 0 (object ["name" .= uiPresetInput uiSnap]))
@@ -1034,7 +1093,12 @@ selectWorldItem uiH uiSnap maybeIndex = case maybeIndex >>= (`atIndex` filteredW
   Just _ -> do
     let Just index = maybeIndex
     setUiWorldSelected uiH index
+    setUiWorldDeleteConfirm uiH False
+    setUiWorldDeleteTarget uiH Nothing
+    setUiWorldDeleteError uiH Nothing
     pure $ completed "world selected"
+
+selectedWorld uiSnap = atIndex (uiWorldSelected uiSnap) (filteredWorlds uiSnap)
 
 filteredPresets uiSnap = filter (presetCatalogueMatches (uiPresetFilter uiSnap)) (uiPresetList uiSnap)
 filteredWorlds uiSnap = filter (matches (uiWorldFilter uiSnap) . wsmName) (uiWorldList uiSnap)
@@ -1447,6 +1511,11 @@ widgetPreconditions uiSnap wid = case wid of
     | not worldSelectionValid -> ["select a filtered world"]
   WidgetWorldLoadItem
     | null filteredWorlds -> ["no worlds match the current filter"]
+  WidgetWorldDelete
+    | not worldSelectionValid -> ["select a filtered world"]
+  WidgetWorldDeleteConfirm
+    | not (uiWorldDeleteConfirm uiSnap) -> ["confirm saved-world deletion first"]
+    | uiWorldDeleteTarget uiSnap == Nothing -> ["confirmed saved world is no longer available"]
   WidgetDataPagePrev _ _
     | dbsPageOffset dbs <= 0 -> ["already at the first page"]
   WidgetDataPageNext _ _
@@ -1661,6 +1730,9 @@ widgetCategory wid = case wid of
   WidgetWorldLoadOk -> "menu"
   WidgetWorldLoadCancel -> "menu"
   WidgetWorldLoadItem -> "menu"
+  WidgetWorldDelete -> "menu"
+  WidgetWorldDeleteConfirm -> "menu"
+  WidgetWorldDeleteCancel -> "menu"
   WidgetLogDebug -> "log"
   WidgetLogInfo -> "log"
   WidgetLogWarn -> "log"
@@ -2013,7 +2085,15 @@ widgetState uiSnap wid = object $ base ++ browserState ++ inspectorState ++ spec
         [ "edit_mode" .= dbsEditMode dbs ]
       WidgetDataDeleteBtn ->
         [ "confirm_shown" .= dbsDeleteConfirm dbs ]
+      WidgetWorldDelete -> worldDeleteState
+      WidgetWorldDeleteConfirm -> worldDeleteState
+      WidgetWorldDeleteCancel -> worldDeleteState
       _ -> []
+    worldDeleteState =
+      [ "confirm_shown" .= uiWorldDeleteConfirm uiSnap
+      , "error" .= uiWorldDeleteError uiSnap
+      , "selected" .= uiWorldDeleteTarget uiSnap
+      ]
     selection = effectiveViewSelection uiSnap
     baseActive baseMode = [ "active" .= (lvsBaseView selection == baseMode) ]
     overlayActive overlayMode = [ "active" .= (lvsSkyOverlay selection == overlayMode) ]

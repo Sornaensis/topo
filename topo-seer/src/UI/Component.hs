@@ -204,6 +204,9 @@ componentForWidget wid = case wid of
   WidgetWorldLoadOk -> componentDialogs
   WidgetWorldLoadCancel -> componentDialogs
   WidgetWorldLoadItem -> componentDialogs
+  WidgetWorldDelete -> componentDialogs
+  WidgetWorldDeleteConfirm -> componentDialogs
+  WidgetWorldDeleteCancel -> componentDialogs
 
   WidgetEditorTool _ -> componentEditor
   WidgetEditorRadiusMinus -> componentEditor

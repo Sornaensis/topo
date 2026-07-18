@@ -109,13 +109,25 @@ buildMenuWidgets ui layout = case uiMenuMode ui of
     [ Widget WidgetWorldSaveOk (worldSaveOkRect layout)
     , Widget WidgetWorldSaveCancel (worldSaveCancelRect layout)
     ]
-  MenuWorldLoad ->
-    [ Widget WidgetWorldLoadOk (worldLoadOkRect layout)
-    , Widget WidgetWorldLoadCancel (worldLoadCancelRect layout)
-    ] ++ [ Widget WidgetWorldLoadItem (worldLoadListRect layout)
-         | any (matches (uiWorldFilter ui) . wsmName) (uiWorldList ui)
-         ]
+  MenuWorldLoad
+    | uiWorldDeleteConfirm ui ->
+        [ Widget WidgetWorldDeleteConfirm (worldDeleteConfirmOkRect layout)
+        , Widget WidgetWorldDeleteCancel (worldDeleteConfirmCancelRect layout)
+        ]
+    | otherwise ->
+        [ Widget WidgetWorldLoadOk (worldLoadOkRect layout)
+        , Widget WidgetWorldLoadCancel (worldLoadCancelRect layout)
+        ]
+        ++ [ Widget WidgetWorldDelete (worldLoadDeleteRect layout)
+           | worldSelectionValid
+           ]
+        ++ [ Widget WidgetWorldLoadItem (worldLoadListRect layout)
+           | not (null filteredWorlds)
+           ]
   where
+    filteredWorlds = filter (matches (uiWorldFilter ui) . wsmName) (uiWorldList ui)
+    worldSelectionValid =
+      uiWorldSelected ui >= 0 && uiWorldSelected ui < length filteredWorlds
     matches query candidate =
       T.toLower query `T.isInfixOf` T.toLower candidate
 
@@ -273,7 +285,10 @@ buildWidgets layout =
     , Widget WidgetWorldSaveCancel (worldSaveCancelRect layout)
       -- World load dialog
     , Widget WidgetWorldLoadOk (worldLoadOkRect layout)
+    , Widget WidgetWorldDelete (worldLoadDeleteRect layout)
     , Widget WidgetWorldLoadCancel (worldLoadCancelRect layout)
+    , Widget WidgetWorldDeleteConfirm (worldDeleteConfirmOkRect layout)
+    , Widget WidgetWorldDeleteCancel (worldDeleteConfirmCancelRect layout)
      ]
 
 -- | Preserve the pre-registry raw widget precedence for overlapping config-row

@@ -428,6 +428,112 @@ spec = describe "CommandDispatch" $ do
           uiWorldName uiAfterLoad `shouldBe` worldName)
         `finally` (deleteNamedWorld worldName >> pure ())
 
+    it "guards saved-world deletion across mouse and keyboard success, cancel, no-selection, and failure paths" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+          worldName = "__topo_world_dialog_delete__"
+          staleName = "__topo_world_dialog_delete_stale__"
+          siblingName = "__topo_world_dialog_delete_sibling__"
+          click wid = dispatch ctx "click_widget" (object ["widget_id" .= (wid :: Text)])
+          saved name = any ((== name) . wsmName) <$> listWorlds
+          save name = do
+            setUiWorldSaveInput uiH name
+            setUiMenuMode uiH MenuWorldSave
+            dispatch ctx "dialog_confirm" Null
+          openFor name = do
+            setUiMenuMode uiH MenuEscape
+            _ <- getUiSnapshot uiH
+            opened <- click "WidgetMenuLoad"
+            srSuccess opened `shouldBe` True
+            setUiWorldFilter uiH name
+            setUiWorldSelected uiH 0
+            _ <- getUiSnapshot uiH
+            pure ()
+          cleanup = do
+            _ <- deleteNamedWorld worldName
+            _ <- deleteNamedWorld staleName
+            _ <- deleteNamedWorld siblingName
+            pure ()
+      cleanup
+      (do
+          _ <- writeReadyTerrainData ctx
+          saveRsp <- save worldName
+          srSuccess saveRsp `shouldBe` True
+          saved worldName `shouldReturn` True
+
+          openFor "no matching saved world"
+          noSelection <- dispatch ctx "send_key" (object ["key" .= ("delete" :: Text)])
+          srSuccess noSelection `shouldBe` False
+          noSelectionUi <- getUiSnapshot uiH
+          uiWorldDeleteConfirm noSelectionUi `shouldBe` False
+          saved worldName `shouldReturn` True
+
+          setUiWorldFilter uiH worldName
+          setUiWorldSelected uiH 0
+          _ <- getUiSnapshot uiH
+          mouseRequest <- click "WidgetWorldDelete"
+          srSuccess mouseRequest `shouldBe` True
+          requestedUi <- getUiSnapshot uiH
+          uiWorldDeleteConfirm requestedUi `shouldBe` True
+          uiWorldDeleteTarget requestedUi `shouldBe` Just worldName
+          mouseCancel <- click "WidgetWorldDeleteCancel"
+          srSuccess mouseCancel `shouldBe` True
+          uiAfterMouseCancel <- getUiSnapshot uiH
+          uiMenuMode uiAfterMouseCancel `shouldBe` MenuWorldLoad
+          uiWorldDeleteConfirm uiAfterMouseCancel `shouldBe` False
+          uiWorldDeleteTarget uiAfterMouseCancel `shouldBe` Nothing
+          saved worldName `shouldReturn` True
+
+          keyboardRequest <- dispatch ctx "send_key" (object ["key" .= ("delete" :: Text)])
+          srSuccess keyboardRequest `shouldBe` True
+          uiWorldDeleteConfirm <$> getUiSnapshot uiH `shouldReturn` True
+          keyboardCancel <- dispatch ctx "send_key" (object ["key" .= ("escape" :: Text)])
+          srSuccess keyboardCancel `shouldBe` True
+          uiAfterKeyboardCancel <- getUiSnapshot uiH
+          uiMenuMode uiAfterKeyboardCancel `shouldBe` MenuWorldLoad
+          uiWorldDeleteConfirm uiAfterKeyboardCancel `shouldBe` False
+          uiWorldDeleteTarget uiAfterKeyboardCancel `shouldBe` Nothing
+          saved worldName `shouldReturn` True
+
+          _ <- dispatch ctx "send_key" (object ["key" .= ("delete" :: Text)])
+          keyboardConfirm <- dispatch ctx "send_key" (object ["key" .= ("enter" :: Text)])
+          srSuccess keyboardConfirm `shouldBe` True
+          uiAfterDelete <- getUiSnapshot uiH
+          uiMenuMode uiAfterDelete `shouldBe` MenuWorldLoad
+          uiWorldDeleteConfirm uiAfterDelete `shouldBe` False
+          uiWorldDeleteTarget uiAfterDelete `shouldBe` Nothing
+          uiWorldDeleteError uiAfterDelete `shouldBe` Nothing
+          uiWorldSelected uiAfterDelete `shouldBe` 0
+          map wsmName (uiWorldList uiAfterDelete) `shouldNotContain` [worldName]
+          saved worldName `shouldReturn` False
+
+          saveStale <- save staleName
+          srSuccess saveStale `shouldBe` True
+          saveSibling <- save siblingName
+          srSuccess saveSibling `shouldBe` True
+          openFor staleName
+          _ <- click "WidgetWorldDelete"
+          uiWorldDeleteTarget <$> getUiSnapshot uiH `shouldReturn` Just staleName
+          externalDelete <- dispatch ctx "delete_world" (object ["name" .= staleName])
+          srSuccess externalDelete `shouldBe` True
+          uiWorldDeleteTarget <$> getUiSnapshot uiH `shouldReturn` Just staleName
+          failed <- click "WidgetWorldDeleteConfirm"
+          srSuccess failed `shouldBe` False
+          uiAfterFailure <- getUiSnapshot uiH
+          uiMenuMode uiAfterFailure `shouldBe` MenuWorldLoad
+          uiWorldDeleteConfirm uiAfterFailure `shouldBe` True
+          uiWorldDeleteTarget uiAfterFailure `shouldBe` Just staleName
+          uiWorldDeleteError uiAfterFailure
+            `shouldSatisfy` maybe False (\message ->
+              "Delete failed:" `Text.isPrefixOf` message && staleName `Text.isInfixOf` message)
+          saved siblingName `shouldReturn` True
+          cancelFailure <- click "WidgetWorldDeleteCancel"
+          srSuccess cancelFailure `shouldBe` True
+          uiAfterFailureCancel <- getUiSnapshot uiH
+          uiWorldDeleteConfirm uiAfterFailureCancel `shouldBe` False
+          uiWorldDeleteTarget uiAfterFailureCancel `shouldBe` Nothing
+          uiWorldDeleteError uiAfterFailureCancel `shouldBe` Nothing)
+        `finally` cleanup
+
     it "parses and commits seed input through the real set_seed operation" $ withCtx $ \ctx -> do
       let uiH = ahUiHandle (ccActorHandles ctx)
       setUiSeedInput uiH "-123"

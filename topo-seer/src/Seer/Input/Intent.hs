@@ -41,6 +41,9 @@ import Actor.UI.Setters
   , setUiWorldFilter
   , setUiWorldSaveInput
   , setUiWorldSelected
+  , setUiWorldDeleteConfirm
+  , setUiWorldDeleteTarget
+  , setUiWorldDeleteError
   )
 import Actor.UI.State
   ( BaseViewMode(..)
@@ -52,7 +55,7 @@ import Actor.UI.State
   , WeatherBasis(..)
   , effectiveViewSelection
   )
-import Actor.UiActions.Handles (ActorHandles(..))
+import Actor.UiActions.Handles (ActorHandles(..), publishUiMutation)
 import Seer.Config.PresetCatalogue (presetCatalogueMatches)
 import Seer.DataBrowser.Lifecycle (DataBrowserAppAction(..))
 import Seer.Editor.Types (BrushSettings(..), EditorState(..), EditorTool(..))
@@ -196,7 +199,9 @@ executeTextIntent env input = do
         MenuPresetSave -> appendText (uiPresetInput ui) input (setUiPresetInput uiH) "preset_text"
         MenuWorldSave -> appendText (uiWorldSaveInput ui) input (setUiWorldSaveInput uiH) "world_text"
         MenuPresetLoad -> appendFilter (uiPresetFilter ui) input (setUiPresetFilter uiH) (setUiPresetSelected uiH) "preset_filter"
-        MenuWorldLoad -> appendFilter (uiWorldFilter ui) input (setUiWorldFilter uiH) (setUiWorldSelected uiH) "world_filter"
+        MenuWorldLoad
+          | uiWorldDeleteConfirm ui -> pure (Right noEffect)
+          | otherwise -> appendFilter (uiWorldFilter ui) input (setUiWorldFilter uiH) (setUiWorldSelected uiH) "world_filter"
         _ -> pure (Right noEffect)
   where
     appendText current raw setter action = do
@@ -226,9 +231,11 @@ executeDialogConfirm env = do
           then pure (Left "world name must not be empty")
           else runAndClose "save_world" (object ["name" .= uiWorldSaveInput ui])
             (applied "world_save_confirm") { iirName = Just (uiWorldSaveInput ui), iirStopTextInput = True }
-      MenuWorldLoad ->
-        let items = filteredWorlds ui
-        in runSelected "load_world" (uiWorldSelected ui) items wsmName "world_load_confirm"
+      MenuWorldLoad
+        | uiWorldDeleteConfirm ui -> confirmWorldDelete env ui
+        | otherwise ->
+            let items = filteredWorlds ui
+            in runSelected "load_world" (uiWorldSelected ui) items wsmName "world_load_confirm"
       _ | uiSeedEditing ui -> commitSeed env ui
         | otherwise -> pure (Right noEffect)
   where
@@ -352,22 +359,34 @@ executeDataFieldKey env ui field key =
 executeModalKey :: InputIntentEnv -> UiState -> InputKey -> IO (Either Text InputIntentResult)
 executeModalKey env ui key =
   let uiH = ahUiHandle (iieActorHandles env)
-  in case key of
-    KeyEscape -> do
-      setUiMenuMode uiH MenuNone
-      pure (Right (applied "cancel_dialog") { iirStopTextInput = True })
-    KeyEnter -> executeDialogConfirm env
-    KeyBackspace -> case uiMenuMode ui of
-      MenuPresetSave -> textBackspace (uiPresetInput ui) (setUiPresetInput uiH)
-      MenuWorldSave -> textBackspace (uiWorldSaveInput ui) (setUiWorldSaveInput uiH)
-      MenuPresetLoad -> filterBackspace (uiPresetFilter ui) (setUiPresetFilter uiH) (setUiPresetSelected uiH)
-      MenuWorldLoad -> filterBackspace (uiWorldFilter ui) (setUiWorldFilter uiH) (setUiWorldSelected uiH)
+  in if uiMenuMode ui == MenuWorldLoad && uiWorldDeleteConfirm ui
+    then case key of
+      KeyEscape -> cancelWorldDelete env
+      KeyEnter -> confirmWorldDelete env ui
       _ -> pure (Right noEffect)
-    KeyUp -> moveSelection (-1)
-    KeyDown -> moveSelection 1
-    KeySpace -> executeTextIntent env " "
-    KeyCharacter ch | ch >= ' ' -> executeTextIntent env (Text.singleton ch)
-    _ -> pure (Right noEffect)
+    else case key of
+      KeyEscape -> do
+        when (uiMenuMode ui == MenuWorldLoad) $ do
+          setUiWorldDeleteConfirm uiH False
+          setUiWorldDeleteTarget uiH Nothing
+          setUiWorldDeleteError uiH Nothing
+        setUiMenuMode uiH MenuNone
+        pure (Right (applied "cancel_dialog") { iirStopTextInput = True })
+      KeyEnter -> executeDialogConfirm env
+      KeyDelete
+        | uiMenuMode ui == MenuWorldLoad -> requestWorldDelete env ui
+        | otherwise -> pure (Right noEffect)
+      KeyBackspace -> case uiMenuMode ui of
+        MenuPresetSave -> textBackspace (uiPresetInput ui) (setUiPresetInput uiH)
+        MenuWorldSave -> textBackspace (uiWorldSaveInput ui) (setUiWorldSaveInput uiH)
+        MenuPresetLoad -> filterBackspace (uiPresetFilter ui) (setUiPresetFilter uiH) (setUiPresetSelected uiH)
+        MenuWorldLoad -> filterBackspace (uiWorldFilter ui) (setUiWorldFilter uiH) (setUiWorldSelected uiH)
+        _ -> pure (Right noEffect)
+      KeyUp -> moveSelection (-1)
+      KeyDown -> moveSelection 1
+      KeySpace -> executeTextIntent env " "
+      KeyCharacter ch | ch >= ' ' -> executeTextIntent env (Text.singleton ch)
+      _ -> pure (Right noEffect)
   where
     textBackspace current setter = do
       let next = Text.dropEnd 1 current
@@ -490,6 +509,53 @@ filteredWorlds :: UiState -> [WorldSaveManifest]
 filteredWorlds ui =
   let needle = Text.toLower (uiWorldFilter ui)
   in filter (Text.isInfixOf needle . Text.toLower . wsmName) (uiWorldList ui)
+
+selectedWorld :: UiState -> Maybe WorldSaveManifest
+selectedWorld ui = atIndex (uiWorldSelected ui) (filteredWorlds ui)
+
+requestWorldDelete :: InputIntentEnv -> UiState -> IO (Either Text InputIntentResult)
+requestWorldDelete env ui = case selectedWorld ui of
+  Nothing -> pure (Left "select a saved world before deleting")
+  Just manifest -> do
+    let uiH = ahUiHandle (iieActorHandles env)
+    setUiWorldDeleteConfirm uiH True
+    setUiWorldDeleteTarget uiH (Just (wsmName manifest))
+    setUiWorldDeleteError uiH Nothing
+    _ <- publishUiMutation (iieActorHandles env)
+    pure (Right (applied "world_delete_request") { iirName = Just (wsmName manifest) })
+
+cancelWorldDelete :: InputIntentEnv -> IO (Either Text InputIntentResult)
+cancelWorldDelete env = do
+  let uiH = ahUiHandle (iieActorHandles env)
+  setUiWorldDeleteConfirm uiH False
+  setUiWorldDeleteTarget uiH Nothing
+  setUiWorldDeleteError uiH Nothing
+  _ <- publishUiMutation (iieActorHandles env)
+  pure (Right (applied "world_delete_cancel"))
+
+confirmWorldDelete :: InputIntentEnv -> UiState -> IO (Either Text InputIntentResult)
+confirmWorldDelete env ui = case uiWorldDeleteTarget ui of
+  Nothing -> do
+    let message = "Delete failed: the confirmed saved world is no longer available"
+    setUiWorldDeleteError (ahUiHandle (iieActorHandles env)) (Just message)
+    _ <- publishUiMutation (iieActorHandles env)
+    pure (Left message)
+  Just name -> do
+    let uiH = ahUiHandle (iieActorHandles env)
+    result <- iieRunService env "delete_world" (object ["name" .= name])
+    case result of
+      Right _ -> do
+        setUiWorldDeleteConfirm uiH False
+        setUiWorldDeleteTarget uiH Nothing
+        setUiWorldDeleteError uiH Nothing
+        _ <- publishUiMutation (iieActorHandles env)
+        pure (Right (applied "world_delete_confirm")
+          { iirName = Just name, iirSelected = Just 0 })
+      Left err -> do
+        let message = "Delete failed: " <> serviceErrorText err <> " (world: " <> name <> ")"
+        setUiWorldDeleteError uiH (Just message)
+        _ <- publishUiMutation (iieActorHandles env)
+        pure (Left message)
 
 atIndex :: Int -> [a] -> Maybe a
 atIndex index values

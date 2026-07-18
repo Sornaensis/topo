@@ -39,6 +39,7 @@ import Seer.Config.SliderSpec (SliderId(..))
 import Seer.Config.Snapshot (presetCatalogueMatches)
 import Seer.Draw.Dialog (presetListLabel)
 import Seer.Editor.Types (EditorState(..), EditorTool(..))
+import Seer.World.Persist.Types (WorldSaveManifest(..))
 import Test.Hspec
 import Topo.Pipeline.Stage (allBuiltinStageIds)
 import Topo.Plugin.DataResource
@@ -147,6 +148,44 @@ spec = describe "UI.WidgetTree" $ do
       `shouldBe` [WidgetWorldSaveOk, WidgetWorldSaveCancel]
     idsFor MenuWorldLoad emptyUiState
       `shouldBe` [WidgetWorldLoadOk, WidgetWorldLoadCancel]
+
+  it "exposes saved-world deletion only for a valid selection and barriers confirmation" $ do
+    let manifest = WorldSaveManifest
+          "alpha" 1 64 (read "2025-01-01 00:00:00 UTC") 0 [] [] [] []
+        base = emptyUiState
+          { uiMenuMode = MenuWorldLoad
+          , uiWorldList = [manifest]
+          , uiWorldSelected = 0
+          }
+        ids state = map widgetId (buildActiveWidgets state wideWidgetLayout)
+    ids base `shouldBe`
+      [ WidgetWorldLoadOk
+      , WidgetWorldLoadCancel
+      , WidgetWorldDelete
+      , WidgetWorldLoadItem
+      ]
+    ids base { uiWorldSelected = 1 }
+      `shouldBe` [WidgetWorldLoadOk, WidgetWorldLoadCancel, WidgetWorldLoadItem]
+    ids base { uiWorldFilter = "missing" }
+      `shouldBe` [WidgetWorldLoadOk, WidgetWorldLoadCancel]
+    let confirming = base
+          { uiWorldDeleteConfirm = True
+          , uiWorldDeleteTarget = Just "alpha"
+          }
+    ids confirming
+      `shouldBe` [WidgetWorldDeleteConfirm, WidgetWorldDeleteCancel]
+    hitTest (buildMenuWidgets base wideWidgetLayout)
+      (rectHitPoint (worldLoadDeleteRect wideWidgetLayout))
+      `shouldBe` Just WidgetWorldDelete
+    hitTest (buildMenuWidgets confirming wideWidgetLayout)
+      (rectHitPoint (worldDeleteConfirmOkRect wideWidgetLayout))
+      `shouldBe` Just WidgetWorldDeleteConfirm
+    let deleteCapability = widgetCapability base WidgetWorldDelete
+        invalidDelete = widgetCapability (base { uiWorldSelected = 1 }) WidgetWorldDelete
+    wcVisible deleteCapability `shouldBe` True
+    wcEnabled deleteCapability `shouldBe` True
+    wcSupport deleteCapability `shouldBe` WidgetClickable
+    wcVisible invalidDelete `shouldBe` False
 
   it "treats Data Browser delete confirmation as a full widget barrier" $ do
     let dbs = browserState

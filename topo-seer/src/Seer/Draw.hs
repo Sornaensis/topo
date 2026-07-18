@@ -60,7 +60,7 @@ import Seer.Config.PresetCatalogue (presetCatalogueMatches)
 import Seer.Draw.Dialog (drawDialogButton, drawDialogPanel, drawDialogTitle, drawListSelection, drawTextInputField, presetListLabel)
 import Seer.Draw.Config (drawConfigPanel, drawConfigTabs, drawDataDetailPopover)
 import Seer.Draw.Config.Labels (drawConfigLabels)
-import UI.WidgetsDraw (drawCentered, drawLabelAbove, drawLeft, drawTextLine, drawTextLineTruncated, rectToSDL)
+import UI.WidgetsDraw (drawCentered, drawLabelAbove, drawLeft, drawLeftTruncated, drawTextLine, drawTextLineTruncated, rectToSDL)
 
 seedMaxDigits :: Int
 seedMaxDigits = 20
@@ -243,7 +243,7 @@ drawWorldSaveDialog renderer fontCache ui layout =
       drawDialogButton renderer fontCache cancelR "Cancel" True
     _ -> pure ()
 
--- | Draw the world load dialog (list + Load/Cancel).
+-- | Draw the world load dialog and its guarded saved-world deletion flow.
 drawWorldLoadDialog :: SDL.Renderer -> Maybe FontCache -> UiState -> Layout -> IO ()
 drawWorldLoadDialog renderer fontCache ui layout =
   case uiMenuMode ui of
@@ -252,19 +252,40 @@ drawWorldLoadDialog renderer fontCache ui layout =
           filterR  = worldLoadFilterRect layout
           listR    = worldLoadListRect layout
           okR      = worldLoadOkRect layout
+          deleteR  = worldLoadDeleteRect layout
           cancelR  = worldLoadCancelRect layout
           fText    = Text.toLower (uiWorldFilter ui)
           items    = filter (\m -> Text.isInfixOf fText (Text.toLower (wsmName m)))
                             (uiWorldList ui)
-          sel      = min (uiWorldSelected ui) (max 0 (length items - 1))
+          sel      = uiWorldSelected ui
+          selected = if sel < 0 then Nothing else case drop sel items of
+            item:_ -> Just item
+            [] -> Nothing
       drawDialogPanel renderer dialog
       drawDialogTitle renderer fontCache dialog "Load World"
       drawTextInputField renderer fontCache filterR (uiWorldFilter ui)
       drawListSelection renderer fontCache listR 28 9 sel
         (worldLoadItemRect layout) worldLoadLabel items
-      let hasItems = not (null items)
-      drawDialogButton renderer fontCache okR "Load" hasItems
-      drawDialogButton renderer fontCache cancelR "Cancel" True
+      case uiWorldDeleteError ui of
+        Just err -> drawLeftTruncated fontCache colLogErrorText (worldLoadErrorRect layout) err
+        Nothing -> pure ()
+      if uiWorldDeleteConfirm ui
+        then do
+          let confirmDialog = worldDeleteConfirmDialogRect layout
+              Rect (V2 cx cy, V2 cw _) = confirmDialog
+              nameRect = Rect (V2 (cx + 12) (cy + 38), V2 (cw - 24) 24)
+          drawDialogPanel renderer confirmDialog
+          drawDialogTitle renderer fontCache confirmDialog "Delete saved world?"
+          drawLeftTruncated fontCache textDialogContent nameRect
+            (maybe "No world selected" id (uiWorldDeleteTarget ui))
+          drawDialogButton renderer fontCache (worldDeleteConfirmOkRect layout) "Delete"
+            (maybe False (const True) (uiWorldDeleteTarget ui))
+          drawDialogButton renderer fontCache (worldDeleteConfirmCancelRect layout) "Cancel" True
+        else do
+          let hasSelection = maybe False (const True) selected
+          drawDialogButton renderer fontCache okR "Load" hasSelection
+          drawDialogButton renderer fontCache deleteR "Delete" hasSelection
+          drawDialogButton renderer fontCache cancelR "Cancel" True
     _ -> pure ()
 
 -- | Format a world manifest entry for display in the load list.

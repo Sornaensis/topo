@@ -117,7 +117,12 @@ module UI.Layout
   , worldLoadListRect
   , worldLoadItemRect
   , worldLoadOkRect
+  , worldLoadDeleteRect
   , worldLoadCancelRect
+  , worldDeleteConfirmDialogRect
+  , worldDeleteConfirmOkRect
+  , worldDeleteConfirmCancelRect
+  , worldLoadErrorRect
     -- Editor toolbar
   , editorToolbarRect
   , editorToolButtonRect
@@ -747,15 +752,48 @@ worldLoadItemRect layout index =
 worldLoadOkRect :: Layout -> Rect
 worldLoadOkRect layout =
   let Rect (V2 dx dy, V2 _dw dh) = worldLoadDialogRect layout
-      pad = 16; btnW = 100; btnH = 28
+      pad = 16; btnW = 84; btnH = 28
   in Rect (V2 (dx + pad) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- | Guarded \"Delete\" button for the selected saved world.
+worldLoadDeleteRect :: Layout -> Rect
+worldLoadDeleteRect layout =
+  let Rect (V2 dx dy, V2 dw dh) = worldLoadDialogRect layout
+      btnW = 84; btnH = 28
+  in Rect (V2 (dx + (dw - btnW) `div` 2) (dy + dh - 16 - btnH), V2 btnW btnH)
 
 -- | \"Cancel\" button in the world load dialog.
 worldLoadCancelRect :: Layout -> Rect
 worldLoadCancelRect layout =
   let Rect (V2 dx dy, V2 dw dh) = worldLoadDialogRect layout
-      pad = 16; btnW = 100; btnH = 28
+      pad = 16; btnW = 84; btnH = 28
   in Rect (V2 (dx + dw - pad - btnW) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- | Modal confirmation panel inside the world load dialog.
+worldDeleteConfirmDialogRect :: Layout -> Rect
+worldDeleteConfirmDialogRect layout =
+  let Rect (V2 dx dy, V2 dw _) = worldLoadDialogRect layout
+      pad = 16; confirmH = 120
+  in Rect (V2 (dx + pad) (dy + 142), V2 (dw - pad * 2) confirmH)
+
+worldDeleteConfirmOkRect :: Layout -> Rect
+worldDeleteConfirmOkRect layout =
+  let Rect (V2 dx dy, V2 dw dh) = worldDeleteConfirmDialogRect layout
+      pad = 12; btnW = 100; btnH = 28
+  in Rect (V2 (dx + pad) (dy + dh - pad - btnH), V2 btnW btnH)
+
+worldDeleteConfirmCancelRect :: Layout -> Rect
+worldDeleteConfirmCancelRect layout =
+  let Rect (V2 dx dy, V2 dw dh) = worldDeleteConfirmDialogRect layout
+      pad = 12; btnW = 100; btnH = 28
+  in Rect (V2 (dx + dw - pad - btnW) (dy + dh - pad - btnH), V2 btnW btnH)
+
+-- | Actionable deletion failure shown without dismissing the world dialog.
+worldLoadErrorRect :: Layout -> Rect
+worldLoadErrorRect layout =
+  let Rect (V2 dx dy, V2 dw _) = worldLoadDialogRect layout
+      pad = 16
+  in Rect (V2 (dx + pad) (dy + 334), V2 (dw - pad * 2) 18)
 
 -- | Checkbox rect for a pipeline stage toggle at the given row index.
 --

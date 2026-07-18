@@ -1,6 +1,7 @@
 module Spec.Layout (spec) where
 
 import Test.Hspec
+import Data.List (tails)
 import Linear (V2(..))
 import UI.Layout
 import qualified UI.Geometry as Geometry
@@ -124,6 +125,18 @@ spec = describe "UI.Layout" $ do
     downY `shouldBe` (rowY + (rowH - downH) `div` 2)
     tickY `shouldBe` rowY
     rateY `shouldBe` (rowY + 4)
+
+  it "lays out world load and delete confirmation actions without overlap" $ do
+    let layout = layoutFor (V2 800 600) 160
+        dialog = worldLoadDialogRect layout
+        actions = [worldLoadOkRect layout, worldLoadDeleteRect layout, worldLoadCancelRect layout]
+        confirmation = worldDeleteConfirmDialogRect layout
+        confirmActions = [worldDeleteConfirmOkRect layout, worldDeleteConfirmCancelRect layout]
+    mapM_ (`shouldSatisfy` insideRect dialog) actions
+    mapM_ (`shouldSatisfy` insideRect confirmation) confirmActions
+    mapM_ (uncurry shouldNotOverlap)
+      [(left, right) | (left:rest) <- tails actions, right <- rest]
+    shouldNotOverlap (worldDeleteConfirmOkRect layout) (worldDeleteConfirmCancelRect layout)
 
   it "positions editor toolbar centered horizontally below top bar" $ do
     let layout = layoutFor (V2 1200 800) 160
@@ -283,6 +296,15 @@ spec = describe "UI.Layout" $ do
 inside :: V2 Int -> Rect -> Bool
 inside (V2 px py) (Rect (V2 x y, V2 w h)) =
   px >= x && px < x + w && py >= y && py < y + h
+
+insideRect :: Rect -> Rect -> Bool
+insideRect (Rect (V2 ox oy, V2 ow oh)) (Rect (V2 ix iy, V2 iw ih)) =
+  ix >= ox && iy >= oy && ix + iw <= ox + ow && iy + ih <= oy + oh
+
+shouldNotOverlap :: Rect -> Rect -> Expectation
+shouldNotOverlap (Rect (V2 ax ay, V2 aw ah)) (Rect (V2 bx by, V2 bw bh)) =
+  (ax + aw <= bx || bx + bw <= ax || ay + ah <= by || by + bh <= ay)
+    `shouldBe` True
 
 commonWindowSizes :: [V2 Int]
 commonWindowSizes = [V2 800 600, V2 1280 720, V2 1920 1080]
