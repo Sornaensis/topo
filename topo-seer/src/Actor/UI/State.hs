@@ -858,7 +858,7 @@ viewModeRegistry =
         ])
       ["temp_avg_c", "precip_avg_mm_year"]
       ["climate_diagnostics.temp_avg_c", "climate_diagnostics.precip_avg_mm_year"]
-      ["climate_temp_avg", "temperature"]
+      ["climate_temp_avg"]
   , scalar ViewWeather "weather" "Current Weather Temp"
       "Current simulated weather temperature with humidity, wind, pressure, and precipitation context; use Current Cloud/Storm for aggregate cloud cover and storm tint."
       (Just "degC") "weather-heat"
@@ -870,9 +870,7 @@ viewModeRegistry =
       ["temp_c", "humidity_pct", "wind_spd_ms"]
       ["weather.temp", "weather.humidity", "weather.wind_spd", "weather.pressure", "weather.precip"]
       [ "weather_temp_current", "weather_humidity_current", "weather_wind_spd_current", "weather_pressure_current", "weather_precip_current"
-      , "weather_temperature", "weather_humidity", "weather_wind_speed", "weather_pressure", "weather_precipitation"
       , "weather_temp_typical", "weather_humidity_typical", "weather_wind_dir_typical", "weather_wind_spd_typical", "weather_precip_typical"
-      , "normal_temperature", "normal_humidity", "normal_wind_dir", "normal_wind_speed", "normal_precipitation"
       ]
   , scalar ViewCloud "cloud" "Current Cloud/Storm"
       "Current simulated aggregate cloud cover and cloud-water density with precipitation-derived storm tint; low/mid/high layer fields are inspector/API context, not separate rendered layers."
@@ -890,13 +888,9 @@ viewModeRegistry =
       [ "weather_cloud_cover_current", "weather_cloud_water_current"
       , "weather_cloud_cover_low_current", "weather_cloud_cover_mid_current", "weather_cloud_cover_high_current"
       , "weather_cloud_water_low_current", "weather_cloud_water_mid_current", "weather_cloud_water_high_current"
-      , "cloud_cover", "cloud_water", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"
       , "weather_cloud_cover_typical", "weather_cloud_water_typical"
       , "weather_cloud_cover_low_typical", "weather_cloud_cover_mid_typical", "weather_cloud_cover_high_typical"
       , "weather_cloud_water_low_typical", "weather_cloud_water_mid_typical", "weather_cloud_water_high_typical"
-      , "normal_cloud_cover", "normal_cloud_water"
-      , "normal_cloud_cover_low", "normal_cloud_cover_mid", "normal_cloud_cover_high"
-      , "normal_cloud_water_low", "normal_cloud_water_mid", "normal_cloud_water_high"
       ]
   , scalar ViewMoisture "moisture" "Moisture"
       "Terrain soil moisture, shown as relative humidity percent in hover and inspector values."
@@ -919,7 +913,7 @@ viewModeRegistry =
         ])
       ["precip_avg_mm_year", "humidity_pct"]
       ["climate_diagnostics.precip_avg_mm_year", "climate_diagnostics.humidity_avg_pct"]
-      ["climate_precip_avg", "precipitation"]
+      ["climate_precip_avg"]
   , scalar ViewPrecipCurrent "precipitation_current" "Current Precipitation"
       "Current simulated weather precipitation from the instantaneous WeatherChunk."
       (Just "mm/yr") "precipitation-moisture"
@@ -930,7 +924,7 @@ viewModeRegistry =
         ])
       ["precip_mm_year", "humidity_pct"]
       ["weather.precip", "weather.humidity"]
-      ["weather_precip_current", "weather_humidity_current", "weather_precipitation", "weather_humidity"]
+      ["weather_precip_current", "weather_humidity_current"]
   , scalar ViewCloudTypical "cloud_typical" "Typical Cloud Normal"
       "Typical generated cloud normal from the weather_normals layer; reports unavailable when generated normals are missing."
       (Just "% cover") "cloud-storm"
@@ -947,9 +941,6 @@ viewModeRegistry =
       [ "weather_cloud_cover_typical", "weather_cloud_water_typical"
       , "weather_cloud_cover_low_typical", "weather_cloud_cover_mid_typical", "weather_cloud_cover_high_typical"
       , "weather_cloud_water_low_typical", "weather_cloud_water_mid_typical", "weather_cloud_water_high_typical"
-      , "normal_cloud_cover", "normal_cloud_water"
-      , "normal_cloud_cover_low", "normal_cloud_cover_mid", "normal_cloud_cover_high"
-      , "normal_cloud_water_low", "normal_cloud_water_mid", "normal_cloud_water_high"
       ]
   , categorical ViewPlateId "plate_id" "Plate ID"
       "Discrete tectonic plate identifier palette."

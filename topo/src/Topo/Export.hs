@@ -3,7 +3,6 @@
 module Topo.Export
   ( ExportError(..)
   , canonicalBasisQualifiedExportFields
-  , legacyBasisExportAliases
   , encodeTerrainChunk
   , decodeTerrainChunk
   , encodeClimateChunk
@@ -108,37 +107,6 @@ canonicalBasisQualifiedExportFields =
   , "weather_cloud_water_low_typical"
   , "weather_cloud_water_mid_typical"
   , "weather_cloud_water_high_typical"
-  ]
-
--- | Legacy JSON export aliases retained for compatibility.  The right-hand
--- side is the canonical basis-qualified field name clients should prefer.
-legacyBasisExportAliases :: [(Text, Text)]
-legacyBasisExportAliases =
-  [ ("temperature", "climate_temp_avg")
-  , ("precipitation", "climate_precip_avg")
-  , ("weather_temperature", "weather_temp_current")
-  , ("weather_humidity", "weather_humidity_current")
-  , ("weather_wind_speed", "weather_wind_spd_current")
-  , ("weather_pressure", "weather_pressure_current")
-  , ("weather_precipitation", "weather_precip_current")
-  , ("cloud_cover", "weather_cloud_cover_current")
-  , ("cloud_water", "weather_cloud_water_current")
-  , ("cloud_cover_low", "weather_cloud_cover_low_current")
-  , ("cloud_cover_mid", "weather_cloud_cover_mid_current")
-  , ("cloud_cover_high", "weather_cloud_cover_high_current")
-  , ("normal_temperature", "weather_temp_typical")
-  , ("normal_humidity", "weather_humidity_typical")
-  , ("normal_wind_dir", "weather_wind_dir_typical")
-  , ("normal_wind_speed", "weather_wind_spd_typical")
-  , ("normal_precipitation", "weather_precip_typical")
-  , ("normal_cloud_cover", "weather_cloud_cover_typical")
-  , ("normal_cloud_water", "weather_cloud_water_typical")
-  , ("normal_cloud_cover_low", "weather_cloud_cover_low_typical")
-  , ("normal_cloud_cover_mid", "weather_cloud_cover_mid_typical")
-  , ("normal_cloud_cover_high", "weather_cloud_cover_high_typical")
-  , ("normal_cloud_water_low", "weather_cloud_water_low_typical")
-  , ("normal_cloud_water_mid", "weather_cloud_water_mid_typical")
-  , ("normal_cloud_water_high", "weather_cloud_water_high_typical")
   ]
 
 -- | Encode a terrain chunk.

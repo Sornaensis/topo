@@ -13,22 +13,16 @@ import Topo.Plugin.RPC (encodeBase64Text)
 
 spec :: Spec
 spec = describe "Export" $ do
-  it "defines canonical basis-qualified weather/climate export fields and legacy aliases" $ do
+  it "defines canonical basis-qualified climate, current, and typical export fields" $ do
     canonicalBasisQualifiedExportFields `shouldSatisfy` (\fields -> all (`elem` fields)
       [ "climate_temp_avg"
       , "climate_precip_avg"
       , "weather_temp_current"
       , "weather_precip_current"
       , "weather_cloud_cover_current"
+      , "weather_temp_typical"
       , "weather_cloud_cover_typical"
       ])
-    legacyBasisExportAliases `shouldSatisfy` (\aliases -> all (`elem` aliases)
-      [ ("temperature", "climate_temp_avg")
-      , ("precipitation", "climate_precip_avg")
-      , ("weather_temperature", "weather_temp_current")
-      , ("cloud_cover", "weather_cloud_cover_current")
-      ])
-    map fst legacyBasisExportAliases `shouldSatisfy` all (not . Text.isSuffixOf "_current")
 
   it "keeps the protocol-v4 little-endian biome/base64 fixture stable" $ do
     let config = WorldConfig { wcChunkSize = 1 }

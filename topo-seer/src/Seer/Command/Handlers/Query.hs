@@ -5,6 +5,7 @@
 module Seer.Command.Handlers.Query
   ( handleFindHexes
   , handleExportTerrainData
+  , validateTerrainExportRequestFields
   , handleExportMeshData
   , handleExportSampleData
   ) where
@@ -12,7 +13,9 @@ module Seer.Command.Handlers.Query
 import Data.Aeson (Value(..), object, (.=), (.:), (.:?))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Types as Aeson
+import Data.Foldable (toList)
 import qualified Data.IntMap.Strict as IntMap
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -20,14 +23,19 @@ import Data.Word (Word16)
 import qualified Data.Vector.Unboxed as U
 
 import Actor.Data (TerrainSnapshot(..))
-import Actor.UI.State (allViewModeExportFields, readUiSnapshotRef)
+import Actor.UI.State (readUiSnapshotRef)
 import Actor.SnapshotReceiver (readTerrainSnapshot)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Seer.Command.Context (CommandContext(..))
 import Seer.World.Persist (snapshotToWorld)
 import Topo.Biome.Name (biomeDisplayName)
-import Topo.Export (canonicalBasisQualifiedExportFields, legacyBasisExportAliases)
+import Topo.Export (canonicalBasisQualifiedExportFields)
 import Seer.Command.Types (SeerResponse, okResponse, errResponse)
+import Seer.Service.Types
+  ( ServiceError(..)
+  , ServiceErrorDetail(..)
+  , serviceErrorText
+  )
 import Topo.Mesh (Mesh(..), meshPatch)
 import Topo.Sample (TerrainSampleReal(..), convertSample, sampleTerrain)
 import Topo.World (TerrainWorld(..))
@@ -99,22 +107,25 @@ handleExportTerrainData ctx reqId params = do
   if chunkSize <= 0
     then pure $ errResponse reqId "no terrain generated"
     else do
-      let opts = maybe defaultExportOpts id (Aeson.parseMaybe parseExportOpts params)
-          chunkIds = case eoChunks opts of
-            Just ids -> ids
-            Nothing  -> IntMap.keys (tsTerrainChunks snap)
-          fields = case eoFields opts of
-            Just fs -> fs
-            Nothing -> ["elevation"]
-          chunkEntries = map (exportChunk snap fields) chunkIds
-      pure $ okResponse reqId $ object
-        [ "chunk_count" .= length chunkEntries
-        , "fields"      .= fields
-        , "available_fields" .= allViewModeExportFields
-        , "data"        .= object
-            [ Key.fromText (Text.pack (show cid)) .= val | (cid, val) <- chunkEntries ]
-        , "diagnostics" .= exportDiagnostics
-        ]
+      case validateTerrainExportRequestFields params of
+        Left err -> pure $ errResponse reqId (serviceErrorText err)
+        Right () -> do
+          let opts = maybe defaultExportOpts id (Aeson.parseMaybe parseExportOpts params)
+              chunkIds = case eoChunks opts of
+                Just ids -> ids
+                Nothing  -> IntMap.keys (tsTerrainChunks snap)
+              fields = case eoFields opts of
+                Just fs -> fs
+                Nothing -> ["elevation"]
+              chunkEntries = map (exportChunk snap fields) chunkIds
+          pure $ okResponse reqId $ object
+            [ "chunk_count" .= length chunkEntries
+            , "fields"      .= fields
+            , "available_fields" .= canonicalTerrainExportFields
+            , "data"        .= object
+                [ Key.fromText (Text.pack (show cid)) .= val | (cid, val) <- chunkEntries ]
+            , "diagnostics" .= exportDiagnostics
+            ]
 
 -- | Handle @export_mesh_data@ — export a rectangular terrain mesh patch.
 handleExportMeshData :: CommandContext -> Int -> Value -> IO SeerResponse
@@ -290,14 +301,7 @@ exportDiagnostics =
   , diagnostic "info" "basis_qualified_fields"
       ("canonical climate/weather export fields include: "
         <> Text.intercalate ", " canonicalBasisQualifiedExportFields)
-  , diagnostic "warn" "legacy_basis_aliases"
-      ("legacy export aliases remain available for compatibility: " <> aliasSummary)
   ]
-  where
-    aliasSummary = Text.intercalate ", "
-      [ alias <> " -> " <> canonical
-      | (alias, canonical) <- legacyBasisExportAliases
-      ]
 
 -- =====================================================================
 -- find_hexes implementation
@@ -452,6 +456,76 @@ data ExportOpts = ExportOpts
 defaultExportOpts :: ExportOpts
 defaultExportOpts = ExportOpts Nothing Nothing
 
+canonicalTerrainExportFields :: [Text]
+canonicalTerrainExportFields =
+  [ "elevation"
+  , "moisture"
+  , "hardness"
+  , "fertility"
+  , "curvature"
+  , "roughness"
+  , "soil_depth"
+  , "biome"
+  , "biome_code"
+  , "terrain_form"
+  , "terrain_form_code"
+  , "plate_id"
+  , "plate_boundary"
+  , "plate_boundary_code"
+  , "plate_hardness"
+  , "plate_crust"
+  , "plate_crust_code"
+  , "plate_age"
+  , "plate_height"
+  , "plate_velocity"
+  , "plate_velocity_x"
+  , "plate_velocity_y"
+  , "vegetation_cover"
+  , "vegetation_density"
+  , "vegetation_albedo"
+  , "river_discharge"
+  ] ++ canonicalBasisQualifiedExportFields
+
+-- | Reject field selectors which are not part of the canonical terrain export
+-- contract. The AppService adapter uses this before entering the legacy command
+-- envelope so HTTP callers retain structured validation details.
+validateTerrainExportRequestFields :: Value -> Either ServiceError ()
+validateTerrainExportRequestFields params =
+  case params of
+    Object request -> case KM.lookup "fields" request of
+      Nothing -> Right ()
+      Just (Array fields) -> finish
+        [ detail
+        | (index, field) <- zip [0 :: Int ..] (toList fields)
+        , Just detail <- [validateField index field]
+        ]
+      Just _ -> Left $ ServiceValidationError "validation failed"
+        [ invalidFieldsDetail ["fields"] "expected an array of canonical field names" ]
+    _ -> Right ()
+  where
+    finish [] = Right ()
+    finish details = Left (ServiceValidationError "validation failed" details)
+
+    validateField index (String field)
+      | field `elem` canonicalTerrainExportFields = Nothing
+      | otherwise = Just ServiceErrorDetail
+          { serviceErrorDetailPath = ["fields", Text.pack (show index)]
+          , serviceErrorDetailCode = "unknown_field"
+          , serviceErrorDetailMessage =
+              "unknown terrain export field '" <> field
+                <> "'; available fields: "
+                <> Text.intercalate ", " canonicalTerrainExportFields
+          }
+    validateField index _ = Just $
+      invalidFieldsDetail ["fields", Text.pack (show index)]
+        "expected a canonical field name"
+
+    invalidFieldsDetail path message = ServiceErrorDetail
+      { serviceErrorDetailPath = path
+      , serviceErrorDetailCode = "invalid_field"
+      , serviceErrorDetailMessage = message
+      }
+
 exportChunk :: TerrainSnapshot -> [Text] -> Int -> (Int, Value)
 exportChunk snap fields cid =
   case IntMap.lookup cid (tsTerrainChunks snap) of
@@ -475,8 +549,6 @@ exportField cid tc snap field = (Key.fromText field, val)
       "biome_code"   -> Aeson.toJSON [ biomeIdToCode b | b <- U.toList (tcFlags tc) ]
       "terrain_form" -> Aeson.toJSON [ Text.pack (terrainFormDisplayName f) | f <- U.toList (tcTerrainForm tc) ]
       "terrain_form_code" -> Aeson.toJSON [ terrainFormToCode f | f <- U.toList (tcTerrainForm tc) ]
-      "temperature"  -> climateJson ccTempAvg
-      "precipitation" -> climateJson ccPrecipAvg
       "climate_temp_avg" -> climateJson ccTempAvg
       "climate_precip_avg" -> climateJson ccPrecipAvg
       "climate_humidity_avg" -> climateJson ccHumidityAvg
@@ -493,55 +565,32 @@ exportField cid tc snap field = (Key.fromText field, val)
       "plate_velocity" -> Aeson.toJSON (zipWith velocityMagnitude (U.toList (tcPlateVelX tc)) (U.toList (tcPlateVelY tc)))
       "plate_velocity_x" -> Aeson.toJSON (U.toList (tcPlateVelX tc))
       "plate_velocity_y" -> Aeson.toJSON (U.toList (tcPlateVelY tc))
-      "weather_temperature" -> weatherJson wcTemp
       "weather_temp_current" -> weatherJson wcTemp
-      "weather_humidity" -> weatherJson wcHumidity
       "weather_humidity_current" -> weatherJson wcHumidity
       "weather_wind_dir_current" -> weatherJson wcWindDir
-      "weather_wind_speed" -> weatherJson wcWindSpd
       "weather_wind_spd_current" -> weatherJson wcWindSpd
-      "weather_pressure" -> weatherJson wcPressure
       "weather_pressure_current" -> weatherJson wcPressure
-      "weather_precipitation" -> weatherJson wcPrecip
       "weather_precip_current" -> weatherJson wcPrecip
-      "cloud_cover" -> weatherJson wcCloudCover
       "weather_cloud_cover_current" -> weatherJson wcCloudCover
-      "cloud_water" -> weatherJson wcCloudWater
       "weather_cloud_water_current" -> weatherJson wcCloudWater
-      "cloud_cover_low" -> weatherJson wcCloudCoverLow
       "weather_cloud_cover_low_current" -> weatherJson wcCloudCoverLow
-      "cloud_cover_mid" -> weatherJson wcCloudCoverMid
       "weather_cloud_cover_mid_current" -> weatherJson wcCloudCoverMid
-      "cloud_cover_high" -> weatherJson wcCloudCoverHigh
       "weather_cloud_cover_high_current" -> weatherJson wcCloudCoverHigh
       "weather_cloud_water_low_current" -> weatherJson wcCloudWaterLow
       "weather_cloud_water_mid_current" -> weatherJson wcCloudWaterMid
       "weather_cloud_water_high_current" -> weatherJson wcCloudWaterHigh
-      "normal_temperature" -> normalsJson wncTemp
       "weather_temp_typical" -> normalsJson wncTemp
-      "normal_humidity" -> normalsJson wncHumidity
       "weather_humidity_typical" -> normalsJson wncHumidity
-      "normal_wind_dir" -> normalsJson wncWindDir
       "weather_wind_dir_typical" -> normalsJson wncWindDir
-      "normal_wind_speed" -> normalsJson wncWindSpd
       "weather_wind_spd_typical" -> normalsJson wncWindSpd
-      "normal_precipitation" -> normalsJson wncPrecip
       "weather_precip_typical" -> normalsJson wncPrecip
-      "normal_cloud_cover" -> normalsJson wncCloudCover
       "weather_cloud_cover_typical" -> normalsJson wncCloudCover
-      "normal_cloud_water" -> normalsJson wncCloudWater
       "weather_cloud_water_typical" -> normalsJson wncCloudWater
-      "normal_cloud_cover_low" -> normalsJson wncCloudCoverLow
       "weather_cloud_cover_low_typical" -> normalsJson wncCloudCoverLow
-      "normal_cloud_cover_mid" -> normalsJson wncCloudCoverMid
       "weather_cloud_cover_mid_typical" -> normalsJson wncCloudCoverMid
-      "normal_cloud_cover_high" -> normalsJson wncCloudCoverHigh
       "weather_cloud_cover_high_typical" -> normalsJson wncCloudCoverHigh
-      "normal_cloud_water_low" -> normalsJson wncCloudWaterLow
       "weather_cloud_water_low_typical" -> normalsJson wncCloudWaterLow
-      "normal_cloud_water_mid" -> normalsJson wncCloudWaterMid
       "weather_cloud_water_mid_typical" -> normalsJson wncCloudWaterMid
-      "normal_cloud_water_high" -> normalsJson wncCloudWaterHigh
       "weather_cloud_water_high_typical" -> normalsJson wncCloudWaterHigh
       "vegetation_cover" -> vegetationJson vegCover
       "vegetation_density" -> vegetationJson vegDensity

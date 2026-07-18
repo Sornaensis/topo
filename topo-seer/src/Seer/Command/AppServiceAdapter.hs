@@ -102,7 +102,10 @@ commandAppService = app
       , terrainGetStats = commandServiceHandler terrainGetStatsOperation HTerrain.handleGetTerrainStats
       , terrainGetOverlays = commandServiceHandler terrainGetOverlaysOperation HWorld.handleGetOverlays
       , terrainFindHexes = commandServiceHandler terrainFindHexesOperation HQuery.handleFindHexes
-      , terrainExportData = commandServiceHandler terrainExportDataOperation HQuery.handleExportTerrainData
+      , terrainExportData = validatedCommandServiceHandler
+          terrainExportDataOperation
+          HQuery.validateTerrainExportRequestFields
+          HQuery.handleExportTerrainData
       , overlayGetSchema = commandServiceHandler overlayGetSchemaOperation HWorld.handleGetOverlaySchema
       , overlayGetProvenance = commandServiceHandler overlayGetProvenanceOperation HWorld.handleGetOverlayProvenance
       , overlayExportData = commandServiceHandler overlayExportDataOperation HWorld.handleExportOverlayData
@@ -212,12 +215,23 @@ appServiceCommandMethods :: AppService -> [Text]
 appServiceCommandMethods = map fst . appServiceHandlersByMethod
 
 commandServiceHandler :: TypedServiceOperation request response -> RawCommandHandler -> ServiceHandler request response
-commandServiceHandler operation handler = validateServiceHandler operation $ \ctx request -> do
-  let commandCtx = serviceCommandContext ctx
-      params = serviceRequestBodyValue request
-  response <- withMutationPublication commandCtx srSuccess $
-    handler commandCtx 0 params
-  pure (commandResponseToServiceResult response)
+commandServiceHandler operation = validatedCommandServiceHandler operation (const (Right ()))
+
+validatedCommandServiceHandler
+  :: TypedServiceOperation request response
+  -> RequestValidator
+  -> RawCommandHandler
+  -> ServiceHandler request response
+validatedCommandServiceHandler operation validateRequest handler =
+  validateServiceHandler operation $ \ctx request -> do
+    let commandCtx = serviceCommandContext ctx
+        params = serviceRequestBodyValue request
+    case validateRequest params of
+      Left err -> pure (Left err)
+      Right () -> do
+        response <- withMutationPublication commandCtx srSuccess $
+          handler commandCtx 0 params
+        pure (commandResponseToServiceResult response)
 
 commandServiceResultHandler
   :: TypedServiceOperation request response

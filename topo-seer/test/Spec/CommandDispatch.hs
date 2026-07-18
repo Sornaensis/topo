@@ -1619,7 +1619,7 @@ spec = describe "CommandDispatch" $ do
   -- export_terrain_data (populated terrain)
   -- -------------------------------------------------------------------
   describe "export_terrain_data" $ do
-    it "returns registry export field metadata" $ withCtx $ \ctx -> do
+    it "returns canonical registry export field metadata" $ withCtx $ \ctx -> do
       chunkKey <- writeSingleChunkTerrain ctx
       rsp <- dispatch ctx "export_terrain_data" (object
         [ "chunks" .= [chunkKey]
@@ -1629,64 +1629,96 @@ spec = describe "CommandDispatch" $ do
       case lookupKey "available_fields" (srResult rsp) of
         Just (Array fields) -> do
           toList fields `shouldSatisfy` elem (String "plate_boundary_code")
-          toList fields `shouldSatisfy` elem (String "normal_temperature")
-          toList fields `shouldSatisfy` elem (String "normal_cloud_cover")
+          toList fields `shouldSatisfy` elem (String "weather_temp_typical")
+          toList fields `shouldSatisfy` elem (String "weather_cloud_cover_typical")
+          toList fields `shouldSatisfy` notElem (String "normal_temperature")
+          toList fields `shouldSatisfy` notElem (String "temperature")
         _ -> expectationFailure "expected available_fields array"
 
-    it "exports generated weather normal fields when present" $ withCtx $ \ctx -> do
+    it "exports generated weather normal fields under canonical typical names" $ withCtx $ \ctx -> do
       chunkKey <- writeSingleChunkTerrainWithNormals ctx
       rsp <- dispatch ctx "export_terrain_data" (object
         [ "chunks" .= [chunkKey]
-        , "fields" .= ["normal_temperature" :: Text, "normal_cloud_cover"]
+        , "fields" .= ["weather_temp_typical" :: Text, "weather_cloud_cover_typical"]
         ])
       srSuccess rsp `shouldBe` True
       case lookupKey "data" (srResult rsp) of
         Just (Object chunks) ->
           case KM.lookup (Key.fromText (Text.pack (show chunkKey))) chunks of
             Just (Object fields) -> do
-              KM.lookup "normal_temperature" fields `shouldSatisfy` isArrayValue
-              KM.lookup "normal_cloud_cover" fields `shouldSatisfy` isArrayValue
+              KM.lookup "weather_temp_typical" fields `shouldSatisfy` isArrayValue
+              KM.lookup "weather_cloud_cover_typical" fields `shouldSatisfy` isArrayValue
             _ -> expectationFailure "expected exported chunk object"
         _ -> expectationFailure "expected export data object"
 
-    it "exports basis-qualified canonical fields alongside legacy aliases" $ withCtx $ \ctx -> do
+    it "exports canonical climate, current, and typical basis-qualified fields" $ withCtx $ \ctx -> do
       chunkKey <- writeSingleChunkTerrainWithClimateWeatherAndNormals ctx
       rsp <- dispatch ctx "export_terrain_data" (object
         [ "chunks" .= [chunkKey]
         , "fields" .=
             [ "climate_temp_avg" :: Text
-            , "temperature"
             , "weather_temp_current"
-            , "weather_temperature"
             , "weather_cloud_cover_current"
-            , "cloud_cover"
+            , "weather_temp_typical"
             , "weather_cloud_cover_typical"
-            , "normal_cloud_cover"
             ]
         ])
       srSuccess rsp `shouldBe` True
-      case lookupKey "available_fields" (srResult rsp) of
-        Just (Array fields) -> do
-          toList fields `shouldSatisfy` elem (String "climate_temp_avg")
-          toList fields `shouldSatisfy` elem (String "weather_temp_current")
-          toList fields `shouldSatisfy` elem (String "weather_cloud_cover_current")
-          toList fields `shouldSatisfy` elem (String "weather_cloud_cover_typical")
-          toList fields `shouldSatisfy` elem (String "temperature")
-        _ -> expectationFailure "expected available_fields array"
       case lookupKey "diagnostics" (srResult rsp) of
-        Just (Array diagnostics) -> mapMaybe diagnosticCode (toList diagnostics)
-          `shouldSatisfy` (\codes -> all (`elem` codes) ["terrain_export_ready", "basis_qualified_fields", "legacy_basis_aliases"])
+        Just (Array diagnostics) -> do
+          let codes = mapMaybe diagnosticCode (toList diagnostics)
+          codes `shouldSatisfy` (\actual -> all (`elem` actual) ["terrain_export_ready", "basis_qualified_fields"])
+          codes `shouldSatisfy` notElem "legacy_basis_aliases"
         _ -> expectationFailure "expected diagnostics array"
       case lookupKey "data" (srResult rsp) of
         Just (Object chunks) ->
           case KM.lookup (Key.fromText (Text.pack (show chunkKey))) chunks of
-            Just (Object fields) -> do
-              KM.lookup "climate_temp_avg" fields `shouldBe` KM.lookup "temperature" fields
-              KM.lookup "weather_temp_current" fields `shouldBe` KM.lookup "weather_temperature" fields
-              KM.lookup "weather_cloud_cover_current" fields `shouldBe` KM.lookup "cloud_cover" fields
-              KM.lookup "weather_cloud_cover_typical" fields `shouldBe` KM.lookup "normal_cloud_cover" fields
+            Just (Object fields) ->
+              forM_
+                [ "climate_temp_avg"
+                , "weather_temp_current"
+                , "weather_cloud_cover_current"
+                , "weather_temp_typical"
+                , "weather_cloud_cover_typical"
+                ] $ \field -> KM.lookup field fields `shouldSatisfy` isArrayValue
             _ -> expectationFailure "expected exported chunk object"
         _ -> expectationFailure "expected export data object"
+
+    it "rejects legacy aliases with structured unknown-field validation" $ withCtx $ \ctx -> do
+      _chunkKey <- writeSingleChunkTerrainWithClimateWeatherAndNormals ctx
+      result <- runService ctx "export_terrain_data" (object
+        [ "fields" .= ["temperature" :: Text, "weather_temperature", "normal_temperature"]
+        ])
+      case result of
+        Left err -> do
+          serviceErrorCode err `shouldBe` "validation_failed"
+          serviceErrorKind err `shouldBe` ServiceErrorInvalidRequest
+          case serviceErrorDetails err of
+            details -> do
+              map serviceErrorDetailPath details `shouldBe`
+                [["fields", "0"], ["fields", "1"], ["fields", "2"]]
+              map serviceErrorDetailCode details `shouldBe` replicate 3 "unknown_field"
+              map serviceErrorDetailMessage details `shouldSatisfy` (\messages ->
+                all (Text.isInfixOf "available fields:") messages
+                  && all (Text.isInfixOf "climate_temp_avg") messages)
+        other -> expectationFailure ("expected structured unknown-field validation, got: " <> show other)
+
+      malformedSibling <- runService ctx "export_terrain_data" (object
+        [ "chunks" .= ["invalid" :: Text]
+        , "fields" .= ["temperature" :: Text]
+        ])
+      assertSingleValidationDetail malformedSibling ["fields", "0"] "unknown_field"
+
+      mixedFields <- runService ctx "export_terrain_data" (object
+        [ "fields" .= [String "temperature", Number 1]
+        ])
+      case mixedFields of
+        Left err -> do
+          map serviceErrorDetailPath (serviceErrorDetails err) `shouldBe`
+            [["fields", "0"], ["fields", "1"]]
+          map serviceErrorDetailCode (serviceErrorDetails err) `shouldBe`
+            ["unknown_field", "invalid_field"]
+        other -> expectationFailure ("expected mixed field validation, got: " <> show other)
 
   -- -------------------------------------------------------------------
   -- get_terrain_stats (empty terrain)

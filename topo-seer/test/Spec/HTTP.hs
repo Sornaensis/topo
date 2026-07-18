@@ -1312,6 +1312,15 @@ spec = describe "Seer.HTTP.Server" $ do
       hresStatusCode rsp `shouldBe` 400
       lookupNestedText ["error", "code"] (hresBody rsp) `shouldBe` Just "validation_failed"
 
+  it "rejects legacy terrain export aliases with structured HTTP validation" $
+    withHeadlessApp defaultHeadlessConfig $ \app -> do
+      rsp <- request app (mkRequest "POST" ["terrain", "export"])
+        { hreqBody = Just (object ["fields" .= ["temperature" :: Text]]) }
+      hresStatusCode rsp `shouldBe` 400
+      lookupNestedText ["error", "code"] (hresBody rsp) `shouldBe` Just "validation_failed"
+      errorDetailPath (hresBody rsp) `shouldBe` Just ["fields", "0"]
+      errorDetailCode (hresBody rsp) `shouldBe` Just "unknown_field"
+
   it "enforces route body policy matrices in direct and WAI request paths" $
     withHeadlessApp defaultHeadlessConfig $ \app -> do
       installTerrainFixture app
