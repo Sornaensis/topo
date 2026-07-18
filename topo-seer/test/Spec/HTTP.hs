@@ -233,10 +233,10 @@ spec = describe "Seer.HTTP.Server" $ do
       objectHasKey "plugin_declarations" (hresBody dag) `shouldBe` True
       objectHasKey "plugin_simulation_declarations" (hresBody dag) `shouldBe` True
 
-      pluginStatus <- request app (mkRequest "GET" ["plugins", "status"])
-      hresStatusCode pluginStatus `shouldBe` 200
-      objectHasKey "plugins" (hresBody pluginStatus) `shouldBe` True
-      pluginsExposeSurfaceKeys (hresBody pluginStatus) `shouldBe` True
+      plugins <- request app (mkRequest "GET" ["plugins"])
+      hresStatusCode plugins `shouldBe` 200
+      objectHasKey "plugins" (hresBody plugins) `shouldBe` True
+      pluginsExposeSurfaceKeys (hresBody plugins) `shouldBe` True
 
       screenshot <- request app (mkRequest "POST" ["screenshots"])
       hresStatusCode screenshot `shouldBe` 200
@@ -853,8 +853,8 @@ spec = describe "Seer.HTTP.Server" $ do
       simState <- request app (mkRequest "GET" ["simulation"])
       hresStatusCode simState `shouldBe` 200
 
-      pluginStatus <- request app (mkRequest "GET" ["plugins", "status"])
-      hresStatusCode pluginStatus `shouldBe` 200
+      plugins <- request app (mkRequest "GET" ["plugins"])
+      hresStatusCode plugins `shouldBe` 200
 
       dataState <- request app (mkRequest "GET" ["data", "state"])
       hresStatusCode dataState `shouldBe` 200
@@ -1458,18 +1458,17 @@ spec = describe "Seer.HTTP.Server" $ do
           uiContextHex httpUi `shouldBe` uiContextHex directUi
           uiHexTooltipPinned httpUi `shouldBe` uiHexTooltipPinned directUi
 
-    it "keeps list_plugins and set_overlay aliases on one AppService behavior" $ do
-      withHeadlessApp defaultHeadlessConfig $ \app -> do
-        let ctx = headlessServiceContext app
-        directPlugins <- runServiceOperation headlessAppService ctx "list_plugins" Null
-        forM_
-          [ ["plugins"]
-          , ["plugins", "status"]
-          , ["plugins", "state"]
-          , ["plugins", "dependencies"]
-          ] $ \path -> do
-            pluginRsp <- request app (mkRequest "GET" path)
-            assertHttpServiceSuccess directPlugins pluginRsp
+    it "keeps canonical plugin and overlay routes on their AppService behavior" $ do
+      withHttpPluginDir $ do
+        let pluginCfg = defaultHeadlessConfig { hcDiscoverPlugins = True }
+        withHeadlessApp pluginCfg $ \app -> do
+          let ctx = headlessServiceContext app
+          directPlugins <- runServiceOperation headlessAppService ctx "list_plugins" Null
+          pluginRsp <- request app (mkRequest "GET" ["plugins"])
+          assertHttpServiceSuccess directPlugins pluginRsp
+          lookupValue "plugin_count" (hresBody pluginRsp) `shouldSatisfy` maybe False positiveNumber
+          arrayFieldContainsObjectWithText "plugins" "name" "http-example" (hresBody pluginRsp) `shouldBe` True
+          pluginsExposeSurfaceKeys (hresBody pluginRsp) `shouldBe` True
 
       let overlayBody = object ["overlay" .= ("weather" :: Text), "field_index" .= (0 :: Int)]
           prepareOverlayState app = do
@@ -1480,30 +1479,26 @@ spec = describe "Seer.HTTP.Server" $ do
               , "overlay_opacity" .= (0.37 :: Double)
               ])
             pure ()
-      forM_
-        [ ("PUT", ["overlays", "current"])
-        , ("POST", ["ui", "overlay"])
-        , ("PUT", ["ui", "overlay"])
-        ] $ \(routeMethod, path) -> do
-          (directOverlay, directSelection) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
-            prepareOverlayState app
-            result <- runServiceOperation headlessAppService
-              (headlessServiceContext app) "set_overlay" overlayBody
-            selection <- effectiveViewSelection <$> getUiSnapshot (ahUiHandle (httpHandles app))
-            pure (result, selection)
-          (overlayRsp, httpSelection) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
-            prepareOverlayState app
-            rsp <- request app (mkRequest routeMethod path) { hreqBody = Just overlayBody }
-            selection <- effectiveViewSelection <$> getUiSnapshot (ahUiHandle (httpHandles app))
-            pure (rsp, selection)
-          assertHttpServiceSuccess directOverlay overlayRsp
-          httpSelection `shouldBe` directSelection
-          lvsBaseView httpSelection `shouldBe` BaseViewBiome
-          lvsWeatherBasis httpSelection `shouldBe` WeatherBasisAverage
-          lvsOverlayOpacity httpSelection
-            `shouldSatisfy` (\opacity -> abs (opacity - 0.37) < 0.0001)
+      (directOverlay, directSelection) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        prepareOverlayState app
+        result <- runServiceOperation headlessAppService
+          (headlessServiceContext app) "set_overlay" overlayBody
+        selection <- effectiveViewSelection <$> getUiSnapshot (ahUiHandle (httpHandles app))
+        pure (result, selection)
+      (overlayRsp, httpSelection) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
+        prepareOverlayState app
+        rsp <- request app (mkRequest "PUT" ["overlays", "current"])
+          { hreqBody = Just overlayBody }
+        selection <- effectiveViewSelection <$> getUiSnapshot (ahUiHandle (httpHandles app))
+        pure (rsp, selection)
+      assertHttpServiceSuccess directOverlay overlayRsp
+      httpSelection `shouldBe` directSelection
+      lvsBaseView httpSelection `shouldBe` BaseViewBiome
+      lvsWeatherBasis httpSelection `shouldBe` WeatherBasisAverage
+      lvsOverlayOpacity httpSelection
+        `shouldSatisfy` (\opacity -> abs (opacity - 0.37) < 0.0001)
 
-    it "keeps overlay cycle aliases on preserved layered state" $ do
+    it "keeps canonical overlay cycle routes on preserved layered state" $ do
       let directionBody = object ["direction" .= (1 :: Int)]
           prepare app = do
             installOverlayFixture app
@@ -1518,9 +1513,7 @@ spec = describe "Seer.HTTP.Server" $ do
             pure ()
       forM_
         [ ("cycle_overlay", ["overlays", "cycle"])
-        , ("cycle_overlay", ["ui", "overlay", "cycle"])
         , ("cycle_overlay_field", ["overlays", "fields", "cycle"])
-        , ("cycle_overlay_field", ["ui", "overlay-field", "cycle"])
         ] $ \(serviceMethod, path) -> do
           (directResult, directSelection) <- withHeadlessApp defaultHeadlessConfig $ \app -> do
             prepare app
@@ -1797,20 +1790,25 @@ spec = describe "Seer.HTTP.Server" $ do
       serviceRouteProjection publicHttpRouteSpecs `shouldBe` friendlyProjection
       serviceRouteProjection httpRouteSpecs `shouldBe` friendlyProjection
 
-    it "locks the nine reviewed alias groups into public metadata and OpenAPI" $ do
-      let aliasProjection = filter ((> 1) . length . snd) $
-            serviceRouteProjection friendlyHttpRouteSpecs
-          docSignatures = openApiSignatureLines (openApiDocument publicHttpRouteSpecs)
-          missingOpenApiAliases =
-            [ signature
-            | (_, signatures) <- aliasProjection
-            , signature <- signatures
-            , signature `notElem` docSignatures
-            ]
-      aliasProjection `shouldBe` expectedFriendlyServiceAliases
-      stableMethodSetDiagnostics
-        [("friendly-alias-missing-from-openapi", missingOpenApiAliases)]
-        `shouldBe` []
+    it "publishes one canonical HTTP route for each collapsed AppService group" $ do
+      let friendlyProjection = serviceRouteProjection friendlyHttpRouteSpecs
+          duplicateProjection = filter ((> 1) . length . snd) friendlyProjection
+      duplicateProjection `shouldBe` []
+      forM_ canonicalCollapsedServiceRoutes $ \(serviceMethod, canonicalSignature) ->
+        lookup serviceMethod friendlyProjection `shouldBe` Just [canonicalSignature]
+      forM_ collapsedAppServiceMethods $ \serviceMethod ->
+        appServiceOperationMethods `shouldSatisfy` elem serviceMethod
+
+    it "returns 404 for retired aliases and omits them from OpenAPI" $
+      withHeadlessApp defaultHeadlessConfig $ \app -> do
+        let doc = openApiDocument publicHttpRouteSpecs
+            publicSignatures = map routeSignature publicHttpRouteSpecs
+        forM_ retiredHttpAliasMigrations $ \(routeMethod, path, canonicalSignature) -> do
+          rsp <- request app (mkRequest routeMethod path)
+          isRouteMiss rsp `shouldBe` True
+          pathOperation doc ("/" <> Text.intercalate "/" path) (Text.toLower routeMethod)
+            `shouldBe` Nothing
+          publicSignatures `shouldSatisfy` elem canonicalSignature
 
   it "lists every public route in OpenAPI" $ do
     let doc = openApiDocument publicHttpRouteSpecs
@@ -1905,9 +1903,6 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/pipeline", "get", "PipelineGetResponse")
           , ("/pipeline/stages", "patch", "PipelineSetStageEnabledResponse")
           , ("/plugins", "get", "PluginListResponse")
-          , ("/plugins/status", "get", "PluginListResponse")
-          , ("/plugins/state", "get", "PluginListResponse")
-          , ("/plugins/dependencies", "get", "PluginListResponse")
           , ("/plugins/enabled", "patch", "PluginSetEnabledResponse")
           , ("/plugins/params", "patch", "PluginSetParamResponse")
           , ("/data/plugins", "get", "DataPluginsListResponse")
@@ -1926,7 +1921,7 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/screenshots", "post", "ScreenshotTakeResponse")
           , ("/ui/view-mode", "post", "UiViewModeSetResponse")
           , ("/ui/view", "post", "UiViewSetResponse")
-          , ("/ui/overlay", "put", "UiOverlaySetResponse")
+          , ("/overlays/current", "put", "UiOverlaySetResponse")
           , ("/ui/widgets", "get", "WidgetListResponse")
           , ("/ui/widget-state", "get", "WidgetStateResponse")
           , ("/ui/widgets/click", "post", "WidgetClickResponse")
@@ -1948,7 +1943,7 @@ spec = describe "Seer.HTTP.Server" $ do
           , ("/screenshots", "post", "ScreenshotTakeRequest")
           , ("/ui/view-mode", "post", "UiViewModeSetRequest")
           , ("/ui/view", "post", "UiViewSetRequest")
-          , ("/ui/overlay", "put", "UiOverlaySetRequest")
+          , ("/overlays/current", "put", "UiOverlaySetRequest")
           , ("/ui/widgets/click", "post", "WidgetClickRequest")
           ] :: [(Text, Text, Text)]
     forM_ responseRefs $ \(path, routeMethod, schemaName) -> do
@@ -2394,7 +2389,7 @@ httpUiPublicationCases =
         \ui -> do
           lvsBaseView (uiViewSelection ui) `shouldBe` BaseViewBiome
           lvsSkyOverlay (uiViewSelection ui) `shouldBe` Just SkyOverlayCloud)
-  , ("PUT /ui/overlay", installHttpOverlayTerrain, withBody "PUT" ["ui", "overlay"]
+  , ("PUT /overlays/current", installHttpOverlayTerrain, withBody "PUT" ["overlays", "current"]
         (object ["overlay" .= ("weather" :: Text), "field_index" .= (0 :: Int)]), ExpectHttpSelectionTransition,
         \ui -> lvsSkyOverlay (effectiveViewSelection ui) `shouldBe` Just (SkyOverlayPlugin "weather" 0))
   , ("PUT /camera", installTerrainFixture, withBody "PUT" ["camera"]
@@ -2795,10 +2790,10 @@ assertWeatherOverlayAvailable app = do
 
 assertBackendNeutralPluginDataSurfaces :: HeadlessApp -> IO ()
 assertBackendNeutralPluginDataSurfaces app = do
-  pluginStatus <- request app (mkRequest "GET" ["plugins", "status"])
-  hresStatusCode pluginStatus `shouldBe` 200
-  objectHasKey "plugins" (hresBody pluginStatus) `shouldBe` True
-  pluginsExposeSurfaceKeys (hresBody pluginStatus) `shouldBe` True
+  plugins <- request app (mkRequest "GET" ["plugins"])
+  hresStatusCode plugins `shouldBe` 200
+  objectHasKey "plugins" (hresBody plugins) `shouldBe` True
+  pluginsExposeSurfaceKeys (hresBody plugins) `shouldBe` True
 
   dataState <- request app (mkRequest "GET" ["data", "state"])
   hresStatusCode dataState `shouldBe` 200
@@ -3453,7 +3448,10 @@ pluginsExposeSurfaceKeys (Object obj) = case KM.lookup "plugins" obj of
   where
     pluginHasSurfaceKeys (Object plugin) = all (`KM.member` plugin)
       (map Key.fromText
-        [ "capabilities"
+        [ "status"
+        , "diagnostic_status"
+        , "status_detail"
+        , "capabilities"
         , "params"
         , "dependencies"
         , "resources"
@@ -3783,56 +3781,36 @@ stableMethodSetDiagnostics methodSets =
   , methodName <- sort methods
   ]
 
-expectedFriendlyServiceAliases :: [(Text, [Text])]
-expectedFriendlyServiceAliases =
-  [ ( "cycle_overlay"
-    , [ "POST /overlays/cycle overlays.cycle"
-      , "POST /ui/overlay/cycle ui.overlay.cycle"
-      ]
-    )
-  , ( "cycle_overlay_field"
-    , [ "POST /overlays/fields/cycle overlays.field.cycle"
-      , "POST /ui/overlay-field/cycle ui.overlayField.cycle"
-      ]
-    )
-  , ( "get_camera"
-    , [ "GET /camera camera.get"
-      , "GET /ui/camera ui.camera.get"
-      ]
-    )
-  , ( "get_overlays"
-    , [ "GET /overlays overlays.list"
-      , "GET /terrain/overlays terrain.overlays"
-      ]
-    )
-  , ( "list_overlay_fields"
-    , [ "GET /overlays/fields overlays.fields.list"
-      , "GET /ui/overlay-fields ui.overlayFields.list"
-      ]
-    )
-  , ( "list_plugins"
-    , [ "GET /plugins plugins.list"
-      , "GET /plugins/dependencies plugins.dependencies"
-      , "GET /plugins/state plugins.state"
-      , "GET /plugins/status plugins.status"
-      ]
-    )
-  , ( "set_camera"
-    , [ "PUT /camera camera.set"
-      , "PUT /ui/camera ui.camera.set"
-      ]
-    )
-  , ( "set_overlay"
-    , [ "POST /ui/overlay ui.overlay.set"
-      , "PUT /overlays/current overlays.current.set"
-      , "PUT /ui/overlay ui.overlay.replace"
-      ]
-    )
-  , ( "zoom_to_chunk"
-    , [ "POST /camera/zoom-to-chunk camera.zoomToChunk"
-      , "POST /ui/camera/zoom-to-chunk ui.camera.zoomToChunk"
-      ]
-    )
+canonicalCollapsedServiceRoutes :: [(Text, Text)]
+canonicalCollapsedServiceRoutes =
+  [ ("cycle_overlay", "POST /overlays/cycle overlays.cycle")
+  , ("cycle_overlay_field", "POST /overlays/fields/cycle overlays.field.cycle")
+  , ("get_camera", "GET /camera camera.get")
+  , ("get_overlays", "GET /overlays overlays.list")
+  , ("list_overlay_fields", "GET /overlays/fields overlays.fields.list")
+  , ("list_plugins", "GET /plugins plugins.list")
+  , ("set_camera", "PUT /camera camera.set")
+  , ("set_overlay", "PUT /overlays/current overlays.current.set")
+  , ("zoom_to_chunk", "POST /camera/zoom-to-chunk camera.zoomToChunk")
+  ]
+
+collapsedAppServiceMethods :: [Text]
+collapsedAppServiceMethods = map fst canonicalCollapsedServiceRoutes
+
+retiredHttpAliasMigrations :: [(Text, [Text], Text)]
+retiredHttpAliasMigrations =
+  [ ("GET", ["terrain", "overlays"], "GET /overlays overlays.list")
+  , ("POST", ["ui", "overlay"], "PUT /overlays/current overlays.current.set")
+  , ("PUT", ["ui", "overlay"], "PUT /overlays/current overlays.current.set")
+  , ("GET", ["ui", "overlay-fields"], "GET /overlays/fields overlays.fields.list")
+  , ("POST", ["ui", "overlay", "cycle"], "POST /overlays/cycle overlays.cycle")
+  , ("POST", ["ui", "overlay-field", "cycle"], "POST /overlays/fields/cycle overlays.field.cycle")
+  , ("PUT", ["ui", "camera"], "PUT /camera camera.set")
+  , ("GET", ["ui", "camera"], "GET /camera camera.get")
+  , ("POST", ["ui", "camera", "zoom-to-chunk"], "POST /camera/zoom-to-chunk camera.zoomToChunk")
+  , ("GET", ["plugins", "status"], "GET /plugins plugins.list")
+  , ("GET", ["plugins", "state"], "GET /plugins plugins.list")
+  , ("GET", ["plugins", "dependencies"], "GET /plugins plugins.list")
   ]
 
 assertNoCommandRoutes :: String -> [HttpRouteSpec] -> Expectation

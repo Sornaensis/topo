@@ -478,7 +478,7 @@ eventTopic spec status
       | op == "world.generate" = "world.generation.requested"
       | op == "world.generationStatus" = "world.generation.status"
       | op == "worlds.delete" = "world.saved.deleted"
-      | op == "plugins.list" || op == "plugins.status" || op == "plugins.state" || op == "plugins.dependencies" = "plugins.status"
+      | op == "plugins.list" = "plugins.status"
       | op == "plugins.setEnabled" || op == "plugins.params.set" = "plugins.changed"
       | op == "logs.get" = "logs.read"
       | op == "data.records.create" || op == "data.records.update" || op == "data.records.delete" = "data.resources.changed"
@@ -954,7 +954,6 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   , serviceWithQuery "GET" ["terrain", "chunk-summary"] "terrain.chunkSummary" "terrain" "get_chunk_summary" "Read chunk summary." NoRequestBody
       [requiredQueryWithSchema "chunk" "Chunk id." queryIntegerSchema]
   , service "GET" ["terrain", "stats"] "terrain.stats" "terrain" "get_terrain_stats" "Read terrain stats." NoRequestBody
-  , service "GET" ["terrain", "overlays"] "terrain.overlays" "terrain" "get_overlays" "List overlays." NoRequestBody
 
   , service "GET" ["overlays"] "overlays.list" "overlays" "get_overlays" "List overlays." NoRequestBody
   , serviceWithQuery "GET" ["overlays", "schema"] "overlays.schema.get" "overlays" "get_overlay_schema" "Read an overlay schema." NoRequestBody
@@ -993,15 +992,6 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
 
   , withResponseSchema pluginListResponseSchema $
       service "GET" ["plugins"] "plugins.list" "plugins" "list_plugins" "List plugins."
-        NoRequestBody
-  , withResponseSchema pluginListResponseSchema $
-      service "GET" ["plugins", "status"] "plugins.status" "plugins" "list_plugins" "Read plugin status."
-        NoRequestBody
-  , withResponseSchema pluginListResponseSchema $
-      service "GET" ["plugins", "state"] "plugins.state" "plugins" "list_plugins" "Read plugin state."
-        NoRequestBody
-  , withResponseSchema pluginListResponseSchema $
-      service "GET" ["plugins", "dependencies"] "plugins.dependencies" "plugins" "list_plugins" "Read plugin dependency declarations."
         NoRequestBody
   , withSchemas pluginSetEnabledRequestSchema pluginSetEnabledResponseSchema $
       service "PATCH" ["plugins", "enabled"] "plugins.setEnabled" "plugins" "set_plugin_enabled" "Enable or disable a plugin."
@@ -1063,19 +1053,10 @@ friendlyHttpRouteSpecs = map annotateHttpRouteSpec
   , service "POST" ["ui", "view"] "ui.view.set" "ui" "set_view" "Set layered view." RequiredJsonRequestBody
   , service "POST" ["ui", "config-tab"] "ui.configTab.set" "ui" "set_config_tab" "Set config tab." RequiredJsonRequestBody
   , service "POST" ["ui", "select-hex"] "ui.hex.select" "ui" "select_hex" "Select a hex." OptionalJsonRequestBody
-  , service "POST" ["ui", "overlay"] "ui.overlay.set" "ui" "set_overlay" "Set overlay." RequiredJsonRequestBody
-  , service "PUT" ["ui", "overlay"] "ui.overlay.replace" "ui" "set_overlay" "Replace the selected overlay." RequiredJsonRequestBody
-  , serviceWithQuery "GET" ["ui", "overlay-fields"] "ui.overlayFields.list" "ui" "list_overlay_fields" "List overlay fields." NoRequestBody
-      [optionalQuery "overlay" "Overlay name."]
-  , service "POST" ["ui", "overlay", "cycle"] "ui.overlay.cycle" "ui" "cycle_overlay" "Cycle overlay." RequiredJsonRequestBody
-  , service "POST" ["ui", "overlay-field", "cycle"] "ui.overlayField.cycle" "ui" "cycle_overlay_field" "Cycle overlay field." RequiredJsonRequestBody
 
   , service "PUT" ["camera"] "camera.set" "camera" "set_camera" "Set camera." RequiredJsonRequestBody
   , service "GET" ["camera"] "camera.get" "camera" "get_camera" "Read camera." NoRequestBody
   , service "POST" ["camera", "zoom-to-chunk"] "camera.zoomToChunk" "camera" "zoom_to_chunk" "Zoom to chunk." RequiredJsonRequestBody
-  , service "PUT" ["ui", "camera"] "ui.camera.set" "ui" "set_camera" "Set camera." RequiredJsonRequestBody
-  , service "GET" ["ui", "camera"] "ui.camera.get" "ui" "get_camera" "Read camera." NoRequestBody
-  , service "POST" ["ui", "camera", "zoom-to-chunk"] "ui.camera.zoomToChunk" "ui" "zoom_to_chunk" "Zoom to chunk." RequiredJsonRequestBody
   , service "PUT" ["ui", "left-panel"] "ui.leftPanel.set" "ui" "set_left_panel" "Set left panel visibility." RequiredJsonRequestBody
   , service "PUT" ["ui", "left-tab"] "ui.leftTab.set" "ui" "set_left_tab" "Set left tab." RequiredJsonRequestBody
   , service "POST" ["ui", "config-panel", "toggle"] "ui.configPanel.toggle" "ui" "toggle_config_panel" "Toggle config panel." OptionalJsonRequestBody

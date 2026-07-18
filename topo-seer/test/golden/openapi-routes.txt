@@ -28,7 +28,6 @@ GET /terrain/hex terrain.hex
 GET /terrain/chunks terrain.chunks
 GET /terrain/chunk-summary terrain.chunkSummary
 GET /terrain/stats terrain.stats
-GET /terrain/overlays terrain.overlays
 GET /overlays overlays.list
 GET /overlays/schema overlays.schema.get
 GET /overlays/provenance overlays.provenance.get
@@ -56,9 +55,6 @@ POST /editor/redo editor.redo
 GET /pipeline pipeline.get
 PATCH /pipeline/stages pipeline.stage.setEnabled
 GET /plugins plugins.list
-GET /plugins/status plugins.status
-GET /plugins/state plugins.state
-GET /plugins/dependencies plugins.dependencies
 PATCH /plugins/enabled plugins.setEnabled
 PATCH /plugins/params plugins.params.set
 GET /data/plugins data.plugins.list
@@ -80,17 +76,9 @@ POST /ui/view-mode ui.viewMode.set
 POST /ui/view ui.view.set
 POST /ui/config-tab ui.configTab.set
 POST /ui/select-hex ui.hex.select
-POST /ui/overlay ui.overlay.set
-PUT /ui/overlay ui.overlay.replace
-GET /ui/overlay-fields ui.overlayFields.list
-POST /ui/overlay/cycle ui.overlay.cycle
-POST /ui/overlay-field/cycle ui.overlayField.cycle
 PUT /camera camera.set
 GET /camera camera.get
 POST /camera/zoom-to-chunk camera.zoomToChunk
-PUT /ui/camera ui.camera.set
-GET /ui/camera ui.camera.get
-POST /ui/camera/zoom-to-chunk ui.camera.zoomToChunk
 PUT /ui/left-panel ui.leftPanel.set
 PUT /ui/left-tab ui.leftTab.set
 POST /ui/config-panel/toggle ui.configPanel.toggle
