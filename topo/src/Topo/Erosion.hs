@@ -267,15 +267,6 @@ computeMicroReliefGrid config genCfg (ChunkCoord minCx minCy) gridW gridH elevGr
         in computeReliefIndex r r2 r3 (Just noiseTerm) (Just erosionTerm) wNoise wErode
   in U.generate (gridW * gridH) sample
 
--- | Legacy per-chunk erosion (no deposition, no grid context).
-erodeChunk :: WorldConfig -> ErosionConfig -> TerrainChunk -> TerrainChunk
-erodeChunk config cfg chunk =
-  let size = wcChunkSize config
-      elev0 = tcElevation chunk
-      elev1 = iterateN (ecHydraulicIterations cfg) (hydraulicStep size cfg) elev0
-      elev2 = iterateN (ecThermalIterations cfg) (thermalStep size cfg) elev1
-  in chunk { tcElevation = elev2 }
-
 -------------------------------------------------------------------------------
 -- Hydraulic erosion (with local deposition)
 -------------------------------------------------------------------------------
@@ -346,21 +337,6 @@ hydraulicStepGrid gridW gridH waterLevel cfg hardness erosionMult depositFactor 
       else pure ()
   U.freeze base
 
--- | Legacy per-chunk hydraulic erosion (pure, no deposition).
-hydraulicStep :: Int -> ErosionConfig -> U.Vector Float -> U.Vector Float
-hydraulicStep size cfg elev =
-  U.generate (U.length elev) (hydraulicAt size cfg elev)
-
-hydraulicAt :: Int -> ErosionConfig -> U.Vector Float -> Int -> Float
-hydraulicAt size cfg elev i =
-  let x = i `mod` size
-      y = i `div` size
-      h0 = elev U.! i
-      (hmin, _) = minimumNeighborGridIdx size size elev x y h0
-      dh = h0 - hmin
-      dropAmt = min (ecMaxDrop cfg) (dh * ecRainRate cfg)
-  in if dh <= 0 then h0 else h0 - dropAmt
-
 -------------------------------------------------------------------------------
 -- Thermal erosion (with local deposition)
 -------------------------------------------------------------------------------
@@ -428,21 +404,6 @@ thermalStepGrid gridW gridH waterLevel cfg hardness erosionMult depositFactor el
           else pure ()
       else pure ()
   U.freeze base
-
--- | Legacy per-chunk thermal erosion (pure, no deposition).
-thermalStep :: Int -> ErosionConfig -> U.Vector Float -> U.Vector Float
-thermalStep size cfg elev =
-  U.generate (U.length elev) (thermalAt size cfg elev)
-
-thermalAt :: Int -> ErosionConfig -> U.Vector Float -> Int -> Float
-thermalAt size cfg elev i =
-  let x = i `mod` size
-      y = i `div` size
-      h0 = elev U.! i
-      (hmin, _) = minimumNeighborGridIdx size size elev x y h0
-      slope = h0 - hmin
-      excess = slope - ecThermalTalus cfg
-  in if excess <= 0 then h0 else h0 - min (ecMaxDrop cfg) (excess * ecThermalStrength cfg)
 
 -------------------------------------------------------------------------------
 -- Coastal smoothing
