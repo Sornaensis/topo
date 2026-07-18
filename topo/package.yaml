@@ -149,7 +149,6 @@ tests:
       - base
       - topo
       - aeson
-      - base64-bytestring
       - binary
       - bytestring
       - hspec
