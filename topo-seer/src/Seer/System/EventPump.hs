@@ -10,7 +10,7 @@ module Seer.System.EventPump
 import Actor.Log (LogSnapshotRef, getLogSnapshot)
 import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver (SnapshotVersion, publishSnapshot, publishSnapshotIfVersion, readCommittedUiAndLog, uiSnapshotUpdate, withLogSnapshot)
-import Actor.UI (UiMenuMode(..), UiState(..), UiSnapshotRef, getUiSnapshot)
+import Actor.UI (UiState(..), UiSnapshotRef, getUiSnapshot)
 import Actor.UiActions (UiActions, awaitUiActions)
 import Actor.UiActions.Handles (ActorHandles(..))
 import Control.Monad (forM_, when)
@@ -22,7 +22,7 @@ import qualified SDL
 import Seer.DataBrowser.Executor (DataBrowserExecutor)
 import Seer.OverlayInspector.Executor.Types (OverlayInspectorExecutor)
 import Seer.Service.AppService (AppService)
-import Seer.Input (handleEvent, isQuit, tickTooltipHover)
+import Seer.Input (handleEvent, isQuit, modalInputBarrierVisible, tickTooltipHover)
 import Seer.Input.Actions (mkInputEnv)
 import Seer.Input.Context
   ( DragState
@@ -54,7 +54,7 @@ data EventPumpEnv = EventPumpEnv
   , epeMousePosRef :: !(IORef (Int, Int))
   , epeDragRef :: !(IORef (Maybe DragState))
   , epeTooltipHoverRef :: !(IORef TooltipHover)
-  , epeOverlayModalLatchRef :: !(IORef Bool)
+  , epeModalBarrierLatchRef :: !(IORef Bool)
   , epeInputActionDispatcher :: !InputActionDispatcher
   }
 
@@ -70,9 +70,9 @@ processEvents :: EventPumpEnv -> Word32 -> [SDL.Event] -> RenderSnapshot -> IO E
 processEvents env _timingLogThresholdMs events renderSnap = do
   -- A rendered modal barriers this entire SDL batch even if an early event
   -- closes the actor-owned state. The next rendered snapshot may release it.
-  let renderedOverlayModal = uiMenuMode (rsUi renderSnap) == MenuOverlayInspector
-  when renderedOverlayModal $
-    writeIORef (epeOverlayModalLatchRef env) True
+  let renderedModalBarrier = modalInputBarrierVisible (rsUi renderSnap)
+  when renderedModalBarrier $
+    writeIORef (epeModalBarrierLatchRef env) True
   -- SDL APIs requested by completed semantic actions are always marshalled
   -- back onto the event-pump thread, including during otherwise idle frames.
   drainInputMainThreadActions (epeInputActionDispatcher env)
@@ -84,8 +84,8 @@ processEvents env _timingLogThresholdMs events renderSnap = do
       published <- if fired
         then publishSnapshotFromEnvIfChanged env renderSnap
         else pure Nothing
-      when renderedOverlayModal $
-        writeIORef (epeOverlayModalLatchRef env) False
+      when renderedModalBarrier $
+        writeIORef (epeModalBarrierLatchRef env) False
       pure EventPumpResult
         { eprElapsedMs = 0
         , eprPublishedVersion = published
@@ -116,7 +116,7 @@ processEvents env _timingLogThresholdMs events renderSnap = do
             (epeMousePosRef env)
             (epeDragRef env)
             (epeTooltipHoverRef env)
-            (epeOverlayModalLatchRef env)
+            (epeModalBarrierLatchRef env)
             (epeInputActionDispatcher env)
       forM_ coalescedEvents (handleEvent inputContext)
       drainInputMainThreadActions (epeInputActionDispatcher env)
@@ -127,8 +127,8 @@ processEvents env _timingLogThresholdMs events renderSnap = do
       awaitUiActions (epeUiActionsHandle env)
       published <- publishSnapshotFromEnvIfChanged env renderSnap
       handleEnd <- getMonotonicTimeNSec
-      when renderedOverlayModal $
-        writeIORef (epeOverlayModalLatchRef env) False
+      when renderedModalBarrier $
+        writeIORef (epeModalBarrierLatchRef env) False
       pure EventPumpResult
         { eprElapsedMs = nsToMs handleStart handleEnd
         , eprPublishedVersion = published

@@ -3,6 +3,9 @@
 
 module Seer.Input.Events
   ( handleEvent
+  , ModalEventRoute(..)
+  , modalEventRoute
+  , modalInputBarrierVisible
   , TooltipHover
   , tickTooltipHover
   , tooltipDelayMs
@@ -91,6 +94,50 @@ import Seer.Service.Types (ServiceResponse(..))
 tooltipDelayMs :: Word32
 tooltipDelayMs = 500
 
+-- | Routing decision for an SDL event while a modal barrier is active.
+-- Keyboard and text events pass only while actor-owned modal state is live so
+-- each dialog can retain its local controls. Pointer motion performs cleanup,
+-- overlay-inspector wheel input remains local, and all other modal input is
+-- either hit-tested against the dialog or discarded.
+data ModalEventRoute
+  = PassEvent
+  | BlockEvent
+  | BarrierPointerMotion
+  | BarrierPointerButton
+  | OverlayInspectorWheel
+  deriving (Eq, Show)
+
+-- | Whether the current UI presents an input-blocking dialog.
+modalInputBarrierVisible :: UiState -> Bool
+modalInputBarrierVisible ui =
+  uiMenuMode ui /= MenuNone
+    || (uiShowConfig ui
+        && uiConfigTab ui == ConfigData
+        && dbsDeleteConfirm (uiDataBrowser ui))
+
+-- | Classify an SDL event against live and frame-latched modal state.
+-- The latch keeps the rendered dialog authoritative for the whole event batch,
+-- even when an earlier event closes it or an async action is still opening it.
+modalEventRoute :: Bool -> UiState -> SDL.EventPayload -> ModalEventRoute
+modalEventRoute modalLatched ui payload
+  | not (modalLatched || modalInputBarrierVisible ui) = PassEvent
+  | otherwise = case payload of
+      SDL.MouseMotionEvent _ -> BarrierPointerMotion
+      SDL.MouseButtonEvent _ -> BarrierPointerButton
+      SDL.MouseWheelEvent _
+        | uiMenuMode ui == MenuOverlayInspector -> OverlayInspectorWheel
+        | otherwise -> BlockEvent
+      SDL.TextInputEvent _
+        | modalInputBarrierVisible ui && modalOwnsTextInput ui -> PassEvent
+        | otherwise -> BlockEvent
+      SDL.KeyboardEvent keyboardEvent
+        | modalInputBarrierVisible ui
+        , Just key <- inputKeyForSdl
+            (SDL.keysymKeycode (SDL.keyboardEventKeysym keyboardEvent))
+        , modalOwnsKey ui key -> PassEvent
+        | otherwise -> BlockEvent
+      _ -> BlockEvent
+
 handleEvent
   :: InputContext
   -> SDL.Event
@@ -106,33 +153,39 @@ handleEvent inputContext event = do
       dragRef = icDragRef inputContext
       tooltipHoverRef = icTooltipHoverRef inputContext
   barrierUi <- getUiSnapshot uiHandle
-  overlayModalLatched <- readIORef (icOverlayModalLatchRef inputContext)
-  let overlayModal = overlayModalLatched
-        || uiMenuMode barrierUi == MenuOverlayInspector
-      overlayModalPending = overlayModal
-        && uiMenuMode barrierUi /= MenuOverlayInspector
-  case SDL.eventPayload event of
-    SDL.TextInputEvent _ | overlayModalPending -> pure ()
-    SDL.KeyboardEvent _ | overlayModalPending -> pure ()
-    SDL.MouseMotionEvent motionEvent | overlayModal -> do
-      let SDL.P (V2 mx my) = SDL.mouseMotionEventPos motionEvent
-      writeIORef mousePosRef (fromIntegral mx, fromIntegral my)
-      writeIORef dragRef Nothing
-      writeIORef tooltipHoverRef Nothing
-      setUiHoverWidget uiHandle Nothing
-      setUiHoverHex uiHandle Nothing
-    SDL.MouseWheelEvent wheelEvent | overlayModal -> do
-      let SDL.V2 _ dy = SDL.mouseWheelEventPos wheelEvent
-      when (dy /= 0) $ scrollOverlayInspector barrierUi (fromIntegral dy)
-    SDL.MouseButtonEvent btnEvent | overlayModal -> do
-      writeIORef dragRef Nothing
-      -- A latch may precede the worker-owned modal state in this batch. Never
-      -- hit-test that click against the frozen pre-modal InputEnv snapshot.
-      let cachedModal = uiMenuMode (ieUiSnapshot inputEnv) == MenuOverlayInspector
-      when (cachedModal
-          && SDL.mouseButtonEventMotion btnEvent == SDL.Pressed
-          && SDL.mouseButtonEventButton btnEvent == SDL.ButtonLeft) $
-        handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
+  modalBarrierLatched <- readIORef (icModalBarrierLatchRef inputContext)
+  let payload = SDL.eventPayload event
+      eventRoute = modalEventRoute modalBarrierLatched barrierUi payload
+  case payload of
+    _ | eventRoute == BlockEvent -> pure ()
+    SDL.MouseMotionEvent motionEvent
+      | eventRoute == BarrierPointerMotion -> do
+          let SDL.P (V2 mx my) = SDL.mouseMotionEventPos motionEvent
+          writeIORef mousePosRef (fromIntegral mx, fromIntegral my)
+          writeIORef dragRef Nothing
+          writeIORef tooltipHoverRef Nothing
+          setUiHoverWidget uiHandle Nothing
+          setUiHoverHex uiHandle Nothing
+    SDL.MouseWheelEvent wheelEvent
+      | eventRoute == OverlayInspectorWheel -> do
+          let SDL.V2 _ dy = SDL.mouseWheelEventPos wheelEvent
+          when (dy /= 0) $ scrollOverlayInspector barrierUi (fromIntegral dy)
+    SDL.MouseButtonEvent btnEvent
+      | eventRoute == BarrierPointerButton -> do
+          writeIORef dragRef Nothing
+          when (SDL.mouseButtonEventMotion btnEvent == SDL.Released
+              && SDL.mouseButtonEventButton btnEvent == SDL.ButtonLeft) $ do
+            let editor = uiEditor barrierUi
+            when (editorActive editor && editorTool editor == ToolFlatten) $
+              clearEditorStrokeSession
+          -- The frozen InputEnv supplies click geometry. Only dispatch when it
+          -- describes the same still-live modal scope; otherwise this batch is
+          -- between modal states and the click must remain swallowed.
+          let cachedUi = ieUiSnapshot inputEnv
+          when (sameModalInputScope cachedUi barrierUi
+              && SDL.mouseButtonEventMotion btnEvent == SDL.Pressed
+              && SDL.mouseButtonEventButton btnEvent == SDL.ButtonLeft) $
+            handleClick inputContext (SDL.mouseButtonEventPos btnEvent)
     SDL.MouseMotionEvent motionEvent -> do
       let SDL.P (V2 mx my) = SDL.mouseMotionEventPos motionEvent
       writeIORef mousePosRef (fromIntegral mx, fromIntegral my)
@@ -339,20 +392,30 @@ handleEvent inputContext event = do
               when (editorActive editor && editorTool editor == ToolFlatten) $
                 clearEditorStrokeSession
             _ -> pure ()
-    SDL.TextInputEvent textEvent -> do
-      _ <- executeTextIntent intentEnv (SDL.textInputEventText textEvent)
-      pure ()
+    SDL.TextInputEvent textEvent ->
+      when (not (modalInputBarrierVisible barrierUi)
+          || modalOwnsTextInput barrierUi) $ do
+        let semanticEnv
+              | modalInputBarrierVisible barrierUi =
+                  intentEnv { iieGetUi = pure barrierUi }
+              | otherwise = intentEnv
+        _ <- executeTextIntent semanticEnv (SDL.textInputEventText textEvent)
+        pure ()
     SDL.KeyboardEvent keyboardEvent
       | SDL.keyboardEventKeyMotion keyboardEvent == SDL.Pressed -> do
           let keysym = SDL.keyboardEventKeysym keyboardEvent
           case inputKeyForSdl (SDL.keysymKeycode keysym) of
             Nothing -> pure ()
             Just key -> do
-              uiSnap <- getUiSnapshot uiHandle
-              if sdlTextInputOwnsKey uiSnap key
+              let semanticEnv
+                    | modalInputBarrierVisible barrierUi =
+                        intentEnv { iieGetUi = pure barrierUi }
+                    | otherwise = intentEnv
+              if (modalInputBarrierVisible barrierUi && not (modalOwnsKey barrierUi key))
+                  || sdlTextInputOwnsKey barrierUi key
                 then pure ()
                 else do
-                  result <- executeKeyIntent intentEnv (modifiersForSdl (SDL.keysymModifier keysym)) key
+                  result <- executeKeyIntent semanticEnv (modifiersForSdl (SDL.keysymModifier keysym)) key
                   case result of
                     Right outcome -> do
                       when (iirStopTextInput outcome) SDL.stopTextInput
@@ -461,6 +524,38 @@ handleEvent inputContext event = do
         _ <- runInputService inputEnv "click_widget"
           (object ["widget_id" .= widgetIdToText wid])
         pure ()
+
+modalOwnsTextInput :: UiState -> Bool
+modalOwnsTextInput ui = case uiMenuMode ui of
+  MenuPresetSave -> True
+  MenuPresetLoad -> True
+  MenuWorldSave -> True
+  MenuWorldLoad -> not (uiWorldDeleteConfirm ui)
+  MenuOverlayInspector ->
+    let inspector = uiOverlayInspector ui
+    in oimView inspector == Just OverlayInspectorImportView
+      && oimFocus inspector == OverlayInspectorImportInputFocus
+  _ -> False
+
+modalOwnsKey :: UiState -> InputKey -> Bool
+modalOwnsKey ui key = case uiMenuMode ui of
+  MenuEscape -> key == KeyEscape
+  MenuNone -> key == KeyEscape
+  _ -> True
+
+sameModalInputScope :: UiState -> UiState -> Bool
+sameModalInputScope cached live
+  | not (modalInputBarrierVisible cached && modalInputBarrierVisible live) = False
+  | uiMenuMode cached /= uiMenuMode live = False
+  | otherwise = case uiMenuMode live of
+      MenuWorldLoad ->
+        uiWorldDeleteConfirm cached == uiWorldDeleteConfirm live
+      MenuOverlayInspector ->
+        oimView (uiOverlayInspector cached) == oimView (uiOverlayInspector live)
+      MenuNone ->
+        dbsDeleteConfirm (uiDataBrowser cached)
+          && dbsDeleteConfirm (uiDataBrowser live)
+      _ -> True
 
 -- SDL normalization is intentionally thin; all routing and semantics live in
 -- Seer.Input.Intent and are therefore shared with automation.

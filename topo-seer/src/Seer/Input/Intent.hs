@@ -54,6 +54,7 @@ import Actor.UI.Setters
   )
 import Actor.UI.State
   ( BaseViewMode(..)
+  , ConfigTab(..)
   , DataBrowserState(..)
   , LayeredViewState(..)
   , SkyOverlayMode(..)
@@ -204,6 +205,8 @@ executeTextIntent env input = do
     then case focusedOverlayImport ui of
       Just inspector -> insertOverlay inspector
       Nothing -> pure (Right noEffect)
+    else if dataDeleteConfirmationVisible ui
+      then pure (Right noEffect)
     else if uiSeedEditing ui
       then do
         let accepted = Text.filter (`elem` ['0'..'9']) input
@@ -315,6 +318,16 @@ executeKeyIntent env mods key = do
   ui <- iieGetUi env
   if uiMenuMode ui == MenuOverlayInspector
     then executeOverlayInspectorKey env ui mods key
+    else if uiMenuMode ui == MenuEscape
+      then case key of
+        KeyEscape -> do
+          setUiMenuMode (ahUiHandle (iieActorHandles env)) MenuNone
+          pure (Right (applied "close_menu") { iirMenuMode = Just "none" })
+        _ -> pure (Right noEffect)
+    else if dataDeleteConfirmationVisible ui
+      then case key of
+        KeyEscape -> escapeCascade env ui
+        _ -> pure (Right noEffect)
     else if uiSeedEditing ui
       then executeSeedKey env ui key
       else case focusedDataField ui of
@@ -629,7 +642,7 @@ escapeCascade :: InputIntentEnv -> UiState -> IO (Either Text InputIntentResult)
 escapeCascade env ui =
   let dbs = uiDataBrowser ui
       uiH = ahUiHandle (iieActorHandles env)
-  in if dbsDeleteConfirm dbs
+  in if dataDeleteConfirmationVisible ui
     then dataAction env DataBrowserCancelDelete (applied "cancel_delete_confirm")
     else if dbsEditMode dbs || dbsCreateMode dbs
       then dataAction env DataBrowserCancelEdit
@@ -677,6 +690,13 @@ focusedOverlayImport ui =
         && oimFocus inspector == OverlayInspectorImportInputFocus
        then Just inspector
        else Nothing
+
+dataDeleteConfirmationVisible :: UiState -> Bool
+dataDeleteConfirmationVisible ui =
+  uiMenuMode ui == MenuNone
+    && uiShowConfig ui
+    && uiConfigTab ui == ConfigData
+    && dbsDeleteConfirm (uiDataBrowser ui)
 
 focusedDataField :: UiState -> Maybe Text
 focusedDataField ui =

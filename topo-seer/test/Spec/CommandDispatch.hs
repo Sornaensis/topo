@@ -389,6 +389,35 @@ spec = describe "CommandDispatch" $ do
       uiAfterRejected <- getUiSnapshot uiH
       uiMenuMode uiAfterRejected `shouldBe` MenuPresetLoad
 
+    it "does not let a hidden data-delete confirmation consume Escape" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+          hiddenConfirm = emptyDataBrowserState { dbsDeleteConfirm = True }
+      setUiDataBrowser uiH hiddenConfirm
+      setUiShowConfig uiH False
+      setUiMenuMode uiH MenuNone
+
+      escaped <- dispatch ctx "send_key" (object ["key" .= ("escape" :: Text)])
+      srSuccess escaped `shouldBe` True
+      uiAfterEscape <- getUiSnapshot uiH
+      uiMenuMode uiAfterEscape `shouldBe` MenuEscape
+      dbsDeleteConfirm (uiDataBrowser uiAfterEscape) `shouldBe` True
+
+    it "keeps escape-menu keyboard input local" $ withCtx $ \ctx -> do
+      let uiH = ahUiHandle (ccActorHandles ctx)
+      setUiShowConfig uiH False
+      setUiMenuMode uiH MenuEscape
+
+      blocked <- dispatch ctx "send_key" (object ["key" .= ("c" :: Text)])
+      srSuccess blocked `shouldBe` True
+      uiAfterBlocked <- getUiSnapshot uiH
+      uiShowConfig uiAfterBlocked `shouldBe` False
+      uiMenuMode uiAfterBlocked `shouldBe` MenuEscape
+
+      closed <- dispatch ctx "send_key" (object ["key" .= ("escape" :: Text)])
+      srSuccess closed `shouldBe` True
+      uiAfterClose <- getUiSnapshot uiH
+      uiMenuMode uiAfterClose `shouldBe` MenuNone
+
     it "executes real preset persistence before closing confirmation dialogs" $ withCtx $ \ctx -> do
       let uiH = ahUiHandle (ccActorHandles ctx)
           presetName = "pi-input-intent-confirm"

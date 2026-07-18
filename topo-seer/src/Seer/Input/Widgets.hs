@@ -216,19 +216,19 @@ handleClick inputContext (SDL.P (V2 x y)) = do
         pure (Right ())
       _ -> do
         when (opensOverlayInspector wid) $
-          writeIORef (icOverlayModalLatchRef inputContext) True
+          writeIORef (icModalBarrierLatchRef inputContext) True
         enqueueInputAction (icActionDispatcher inputContext) $ do
           result <- runInputService widgetEnv "click_widget" (object $
             ["widget_id" .= widgetIdToText wid]
               ++ normalizedArgument currentWidgets clickPoint wid
               ++ itemIndexArgument currentLayout clickPoint uiState wid)
             `onException` when (opensOverlayInspector wid)
-              (writeIORef (icOverlayModalLatchRef inputContext) False)
+              (writeIORef (icModalBarrierLatchRef inputContext) False)
           case result of
             Right (ServiceResponse response) ->
               queueLocalHook currentLayout wid (clipboardFromWidgetResponse response)
             Left _ -> when (opensOverlayInspector wid) $
-              writeIORef (icOverlayModalLatchRef inputContext) False
+              writeIORef (icModalBarrierLatchRef inputContext) False
 
     opensOverlayInspector wid = wid `elem`
       [ WidgetOverlayManager
