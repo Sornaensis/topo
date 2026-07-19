@@ -25,9 +25,9 @@ import Actor.PluginManager
   , PluginSimulationPlan(..)
   , getPluginSimulationPlan
   )
-import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver
-  ( SnapshotVersion
+  ( RenderSnapshot(..)
+  , SnapshotVersion
   , publishSnapshot
   , readCommittedRenderSnapshot
   , uiSnapshotUpdate

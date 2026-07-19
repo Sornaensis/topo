@@ -8,8 +8,7 @@ module Seer.System.EventPump
   ) where
 
 import Actor.Log (LogSnapshotRef, getLogSnapshot)
-import Actor.Render (RenderSnapshot(..))
-import Actor.SnapshotReceiver (SnapshotVersion, publishSnapshot, publishSnapshotIfVersion, readCommittedUiAndLog, uiSnapshotUpdate, withLogSnapshot)
+import Actor.SnapshotReceiver (RenderSnapshot(..), SnapshotVersion, publishSnapshot, publishSnapshotIfVersion, readCommittedUiAndLog, uiSnapshotUpdate, withLogSnapshot)
 import Actor.UI (UiState(..), UiSnapshotRef, getUiSnapshot)
 import Actor.UiActions (UiActions, awaitUiActions)
 import Actor.UiActions.Handles (ActorHandles(..))

@@ -36,10 +36,10 @@ import Actor.Data
   , setWeatherChunkData
   )
 import Actor.Log (Log, LogEntry(..), LogLevel(..), appendLog, getLogSnapshot)
-import Actor.Render (RenderSnapshot(..))
 import Actor.Simulation (Simulation, cancelSimWorldTransition)
 import Actor.SnapshotReceiver
-  ( DataSnapshotRef
+  ( RenderSnapshot(..)
+  , DataSnapshotRef
   , SnapshotVersion
   , SnapshotVersionRef
   , TerrainSnapshotRef

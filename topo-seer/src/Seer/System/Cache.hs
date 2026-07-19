@@ -14,8 +14,7 @@ import Actor.AtlasManager (AtlasManagerQueueState(..), emptyAtlasManagerQueueSta
 import Actor.AtlasResultBroker (AtlasResultDrainStats(..), formatAtlasResultDrainStats)
 import Actor.AtlasScheduleBroker (AtlasScheduleReport(..), formatAtlasScheduleReport)
 import Actor.Data (TerrainSnapshot(..))
-import Actor.Render (RenderSnapshot(..))
-import Actor.SnapshotReceiver (SnapshotVersion(..))
+import Actor.SnapshotReceiver (RenderSnapshot(..), SnapshotVersion(..))
 import Actor.TerrainCacheBroker (TerrainCacheRef, readTerrainCacheRef)
 import Actor.TerrainCacheWorker
   ( TerrainCacheBuildRequest(..)

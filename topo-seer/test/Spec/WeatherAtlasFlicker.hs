@@ -48,7 +48,6 @@ import Actor.AtlasScheduler
 import Actor.AtlasWorker (AtlasWorkerLoad(..), AtlasWorkerLoadRef, atlasWorkerActorDef, newAtlasWorkerLoadRef, readAtlasWorkerLoad)
 import Actor.Data (Data, DataSnapshot(..), TerrainSnapshot(..), defaultTerrainGeoContext, getTerrainSnapshot, replaceTerrainData)
 import Actor.Log (Log, getLogSnapshot)
-import Actor.Render (RenderSnapshot(..))
 import Actor.Simulation
   ( AutoTickStepResult(..)
   , Simulation
@@ -61,7 +60,8 @@ import Actor.Simulation
   , setSimWorld
   )
 import Actor.SnapshotReceiver
-  ( SnapshotVersion(..)
+  ( RenderSnapshot(..)
+  , SnapshotVersion(..)
   , SnapshotVersionRef
   , TerrainSnapshotRef
   , newDataSnapshotRef

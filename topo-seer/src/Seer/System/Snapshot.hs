@@ -9,9 +9,9 @@ module Seer.System.Snapshot
   , pollRenderSnapshot
   ) where
 
-import Actor.Render (RenderSnapshot)
 import Actor.SnapshotReceiver
-  ( SnapshotVersion
+  ( RenderSnapshot
+  , SnapshotVersion
   , SnapshotVersionRef
   , readCommittedRenderSnapshot
   , readSnapshotVersion

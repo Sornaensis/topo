@@ -4,9 +4,9 @@ module Spec.SnapshotReceiver (spec) where
 
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.Log (LogLevel(..), LogSnapshot(..), newLogSnapshotRef)
-import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver
-  ( SnapshotVersion(..)
+  ( RenderSnapshot(..)
+  , SnapshotVersion(..)
   , dataAndTerrainSnapshotUpdate
   , invalidatePublishedSnapshot
   , newDataSnapshotRef

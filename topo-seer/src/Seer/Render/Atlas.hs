@@ -80,8 +80,7 @@ import Actor.AtlasScheduler
   , requestAtlasSchedule
   )
 import Actor.Data (TerrainSnapshot(..))
-import Actor.Render (RenderSnapshot(..))
-import Actor.SnapshotReceiver (SnapshotVersion(..))
+import Actor.SnapshotReceiver (RenderSnapshot(..), SnapshotVersion(..))
 import Actor.UI (UiState(..), effectiveViewSelection)
 import Control.Monad (foldM, forM_, unless)
 import Data.List (find, partition)

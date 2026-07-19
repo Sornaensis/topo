@@ -3,7 +3,7 @@ module Seer.Render.Ui
   ) where
 
 import Actor.Log (LogSnapshot(..))
-import Actor.Render (RenderSnapshot(..))
+import Actor.SnapshotReceiver (RenderSnapshot(..))
 import Actor.Data (TerrainSnapshot)
 import Actor.UI (UiState(..))
 import Data.Maybe (isJust)

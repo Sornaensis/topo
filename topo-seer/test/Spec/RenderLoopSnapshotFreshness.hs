@@ -8,9 +8,9 @@ import Actor.AtlasManager
 import Actor.AtlasResult (AtlasBuildId(..))
 import Actor.Data (DataSnapshot(..), TerrainSnapshot(..), defaultTerrainGeoContext)
 import Actor.Log (newLogSnapshotRef)
-import Actor.Render (RenderSnapshot(..))
 import Actor.SnapshotReceiver
-  ( SnapshotVersion(..)
+  ( RenderSnapshot(..)
+  , SnapshotVersion(..)
   , SnapshotVersionRef
   , newDataSnapshotRef
   , newRenderSnapshotVersionRef
