@@ -10,10 +10,16 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import System.Directory (doesDirectoryExist, doesFileExist)
-import System.FilePath ((</>))
+import System.Directory
+  ( createDirectoryIfMissing
+  , doesDirectoryExist
+  , doesFileExist
+  , removePathForcibly
+  )
+import System.FilePath ((</>), takeDirectory, takeFileName)
 import System.IO.Temp (withSystemTempDirectory)
-import Control.Exception (IOException, throwIO)
+import Control.Exception (IOException, bracket_, throwIO)
+import Control.Monad (forM_)
 import Test.Hspec
 import Test.QuickCheck (ioProperty, property)
 import Spec.Support.OverlayFixtures
@@ -311,23 +317,100 @@ spec = describe "WorldBundle" $ do
           lookupOverlay "bundle_sparse" (twOverlays world1) `shouldSatisfy` isJust
           lookupOverlay "extra_sparse" (twOverlays world1) `shouldBe` Nothing
 
-  it "writes extra files atomically and cleans backup dir" $
+  it "writes valid nested extra files atomically and cleans backup dir" $
     withSystemTempDirectory "topo-world-bundle-atomic" $ \tmp -> do
       let topoPath = tmp </> "world.topo"
           worldDir = tmp
           oldBackupDir = worldDir <> ".old"
+          nestedMetaPath = worldDir </> "metadata" </> "plugin" </> "meta.json"
+          metaBytes = BS.pack [123, 125]
           world0 = mkWorldWithSparseOverlay
-          extras = [("meta.json", BS.pack [123, 125])]
+          extras = [("metadata" </> "plugin" </> "meta.json", metaBytes)]
 
       saveResult <- saveWorldBundleWithProvenance topoPath emptyProvenance extras world0
       case saveResult of
         Left err -> expectationFailure (show err)
         Right () -> pure ()
 
-      metaExists <- doesFileExist (worldDir </> "meta.json")
+      metaExists <- doesFileExist nestedMetaPath
+      storedMeta <- BS.readFile nestedMetaPath
       backupExists <- doesDirectoryExist oldBackupDir
       metaExists `shouldBe` True
+      storedMeta `shouldBe` metaBytes
       backupExists `shouldBe` False
+
+  it "rejects unsafe extra-file paths before staging or outside writes" $
+    withSystemTempDirectory "topo-world-bundle-extra-paths" $ \tmp -> do
+      let topoPath = tmp </> "world.topo"
+          stagingDir = tmp <> ".saving"
+          stagingSentinel = stagingDir </> "sentinel.bin"
+          sentinelBytes = BS.pack [9, 8, 7]
+          traversalTarget = tmp </> "traversal-escape.bin"
+          absoluteTarget = tmp </> "absolute-escape.bin"
+          portableTarget = takeDirectory tmp </> (takeFileName tmp <> "-portable-escape.bin")
+          beyondTarget = takeDirectory (takeDirectory tmp)
+            </> (takeFileName tmp <> "-beyond-escape.bin")
+          validBeforeTarget = tmp </> "nested" </> "before-invalid.bin"
+          traversalPath = ".." </> takeFileName tmp </> "traversal-escape.bin"
+          portableTraversalPath = "../" <> takeFileName portableTarget
+          beyondTraversalPath = "../../" <> takeFileName beyondTarget
+          invalidPaths =
+            [ traversalPath
+            , portableTraversalPath
+            , beyondTraversalPath
+            , absoluteTarget
+            , "C:\\escape.bin"
+            , "\\\\server\\share\\escape.bin"
+            , "nested/./dot-segment.bin"
+            , "nested/../traversal.bin"
+            , "nested\\..\\opposite-separator.bin"
+            , ".. /windows-normalized-traversal.bin"
+            , "..:stream"
+            , "NUL"
+            , "nested/COM1.txt"
+            , "nested/conout$.log"
+            , ""
+            , "nested//repeated-separator.bin"
+            , "nested/trailing-separator/"
+            ]
+          extras invalidPath =
+            [ ("nested" </> "before-invalid.bin", BS.pack [1])
+            , (invalidPath, BS.pack [2])
+            ]
+          world0 = mkWorldWithSparseOverlay
+          seedStaging = do
+            createDirectoryIfMissing True stagingDir
+            BS.writeFile stagingSentinel sentinelBytes
+
+      bracket_ seedStaging (removePathForcibly stagingDir) $
+        forM_ invalidPaths $ \invalidPath -> do
+          saveResult <- saveWorldBundleWithProvenance
+            topoPath
+            emptyProvenance
+            (extras invalidPath)
+            world0
+          case saveResult of
+            Left (BundleInvalidExtraFilePath rejectedPath) ->
+              rejectedPath `shouldBe` invalidPath
+            Left err -> expectationFailure ("unexpected error: " <> show err)
+            Right () -> expectationFailure "expected unsafe extra-file path rejection"
+
+          stagingExists <- doesDirectoryExist stagingDir
+          preservedSentinel <- BS.readFile stagingSentinel
+          topoExists <- doesFileExist topoPath
+          validBeforeExists <- doesFileExist validBeforeTarget
+          traversalExists <- doesFileExist traversalTarget
+          absoluteExists <- doesFileExist absoluteTarget
+          portableExists <- doesFileExist portableTarget
+          beyondExists <- doesFileExist beyondTarget
+          stagingExists `shouldBe` True
+          preservedSentinel `shouldBe` sentinelBytes
+          topoExists `shouldBe` False
+          validBeforeExists `shouldBe` False
+          traversalExists `shouldBe` False
+          absoluteExists `shouldBe` False
+          portableExists `shouldBe` False
+          beyondExists `shouldBe` False
 
   it "keeps previous save intact when commit fails after backup rename" $
     withSystemTempDirectory "topo-world-bundle-crash" $ \tmp -> do

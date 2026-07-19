@@ -24,6 +24,7 @@ module Topo.Persistence.WorldBundle
 
 import qualified Data.Map.Strict as Map
 import Control.Exception (IOException, try)
+import Data.Char (toUpper)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.ByteString as BS
@@ -33,7 +34,13 @@ import System.Directory
   , doesFileExist
   , removePathForcibly
   )
-import System.FilePath ((</>), takeDirectory, takeFileName)
+import System.FilePath
+  ( (</>)
+  , hasDrive
+  , isAbsolute
+  , takeDirectory
+  , takeFileName
+  )
 
 import Topo.Overlay (OverlayStore(..), overlayNames)
 import Topo.Overlay.Storage
@@ -67,6 +74,7 @@ data WorldBundleError
   | BundleMissingOverlays ![Text]
   | BundleExtraOverlays ![Text]
   | BundleSchemaReadError !Text
+  | BundleInvalidExtraFilePath !FilePath
   | BundleAtomicRenameError !Text
   deriving (Show)
 
@@ -107,7 +115,19 @@ saveWorldBundleWithProvenanceAndHooks
   -> [(FilePath, BS.ByteString)]
   -> TerrainWorld
   -> IO (Either WorldBundleError ())
-saveWorldBundleWithProvenanceAndHooks hooks topoPath prov extraFiles world = do
+saveWorldBundleWithProvenanceAndHooks hooks topoPath prov extraFiles world =
+  case firstInvalidExtraFilePath extraFiles of
+    Just invalidPath -> pure (Left (BundleInvalidExtraFilePath invalidPath))
+    Nothing -> saveWorldBundleWithValidatedExtraFiles hooks topoPath prov extraFiles world
+
+saveWorldBundleWithValidatedExtraFiles
+  :: BundleSaveHooks
+  -> FilePath
+  -> WorldProvenance
+  -> [(FilePath, BS.ByteString)]
+  -> TerrainWorld
+  -> IO (Either WorldBundleError ())
+saveWorldBundleWithValidatedExtraFiles hooks topoPath prov extraFiles world = do
   let world' = normalizeSaveWorldManifest world
       overlays = twOverlays world'
       targetDir = takeDirectory topoPath
@@ -233,6 +253,67 @@ readManifestSchemas sidecarDir names = do
 cleanupAtomicDirs :: FilePath -> FilePath -> IO (Either WorldBundleError ())
 cleanupAtomicDirs stagingDir backupDir =
   AtomicDirectory.cleanupAtomicDirs safeIO stagingDir backupDir
+
+firstInvalidExtraFilePath :: [(FilePath, BS.ByteString)] -> Maybe FilePath
+firstInvalidExtraFilePath [] = Nothing
+firstInvalidExtraFilePath ((path, _):rest)
+  | isValidExtraFilePath path = firstInvalidExtraFilePath rest
+  | otherwise = Just path
+
+-- Validate both separator styles and Windows-normalized suffixes so a bundle
+-- request cannot become unsafe when moved between platforms.
+isValidExtraFilePath :: FilePath -> Bool
+isValidExtraFilePath [] = False
+isValidExtraFilePath path@(firstChar:_) =
+  not (hasDrive path)
+    && not (isAbsolute path)
+    && not (isPortablePathSeparator firstChar)
+    && not (hasWindowsDrivePrefix path)
+    && all isValidSegment (splitPortablePath path)
+  where
+    isValidSegment segment =
+      case reverse segment of
+        [] -> False
+        finalChar:_ ->
+          segment /= "."
+            && segment /= ".."
+            && finalChar /= '.'
+            && finalChar /= ' '
+            && ':' `notElem` segment
+            && not (isWindowsDeviceName segment)
+
+isWindowsDeviceName :: FilePath -> Bool
+isWindowsDeviceName segment =
+  let baseName = map toUpper
+        (trimWindowsSuffix (takeWhile (/= '.') segment))
+  in baseName `elem` ["CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"]
+      || isNumberedDevice baseName
+  where
+    isNumberedDevice ['C', 'O', 'M', digit] = isDeviceDigit digit
+    isNumberedDevice ['L', 'P', 'T', digit] = isDeviceDigit digit
+    isNumberedDevice _ = False
+
+    isDeviceDigit digit = digit `elem` ("123456789¹²³" :: String)
+
+trimWindowsSuffix :: String -> String
+trimWindowsSuffix = reverse . dropWhile isWindowsIgnored . reverse
+  where
+    isWindowsIgnored char = char == '.' || char == ' '
+
+hasWindowsDrivePrefix :: FilePath -> Bool
+hasWindowsDrivePrefix (_:':':_) = True
+hasWindowsDrivePrefix _ = False
+
+splitPortablePath :: FilePath -> [FilePath]
+splitPortablePath path = go path []
+  where
+    go [] current = [reverse current]
+    go (char:rest) current
+      | isPortablePathSeparator char = reverse current : go rest []
+      | otherwise = go rest (char : current)
+
+isPortablePathSeparator :: Char -> Bool
+isPortablePathSeparator char = char == '/' || char == '\\'
 
 writeExtraFiles :: FilePath -> [(FilePath, BS.ByteString)] -> IO (Either WorldBundleError ())
 writeExtraFiles _ [] = pure (Right ())

@@ -98,9 +98,10 @@ A world bundle has no additional wrapper or version field. Saving normalizes
 the `.topo` overlay manifest from the current overlay store, writes the world,
 all schema/data pairs, and any requested extra files into a fresh staging
 directory, then commits the **entire containing directory**. Extra-file paths
-must be contained, traversal-free relative paths; callers must enforce this
-before invoking the current API. Put the `.topo` file in a dedicated bundle
-directory.
+must be contained, traversal-free relative paths; the save API rejects absolute,
+drive/UNC, dot-segment, alternate-stream, and Windows device paths before
+creating or writing the staging directory. Put the `.topo` file in a dedicated
+bundle directory.
 
 For a target `.topo` path, `Topo.Persistence.WorldBundle` uses:
 
