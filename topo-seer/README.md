@@ -5,7 +5,7 @@ with topo terrains.
 
 ## Status
 - **1.0 runtime surface:** SDL UI plus direct HTTP/OpenAPI from this executable.
-- **Automation support:** HTTP/OpenAPI only; MCP and command IPC are not public 1.0 APIs.
+- **Automation support:** direct resource-oriented HTTP/OpenAPI from this executable.
 - **Support:** best-effort via repository issues.
 
 ## Quick start
@@ -25,7 +25,7 @@ stack exec topo-seer --
 # Launch the SDL UI with HTTP/OpenAPI enabled.
 stack exec topo-seer -- --http 127.0.0.1:7373
 
-# Launch the headless HTTP/OpenAPI host for automation or CI.
+# Launch the headless HTTP/OpenAPI host for local automation.
 stack exec topo-seer -- --headless --http 127.0.0.1:7373
 ```
 
@@ -37,7 +37,7 @@ stack exec topo-seer -- --headless --http 127.0.0.1:7373
   while the UI is running.
 - **Headless HTTP:** `--headless --http HOST:PORT` starts the service/actor
   runtime and HTTP server without creating an SDL window. `--headless` requires
-  `--http`; use this mode for automation and CI smoke checks.
+  `--http`; use this mode for local automation.
 
 The HTTP binding accepts `--http HOST:PORT` or `--http=HOST:PORT`. The
 `topo-seer` executable links SDL2/SDL2_ttf in every mode, so the native runtime
@@ -47,8 +47,8 @@ libraries must be available even when you run headless.
 
 The supported automation path is direct HTTP to `topo-seer`; generated OpenAPI
 is served at `GET /openapi.json` from the same route metadata used by dispatch
-and tests. The committed publication artifact and contract notes live at
-`../docs/api/openapi.json` and `../docs/api/README.md`.
+and tests. See the [operator guide](../docs/operator/README.md) and its generated
+[OpenAPI publication mirror](../docs/operator/openapi.json).
 
 ```sh
 # Start the local headless host.
@@ -84,13 +84,15 @@ When `--http-token TOKEN` is configured, `GET /health` remains unauthenticated
 for readiness checks and every other route, including `GET /openapi.json`,
 requires `Authorization: Bearer TOKEN`.
 
-MCP was a transition bridge and is retired for 1.0. Legacy named-pipe/Unix-
-socket command IPC is internal/test compatibility only while service extraction
-continues. HTTP-shaped `POST /commands/<method>` routes are absent: requests to
-known or unknown command names receive the ordinary route-miss `404`, and no CLI
-or configuration flag can enable them. Use the parity matrix at
-`../docs/inventory/mcp-http-parity.md` only to migrate old MCP tool/resource
-names to HTTP/OpenAPI routes.
+Clients should use the live OpenAPI document as the operation catalogue. The
+[1.0 migration guide](../docs/migration/1.0.md) covers removed routes and current
+resource-oriented replacements.
+
+## Documentation
+
+The workspace [documentation index](../docs/README.md) links the maintained user,
+operator, integrator, plugin-author, contributor, and migration guides. Runtime
+workflows begin in the [topo-seer user guide](../docs/user/topo-seer.md).
 
 ## Related workspace packages
 
@@ -159,6 +161,7 @@ These messages are designed to be CPU-only data with no SDL handles.
 
 ## Notes for contributors
 
-- Keep render-thread ownership strict (no SDL handles in workers).
-- Prefer total functions and explicit error handling.
-- Add tests for any new public API or protocol changes.
+Follow the [local contributor guide](../docs/contributor/README.md). Keep
+render-thread ownership strict (no SDL handles in workers), prefer total
+functions and explicit error handling, and add tests for public API or protocol
+changes.

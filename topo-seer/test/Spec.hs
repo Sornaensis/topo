@@ -32,6 +32,7 @@ import qualified Spec.TerrainActor
 import qualified Spec.PluginManager
 import qualified Spec.UiActor
 import qualified Spec.DayNight
+import qualified Spec.Documentation
 import qualified Spec.Simulation
 import qualified Spec.ScreenshotStorage
 import qualified Spec.ScreenshotRequest
@@ -98,6 +99,7 @@ main = do
         Spec.PluginManager.spec
         Spec.UiActor.spec
         Spec.DayNight.spec
+        Spec.Documentation.spec
         Spec.Simulation.spec
         Spec.ScreenshotStorage.spec
         Spec.ScreenshotRequest.spec

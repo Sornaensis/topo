@@ -2,8 +2,7 @@
 
 Topo is a Haskell workspace for procedural terrain generation, the `topo-seer`
 runtime, and the plugin SDK/examples used by the 1.0 release. The supported 1.0
-automation surface is direct HTTP/OpenAPI served by `topo-seer`; MCP and legacy
-command IPC are not public automation paths.
+automation surface is direct HTTP/OpenAPI served by `topo-seer`.
 
 ## Supported package roles
 
@@ -34,7 +33,7 @@ stack exec topo-seer --
 # Launch the SDL UI with HTTP/OpenAPI enabled.
 stack exec topo-seer -- --http 127.0.0.1:7373
 
-# Launch the headless HTTP/OpenAPI host for automation or CI.
+# Launch the headless HTTP/OpenAPI host for local automation.
 stack exec topo-seer -- --headless --http 127.0.0.1:7373
 
 # Run the Writ worldbuilding smoke workflow.
@@ -44,6 +43,16 @@ stack test topo:test:topo-test --test-arguments "--match Writ"
 Headless mode starts the service/actor runtime without an SDL window and requires
 an HTTP binding (`--headless --http HOST:PORT`). Use loopback (`127.0.0.1`) for
 local automation unless you intentionally need remote access.
+
+## Documentation
+
+Start at the [documentation index](docs/README.md), then choose the
+[user](docs/user/getting-started.md), [operator](docs/operator/README.md),
+[Haskell integrator](docs/integrator/README.md),
+[plugin author](docs/plugin/README.md), or
+[contributor](docs/contributor/README.md) guide. Changes from older clients and
+installations are covered by the [1.0 migration guide](docs/migration/1.0.md).
+User-facing changes are summarized in [CHANGELOG.md](CHANGELOG.md).
 
 ## HTTP/OpenAPI automation
 
@@ -79,20 +88,9 @@ When a token is configured, `GET /health` remains unauthenticated for readiness
 checks and every other route, including `GET /openapi.json`, requires
 `Authorization: Bearer TOKEN`.
 
-The retired MCP bridge and legacy command IPC are not 1.0 automation paths.
-Migration guidance lives in `docs/migration/pre-1.0-to-1.0.md`, release notes
-live in `docs/release-notes/1.0.md`, and the old-tool/resource mapping remains
-in `docs/inventory/mcp-http-parity.md`; new clients should use resource-oriented
-HTTP/OpenAPI routes only. Command IPC remains internal/test compatibility while
-service extraction continues. HTTP-shaped `POST /commands/<method>` routes have
-been removed permanently, always return the ordinary route-miss `404`, and have
-no CLI or configuration enable flag.
-
-## Release packaging
-
-Reproducible source tarball, executable staging, and `v1.0.0` tag instructions
-live in [docs/release.md](docs/release.md). User-facing changes are summarized
-in [CHANGELOG.md](CHANGELOG.md) and [docs/release-notes/1.0.md](docs/release-notes/1.0.md).
+Clients should discover and use the resource-oriented routes in the live
+OpenAPI document. See the [operator guide](docs/operator/README.md) for request,
+authentication, event-stream, and runtime-availability behavior.
 
 ## Runtime dependencies
 

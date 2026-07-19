@@ -301,6 +301,7 @@ test-suite topo-seer-test
       Spec.DataDetailPopover
       Spec.DataResourceE2E
       Spec.DayNight
+      Spec.Documentation
       Spec.EditorBrush
       Spec.EditorHistory
       Spec.Headless

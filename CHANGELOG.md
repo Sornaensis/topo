@@ -1,7 +1,8 @@
 # Changelog
 
-All notable user-facing changes for Topo are summarized here. Release-specific
-packaging and tag instructions live in [docs/release.md](docs/release.md).
+All notable user-facing changes for Topo are summarized here. Current guides
+and contract publications are organized from the
+[documentation index](docs/README.md).
 
 ## 1.0.0 — 2026-06-29
 
@@ -12,17 +13,16 @@ packaging and tag instructions live in [docs/release.md](docs/release.md).
   `topo-plugin-civ-example`.
 - Published the HTTP/OpenAPI contract as API version `1.0.0`; `GET /version`
   reports `api_version=1` and the `topo-seer` package version `1.0.0.0`.
-- Removed `topo-mcp` from the 1.0 workspace and release artifact set.
 
 ### Public automation
 
 - Standardized direct HTTP/OpenAPI served by `topo-seer` as the only public 1.0
   automation surface.
-- Kept legacy named-pipe/Unix-socket command IPC internal/test-only and removed
-  HTTP-shaped `/commands/*` dispatch permanently; those paths now return generic
-  `404` responses and have no enable flag.
-- Added published OpenAPI drift checks so `docs/api/openapi.json` stays in sync
-  with route metadata, schemas, examples, auth, errors, and versioning.
+- Removed the transitional generic command-dispatch routes; unknown paths now
+  return ordinary `404` responses and cannot be enabled by configuration.
+- Added published OpenAPI drift checks so
+  [`docs/operator/openapi.json`](docs/operator/openapi.json) stays in sync with
+  route metadata, schemas, examples, authentication, errors, and versioning.
 
 ### Plugin contract
 
@@ -37,6 +37,7 @@ packaging and tag instructions live in [docs/release.md](docs/release.md).
 
 - Documented the `topo-seer` SDL/headless runtime modes and the loopback/token
   policy for the HTTP server.
-- Added migration guidance from pre-1.0 MCP/command IPC clients to HTTP/OpenAPI.
-- Published release notes, plugin contract references, API docs, and reproducible
-  release packaging instructions for the 1.0 artifact set.
+- Added [1.0 migration guidance](docs/migration/1.0.md) for clients moving to
+  resource-oriented HTTP/OpenAPI and layered views.
+- Published audience guides for users, operators, Haskell integrators, plugin
+  authors, and contributors.
