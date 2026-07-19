@@ -46,10 +46,12 @@ import Topo.Plugin.RPC.Scope
   , TerrainSection(..)
   )
 import Topo.Plugin.SDK
-  ( ClimateChunk(..), GeneratorContext(..), GeneratorDef(..), GeneratorScopeDef(..)
+  ( ClimateChunk(..), DataHandler(..), DataOperations(..), DataQuery(..)
+  , DataRecord(..), DataResourceDef(..), DataResourceSchema(..)
+  , GeneratorContext(..), GeneratorDef(..), GeneratorScopeDef(..)
   , GeneratorTickResult(..), Overlay(..), OverlayChunk(..), OverlayData(..)
   , OverlaySchema, OverlayValue(..), PluginContext(..), PluginDef(..)
-  , TerrainChunk(..), VegetationChunk(..)
+  , QueryResult(..), TerrainChunk(..), VegetationChunk(..)
   , SimulationContext(..), SimulationDef(..), SimulationScopeDef(..)
   , SimulationTickResult(..), defaultRecord, fieldIndex
   , decodeTerrainPayload, encodeOverlayPayload, encodeTerrainPayload
@@ -96,6 +98,50 @@ main = hspec $ do
         Just scope -> rsoOwnedOverlay (risdOutput scope) `shouldBe` True
         Nothing -> expectationFailure "expected scoped generator declaration"
       validateManifest manifest `shouldBe` []
+
+    it "does not advertise settlement queries by hex" $ do
+      let manifest = generateManifest CivExample.civPlugin
+      case filter ((== "settlements") . drsName) (rmDataResources manifest) of
+        [schema] -> do
+          drsHexBound schema `shouldBe` False
+          let operations = drsOperations schema
+          doList operations `shouldBe` True
+          doGet operations `shouldBe` True
+          doQueryByHex operations `shouldBe` False
+        _ -> expectationFailure "expected exactly one settlements resource"
+
+    it "keeps settlement list and get catalogue queries working" $ do
+      listed <- querySettlementCatalogue QueryAll
+      qrsResource listed `shouldBe` "settlements"
+      qrsTotalCount listed `shouldBe` Just 3
+      qrsRecords listed `shouldBe`
+        [ DataRecord (Map.fromList
+            [ ("name", String "Ironhollow")
+            , ("population", Number 2500)
+            , ("is_city", Bool True)
+            ])
+        , DataRecord (Map.fromList
+            [ ("name", String "Millbrook")
+            , ("population", Number 450)
+            , ("is_city", Bool False)
+            ])
+        , DataRecord (Map.fromList
+            [ ("name", String "Stonewatch")
+            , ("population", Number 1200)
+            , ("is_city", Bool True)
+            ])
+        ]
+
+      fetched <- querySettlementCatalogue (QueryByKey (String "Millbrook"))
+      qrsResource fetched `shouldBe` "settlements"
+      qrsTotalCount fetched `shouldBe` Just 1
+      qrsRecords fetched `shouldBe`
+        [ DataRecord (Map.fromList
+            [ ("name", String "Millbrook")
+            , ("population", Number 450)
+            , ("is_city", Bool False)
+            ])
+        ]
 
     it "preserves backend-neutral external data-source declarations" $ do
       let manifest = generateManifest CivExample.civPlugin
@@ -471,6 +517,31 @@ withTempDir label action = bracket setup cleanup action
       createDirectory path
       pure path
     cleanup dir = removePathForcibly dir
+
+querySettlementCatalogue :: DataQuery -> IO QueryResult
+querySettlementCatalogue query =
+  case filter ((== "settlements") . drsName . drdSchema) (pdDataResources CivExample.civPlugin) of
+    [resource] -> case dhQuery (drdHandler resource) of
+      Nothing -> expectationFailure "settlements resource has no query handler" >> fail "query handler"
+      Just handler -> do
+        response <- handler catalogueContext query
+        case response of
+          Left err -> expectationFailure (Text.unpack err) >> fail "settlement query"
+          Right result -> pure result
+    _ -> expectationFailure "expected exactly one settlements resource" >> fail "settlements resource"
+
+catalogueContext :: PluginContext
+catalogueContext = PluginContext
+  { pcWorld = emptyWorld (WorldConfig 1) defaultHexGridMeta
+  , pcParams = Map.empty
+  , pcTerrain = Null
+  , pcOwnOverlay = Nothing
+  , pcOverlays = Map.empty
+  , pcSeed = 0
+  , pcLog = \_ -> pure ()
+  , pcProgress = \_ _ -> pure ()
+  , pcWorldPath = Nothing
+  }
 
 readGeneratedManifest :: FilePath -> (RPCManifest -> Expectation) -> Expectation
 readGeneratedManifest path check = do

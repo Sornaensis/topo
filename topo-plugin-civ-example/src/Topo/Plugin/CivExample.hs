@@ -172,13 +172,13 @@ settlementsResource = DataResourceDef
       , drsResourceVersion = defaultDataResourceVersion
       , drsName       = "settlements"
       , drsLabel      = "Sample Settlements"
-      , drsHexBound   = True
+      , drsHexBound   = False
       , drsFields     =
           [ DataFieldDef "name"       DFText  "Name"       False Nothing
           , DataFieldDef "population" DFInt   "Population" False Nothing
           , DataFieldDef "is_city"    DFBool  "City?"      False Nothing
           ]
-      , drsOperations = noOperations { doList = True, doGet = True, doQueryByHex = True }
+      , drsOperations = noOperations { doList = True, doGet = True }
       , drsKeyField   = "name"
       , drsOverlay    = Nothing
       , drsPagination = defaultDataPagination
