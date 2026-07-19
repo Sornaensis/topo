@@ -23,7 +23,6 @@ module Topo.Simulation
   , simNodeOverlayName
   , simNodeDependencies
   , simNodeSchedule
-  , simNodeScheduleDecl
   , ensureOverlaySchedule
   , reconcileOverlaySchedule
   , ensureWorldOverlaySchedules
@@ -146,10 +145,6 @@ simNodeDependencies (SimNodeWriter{snwDependencies = ds}) = ds
 simNodeSchedule :: SimNode -> SimulationScheduleDecl
 simNodeSchedule (SimNodeReader{snrSchedule = decl}) = decl
 simNodeSchedule (SimNodeWriter{snwSchedule = decl}) = decl
-
--- | Legacy accessor name retained as an alias for 'simNodeSchedule'.
-simNodeScheduleDecl :: SimNode -> SimulationScheduleDecl
-simNodeScheduleDecl = simNodeSchedule
 
 -- | Fill a missing overlay schedule from a node declaration.
 --
